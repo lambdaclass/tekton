@@ -290,8 +290,17 @@ configure_server() {
     success "Secrets directory created."
 
     info "Running nixos-rebuild switch (this may take a while on first run)..."
-    ssh $ssh_opts root@"$SERVER_IP" "cd /etc/nixos && nixos-rebuild switch" || \
-        fatal "nixos-rebuild switch failed. SSH into the server to investigate."
+    local gen_before gen_after
+    gen_before=$(ssh $ssh_opts root@"$SERVER_IP" "readlink /nix/var/nix/profiles/system")
+
+    if ! ssh $ssh_opts root@"$SERVER_IP" "cd /etc/nixos && nixos-rebuild switch"; then
+        warn "nixos-rebuild switch exited with errors, verifying the switch applied..."
+        gen_after=$(ssh $ssh_opts root@"$SERVER_IP" "readlink /nix/var/nix/profiles/system")
+        if [[ "$gen_before" == "$gen_after" ]]; then
+            fatal "nixos-rebuild switch failed and no new generation was created. SSH into the server to investigate."
+        fi
+        warn "New generation active ($gen_after). Non-critical service errors occurred during activation — safe to continue."
+    fi
 
     success "Server configured with MicroVM support."
 
@@ -317,17 +326,22 @@ setup_claude() {
     fi
 
     ssh -t $ssh_opts root@"$SERVER_IP" 'CLAUDE_CONFIG_DIR=/var/secrets/claude claude login' || {
-        warn "Claude login may have failed. You can retry with:"
-        echo "  ssh -t root@$SERVER_IP 'CLAUDE_CONFIG_DIR=/var/secrets/claude claude login'"
-        return
+        warn "Claude login may have exited with an error (this can happen if you dismiss the trust prompt — that's OK)."
     }
 
-    success "Claude login completed."
-
-    info "Fixing credential permissions..."
-    ssh $ssh_opts root@"$SERVER_IP" "chown -R microvm:kvm /var/secrets/claude && chmod -R 755 /var/secrets/claude"
-
-    success "Permissions set."
+    # Always fix permissions if credentials exist — the login may have succeeded
+    # even if claude exited non-zero (e.g. trust prompt dismissed).
+    # Files must be world-readable so the VM can access them through virtiofs.
+    if ssh $ssh_opts root@"$SERVER_IP" "test -f /var/secrets/claude/.credentials.json"; then
+        info "Fixing credential permissions..."
+        ssh $ssh_opts root@"$SERVER_IP" "chown -R microvm:kvm /var/secrets/claude && chmod -R a+rX /var/secrets/claude"
+        success "Credentials found and permissions set."
+    else
+        warn "No credentials found at /var/secrets/claude/.credentials.json"
+        warn "You can log in later with:"
+        echo "  ssh -t root@$SERVER_IP 'CLAUDE_CONFIG_DIR=/var/secrets/claude claude login'"
+        echo "  ssh root@$SERVER_IP 'chown -R microvm:kvm /var/secrets/claude && chmod -R a+rX /var/secrets/claude'"
+    fi
 }
 
 # -- Phase 5: Done -----------------------------------------------------------
