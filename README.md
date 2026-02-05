@@ -1,12 +1,15 @@
 # NixOS MicroVM Setup for Claude Code Agents on Hetzner
 
-This guide sets up a Hetzner bare metal server with NixOS and microvms for running Claude Code agents in isolated, ephemeral environments.
+> Based on [Michael Stapelberg's blog post](https://michael.stapelberg.ch/posts/2026-02-01-coding-agent-microvm-nix/) on running coding agents in NixOS MicroVMs. Uses [nixos-anywhere](https://github.com/nix-community/nixos-anywhere) for remote NixOS installation and [microvm.nix](https://github.com/astro/microvm.nix) for lightweight VM management.
+
+This repo sets up a Hetzner bare metal server with NixOS and MicroVMs for running Claude Code agents in isolated, ephemeral environments.
 
 ## Directory Structure
 
 ```
-nixos-hetzner-microvm/
-├── README.md                    # This file
+nixos-claude/
+├── README.md
+├── setup.sh                     # Automated setup script
 ├── initial-install/             # Used once for nixos-anywhere installation
 │   ├── flake.nix
 │   ├── disk-config.nix          # RAID 1 across two SSDs
@@ -28,106 +31,41 @@ nixos-hetzner-microvm/
 
 ## Prerequisites
 
-- Local machine with Nix installed (flakes enabled)
-- SSH key pair
+- Local machine with [Nix installed](https://nixos.org/download/) (flakes enabled)
+- SSH key pair (`ssh-keygen` if you don't have one)
 - Hetzner account
 
-## Part 1: Provision Hetzner Server
+## Setup
+
+### Step 1: Provision Hetzner Server
 
 1. Order a dedicated server at [Hetzner Robot](https://robot.hetzner.com) (e.g., AX41-NVMe)
 2. Wait for provisioning, note your server IP
 3. Activate rescue mode: Server → Rescue tab → Activate Linux 64-bit
 4. Reset the server: Reset tab → Hardware reset
-5. SSH into rescue: `ssh root@YOUR_SERVER_IP`
+5. Wait a minute for the server to boot into rescue mode
 
-Gather network info while in rescue mode:
-```bash
-ip addr show        # Note interface name (e.g., enp3s0)
-ip route            # Note gateway
-```
-
-## Part 2: Configure and Install
-
-### 2.1 Update Configuration Files
-
-Edit `initial-install/configuration.nix`:
-- Set your server's IP address
-- Set your gateway
-- Add your SSH public key
-
-### 2.2 Run nixos-anywhere
-
-From your local machine (server must be in rescue mode):
+### Step 2: Run the Setup Script
 
 ```bash
-cd initial-install
-nix run github:nix-community/nixos-anywhere -- \
-  --flake '.#hetzner-dedicated' \
-  root@YOUR_SERVER_IP
+./setup.sh
 ```
 
-Wait ~5-10 minutes. Server reboots automatically when done.
+The script will:
+1. **Prompt** for your server IP and SSH public key
+2. **Auto-detect** the gateway, network interface, and prefix length by SSHing into rescue mode
+3. **Install NixOS** via nixos-anywhere (takes ~5-10 minutes)
+4. **Configure the server** with MicroVM support and copy the server config
+5. **Run `claude login`** interactively so you can authenticate via OAuth
 
-### 2.3 Verify Installation
+No manual editing of configuration files is needed - the script handles all substitutions on temporary copies and leaves the repo files untouched.
 
-```bash
-ssh root@YOUR_SERVER_IP
-cat /etc/os-release    # Should show NixOS
-cat /proc/mdstat       # Should show RAID arrays syncing
-```
-
-## Part 3: Set Up MicroVMs
-
-### 3.1 Copy Server Config
-
-```bash
-# From your local machine
-scp -r server-config/. root@YOUR_SERVER_IP:/etc/nixos/
-```
-
-### 3.2 Create Secrets Directory
-
-```bash
-ssh root@YOUR_SERVER_IP
-
-# Create directory for Claude credentials
-mkdir -p /var/secrets/claude
-chmod 755 /var/secrets
-chmod 755 /var/secrets/claude
-
-# Apply configuration
-cd /etc/nixos
-nixos-rebuild switch
-```
-
-### 3.3 Set Up Claude Credentials (One-Time)
-
-On the host, authenticate Claude. Credentials are stored in a shared directory that microvms can read:
-
-```bash
-export CLAUDE_CONFIG_DIR=/var/secrets/claude
-claude login
-```
-
-Complete OAuth in your browser. This creates `.claude.json` and `.credentials.json` inside `/var/secrets/claude/`.
-
-### 3.4 Fix Permissions for Credentials
-
-After login, fix ownership so microvms can read the credentials:
-
-```bash
-chown -R microvm:kvm /var/secrets/claude
-chmod -R 755 /var/secrets/claude
-```
-
-**How it works:** The microvm mounts `/var/secrets/claude` as a read-only 9p share at `/mnt/claude-creds`. At boot, a systemd service copies these credentials to `/home/agent/.claude/` and sets `CLAUDE_CONFIG_DIR=/home/agent/.claude` for the agent user. This allows Claude to work without re-authenticating.
-
-## Part 4: Using MicroVMs
+## Using MicroVMs
 
 ### Start a VM
 
 ```bash
-systemctl start microvm@agent1
+ssh root@YOUR_SERVER_IP 'systemctl start microvm@agent1'
 ```
 
 ### SSH into the VM
@@ -150,13 +88,14 @@ claude --dangerously-skip-permissions
 ### Stop the VM
 
 ```bash
-systemctl stop microvm@agent1
+ssh root@YOUR_SERVER_IP 'systemctl stop microvm@agent1'
 ```
 
 ## Adding More MicroVMs
 
 ### Using the Claude Skill (Recommended)
 
+<<<<<<< HEAD
 The easiest way to create a new VM is with the Claude Code skill. In a Claude Code session inside this repo, say:
 
 > Create a new microvm called "agent2" for working on my frontend project
@@ -245,8 +184,7 @@ ssh -J root@YOUR_SERVER_IP agent@192.168.83.10
 cd /etc/nixos && nixos-rebuild switch
 
 # Re-authenticate Claude (on host)
-export CLAUDE_CONFIG_DIR=/var/secrets/claude
-claude login
+CLAUDE_CONFIG_DIR=/var/secrets/claude claude login
 chown -R microvm:kvm /var/secrets/claude
 chmod -R 755 /var/secrets/claude
 
@@ -254,10 +192,3 @@ chmod -R 755 /var/secrets/claude
 ls -la /home/agent/.claude/
 echo $CLAUDE_CONFIG_DIR  # Should show /home/agent/.claude
 ```
-
-## References
-
-- [microvm.nix](https://github.com/astro/microvm.nix)
-- [nixos-anywhere](https://github.com/nix-community/nixos-anywhere)
-- [disko](https://github.com/nix-community/disko)
-- [Michael Stapelberg's Coding Agent MicroVM Post](https://michael.stapelberg.ch/posts/2026-02-01-coding-agent-microvm-nix/)
