@@ -11,11 +11,19 @@ nixos-hetzner-microvm/
 │   ├── flake.nix
 │   ├── disk-config.nix          # RAID 1 across two SSDs
 │   └── configuration.nix
-└── server-config/               # Copied to /etc/nixos after install
-    ├── flake.nix
-    ├── configuration.nix
-    ├── microvm-host.nix         # Bridge networking setup
-    └── microvm-agent.nix        # MicroVM definition
+├── server-config/               # Copied to /etc/nixos after install
+│   ├── flake.nix
+│   ├── configuration.nix
+│   ├── microvm-host.nix         # Bridge networking setup
+│   ├── microvm-agent.nix        # MicroVM definition (uses mkMicrovm)
+│   └── lib/
+│       └── mkMicrovm.nix        # Reusable microvm factory function
+├── scripts/
+│   └── deploy-vm.sh             # Helper to deploy a VM to the server
+└── .claude/
+    └── skills/
+        └── create-microvm/
+            └── SKILL.md          # Claude skill for creating new VMs
 ```
 
 ## Prerequisites
@@ -147,12 +155,65 @@ systemctl stop microvm@agent1
 
 ## Adding More MicroVMs
 
-Create additional files like `microvm-agent2.nix` with different:
-- `vmName` (e.g., "agent2")
-- `vmIP` (e.g., "192.168.83.11")
-- `vmMAC` (e.g., "02:00:00:00:00:11")
+### Using the Claude Skill (Recommended)
 
-Add to `flake.nix` modules list, then `nixos-rebuild switch`.
+The easiest way to create a new VM is with the Claude Code skill. In a Claude Code session inside this repo, say:
+
+> Create a new microvm called "agent2" for working on my frontend project
+
+Claude will:
+1. Scan existing VMs to pick the next available IP/MAC
+2. Create `server-config/microvm-agent2.nix` using the `mkMicrovm` factory
+3. Update `server-config/flake.nix` to include the new module
+4. Commit the changes
+5. Provide deployment instructions
+
+### Using the Deploy Script
+
+After creating the VM config (manually or via the skill), deploy it:
+
+```bash
+# Basic deployment
+./scripts/deploy-vm.sh agent2 YOUR_SERVER_IP
+
+# Deploy and clone a repo into the workspace
+./scripts/deploy-vm.sh agent2 YOUR_SERVER_IP --clone https://github.com/user/repo.git
+```
+
+### Manual Approach
+
+Create a file like `server-config/microvm-agent2.nix`:
+
+```nix
+{ config, lib, pkgs, ... }:
+let
+  mkMicrovm = import ./lib/mkMicrovm.nix { inherit pkgs lib; };
+in
+mkMicrovm {
+  vmName = "agent2";
+  vmIP = "192.168.83.11";
+  vmMAC = "02:00:00:00:00:0b";
+  workspacePath = "/var/lib/microvms/agent2/workspace";
+  sshHostKeysPath = "/var/lib/microvms/agent2/ssh-host-keys";
+  # extraPackages = with pkgs; [ protobuf terraform ];
+}
+```
+
+Add it to `flake.nix` modules list, then deploy with `scp` + `nixos-rebuild switch`.
+
+### mkMicrovm Parameters
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `vmName` | yes | — | VM identifier (used as hostname, tap interface name) |
+| `vmIP` | yes | — | Static IP in 192.168.83.0/24 |
+| `vmMAC` | yes | — | Unique MAC address |
+| `workspacePath` | no | null | Host directory shared as `/home/agent/workspace` in VM |
+| `sshHostKeysPath` | no | null | Host directory for persisting SSH host keys |
+| `extraPackages` | no | [] | Additional Nix packages |
+| `vcpu` | no | 4 | Number of virtual CPUs |
+| `mem` | no | 4096 | Memory in MB |
+| `varImgSize` | no | 8192 | Size of /var volume image in MB |
 
 ## Troubleshooting
 
