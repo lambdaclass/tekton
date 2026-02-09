@@ -108,6 +108,17 @@ ssh root@YOUR_SERVER_IP 'agent destroy myagent'
 | Claude hangs on startup | Check credentials exist: `ls /home/agent/.claude/` in container |
 | Claude shows onboarding screen | Credentials not copied — verify `/var/secrets/claude/.credentials.json` exists on host, then recreate container |
 
+## References
+
+**Used in this project:**
+- [nixos-anywhere](https://github.com/nix-community/nixos-anywhere) — Remote NixOS installation over SSH
+- [NixOS Containers](https://wiki.nixos.org/wiki/NixOS_Containers) — Imperative container management with `nixos-container`
+- [Michael Stapelberg: Running coding agents in NixOS MicroVMs](https://michael.stapelberg.ch/posts/2026-02-01-coding-agent-microvm-nix/) — Original inspiration
+
+**Related reading:**
+- [Running NixOS from any Linux Distro in systemd-nspawn Containers](https://nixcademy.com/posts/nixos-nspawn/) — Alternative approach using `machinectl` with pre-built images
+- [nspawn-nixos](https://github.com/tfc/nspawn-nixos) — Pre-built NixOS images for systemd-nspawn
+
 ## Quick Reference
 
 ```bash
