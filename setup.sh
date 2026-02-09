@@ -97,17 +97,21 @@ gather_info() {
         [[ -f "$f" ]] && pub_keys+=("$f")
     done
 
+    SSH_IDENTITY=""  # path to private key (if known)
+
     if [[ ${#pub_keys[@]} -eq 0 ]]; then
         warn "No SSH public keys found in ~/.ssh/"
         echo -en "${BOLD}Paste your SSH public key:${NC} "
         read -r SSH_KEY
     elif [[ ${#pub_keys[@]} -eq 1 ]]; then
         SSH_KEY=$(cat "${pub_keys[0]}")
+        SSH_IDENTITY="${pub_keys[0]%.pub}"
         info "Found one key: ${pub_keys[0]}"
         echo -e "  ${CYAN}${SSH_KEY:0:60}...${NC}"
         if ! confirm "Use this key?"; then
             echo -en "${BOLD}Paste your SSH public key:${NC} "
             read -r SSH_KEY
+            SSH_IDENTITY=""
         fi
     else
         info "Found multiple SSH public keys:"
@@ -124,6 +128,7 @@ gather_info() {
             read -r SSH_KEY
         elif [[ "$key_choice" =~ ^[0-9]+$ ]] && (( key_choice >= 1 && key_choice <= ${#pub_keys[@]} )); then
             SSH_KEY=$(cat "${pub_keys[$((key_choice-1))]}")
+            SSH_IDENTITY="${pub_keys[$((key_choice-1))]%.pub}"
         else
             fatal "Invalid selection."
         fi
@@ -132,14 +137,28 @@ gather_info() {
     if [[ -z "${SSH_KEY:-}" ]]; then
         fatal "No SSH key provided."
     fi
-    success "SSH key selected."
+
+    # Verify the private key exists when we have a path
+    if [[ -n "$SSH_IDENTITY" ]] && [[ ! -f "$SSH_IDENTITY" ]]; then
+        warn "Private key not found at $SSH_IDENTITY, SSH will use agent/defaults."
+        SSH_IDENTITY=""
+    fi
+
+    # Build SSH identity flag (used in ssh_opts throughout the script)
+    if [[ -n "$SSH_IDENTITY" ]]; then
+        SSH_IDENTITY_OPT="-i $SSH_IDENTITY"
+        success "SSH key selected (identity: $SSH_IDENTITY)."
+    else
+        SSH_IDENTITY_OPT=""
+        success "SSH key selected (will use SSH agent/defaults for auth)."
+    fi
 
     # --- Auto-detect network info from rescue mode ---
     info "Connecting to rescue mode to detect network configuration..."
     info "(Make sure the server is in rescue mode and you can SSH in.)"
     echo ""
 
-    local ssh_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR"
+    local ssh_opts="$SSH_IDENTITY_OPT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR"
 
     if ! ssh $ssh_opts root@"$SERVER_IP" true 2>/dev/null; then
         fatal "Cannot SSH into rescue mode at root@$SERVER_IP. Is rescue mode active?"
@@ -259,7 +278,7 @@ install_nixos() {
     success "nixos-anywhere completed."
     info "Waiting for server to come back online..."
 
-    local ssh_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o LogLevel=ERROR"
+    local ssh_opts="$SSH_IDENTITY_OPT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o LogLevel=ERROR"
     local attempts=0
     local max_attempts=60
 
@@ -282,7 +301,7 @@ configure_server() {
     local script_dir
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     local server_dir="$script_dir/server-config"
-    local ssh_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+    local ssh_opts="$SSH_IDENTITY_OPT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
 
     # Create temp working copies
     local tmp_dir
@@ -347,7 +366,7 @@ configure_server() {
 setup_claude() {
     header "Phase 4: Claude Code Login"
 
-    local ssh_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+    local ssh_opts="$SSH_IDENTITY_OPT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
 
     echo -e "${BOLD}This will run 'claude login' on the server.${NC}"
     echo -e "You'll see an OAuth URL - ${YELLOW}open it in your browser${NC} to authenticate."
