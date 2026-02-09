@@ -20,7 +20,7 @@
       ];
     };
 
-    # Agent container configuration (used by nixos-container create --flake)
+    # Agent container configuration (built by `agent build`, used by `agent create`)
     nixosConfigurations.agent = nixpkgs.lib.nixosSystem {
       inherit system;
       modules = [

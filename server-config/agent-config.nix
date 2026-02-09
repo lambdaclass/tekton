@@ -1,5 +1,6 @@
 # NixOS configuration for imperative nspawn agent containers
-# Used by: nixos-container create <name> --flake /etc/nixos#agent
+# Built via: nix build /etc/nixos#nixosConfigurations.agent.config.system.build.toplevel
+# Used by: nixos-container create <name> --system-path <closure>
 #
 # Credentials flow:
 # 1. Host stores Claude credentials at /var/secrets/claude/

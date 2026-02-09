@@ -78,7 +78,7 @@
   # Required for imperative nixos-container create/start/stop
   boot.enableContainers = true;
 
-  # Enable flakes (needed by nixos-container --flake)
+  # Enable flakes (needed by `agent build` to evaluate the agent flake output)
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
   environment.systemPackages = with pkgs; [

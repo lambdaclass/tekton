@@ -366,7 +366,7 @@ setup_claude() {
 
     # Always fix permissions if credentials exist — the login may have succeeded
     # even if claude exited non-zero (e.g. trust prompt dismissed).
-    # Files must be world-readable so containers can access them via bind mount.
+    # Files must be world-readable so they can be copied into containers.
     if ssh $ssh_opts root@"$SERVER_IP" "test -f /var/secrets/claude/.credentials.json"; then
         info "Fixing credential permissions..."
         ssh $ssh_opts root@"$SERVER_IP" "chmod -R a+rX /var/secrets/claude"
