@@ -3,7 +3,7 @@
 #
 # Credentials flow:
 # 1. Host stores Claude credentials at /var/secrets/claude/
-# 2. nspawn bind-mounts this to /mnt/claude-creds in the container
+# 2. `agent create` copies them to /mnt/claude-creds in the container filesystem
 # 3. At boot, credentials are copied to /home/agent/.claude/
 # 4. CLAUDE_CONFIG_DIR is set to /home/agent/.claude for all users
 { config, lib, pkgs, ... }:

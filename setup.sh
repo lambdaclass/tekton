@@ -334,6 +334,11 @@ configure_server() {
 
     success "Server configured with agent container support."
 
+    info "Pre-building agent container closure (so first 'agent create' is instant)..."
+    ssh $ssh_opts root@"$SERVER_IP" "agent build" || {
+        warn "Agent pre-build failed. The first 'agent create' will build it automatically."
+    }
+
     # Clean up
     rm -rf "$tmp_dir"
 }
