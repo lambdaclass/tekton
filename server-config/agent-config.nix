@@ -90,6 +90,7 @@
     gcc
     gnumake
     claude-code
+    gh        # GitHub CLI for PR creation
   ];
 
   system.stateVersion = "24.11";

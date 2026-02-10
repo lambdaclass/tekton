@@ -87,6 +87,7 @@
     curl
     htop
     tmux
+    nodejs_22
     claude-code  # For initial credential setup on host
     (pkgs.writeShellApplication {
       name = "agent";
@@ -94,6 +95,22 @@
       text = builtins.readFile ./agent.sh;
     })
   ];
+
+  # Background Agent Orchestrator service
+  systemd.services.orchestrator = {
+    description = "Background Agent Orchestrator";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "network.target" ];
+    serviceConfig = {
+      Type = "simple";
+      ExecStart = "${pkgs.nodejs_22}/bin/node /opt/orchestrator/dist/index.js";
+      Restart = "always";
+      RestartSec = 5;
+      EnvironmentFile = "/var/secrets/orchestrator.env";
+      WorkingDirectory = "/opt/orchestrator";
+      # Run as root since agent commands require root
+    };
+  };
 
   system.stateVersion = "24.11";
 }
