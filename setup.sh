@@ -218,6 +218,61 @@ gather_info() {
     fi
     success "Detected prefix length: /$PREFIX_LENGTH"
 
+    # --- Preview deployment settings ---
+    header "Preview Deployment Settings (optional)"
+    echo -e "Configure PR preview deployments? This sets up Caddy, PostgreSQL, and a GitHub webhook."
+    echo ""
+
+    SETUP_PREVIEWS="n"
+    if confirm "Enable PR preview deployments?"; then
+        SETUP_PREVIEWS="y"
+
+        echo -en "${BOLD}Enter your preview domain (e.g. preview.example.com):${NC} "
+        read -r PREVIEW_DOMAIN
+        if [[ -z "$PREVIEW_DOMAIN" ]]; then
+            fatal "Preview domain is required."
+        fi
+        success "Preview domain: $PREVIEW_DOMAIN"
+
+        echo -e "${CYAN}AWS credentials for Route 53 DNS-01 challenge (wildcard TLS):${NC}"
+        echo -en "${BOLD}AWS Access Key ID:${NC} "
+        read -r AWS_ACCESS_KEY_ID
+        if [[ -z "$AWS_ACCESS_KEY_ID" ]]; then
+            fatal "AWS Access Key ID is required for wildcard certificates."
+        fi
+
+        echo -en "${BOLD}AWS Secret Access Key:${NC} "
+        read -r AWS_SECRET_ACCESS_KEY
+        if [[ -z "$AWS_SECRET_ACCESS_KEY" ]]; then
+            fatal "AWS Secret Access Key is required for wildcard certificates."
+        fi
+
+        echo -en "${BOLD}AWS Region (e.g. us-east-1):${NC} "
+        read -r AWS_REGION
+        AWS_REGION="${AWS_REGION:-us-east-1}"
+        success "AWS credentials set (region: $AWS_REGION)."
+
+        echo -en "${BOLD}GitHub token (for cloning repos and posting PR comments):${NC} "
+        read -r PREVIEW_GITHUB_TOKEN
+        if [[ -z "$PREVIEW_GITHUB_TOKEN" ]]; then
+            fatal "GitHub token is required."
+        fi
+        success "GitHub token set."
+
+        echo -en "${BOLD}GitHub webhook secret (leave blank to auto-generate):${NC} "
+        read -r GITHUB_WEBHOOK_SECRET
+        if [[ -z "$GITHUB_WEBHOOK_SECRET" ]]; then
+            GITHUB_WEBHOOK_SECRET=$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32)
+            success "Generated webhook secret: $GITHUB_WEBHOOK_SECRET"
+            echo -e "  ${YELLOW}Save this secret — you'll need it when configuring the GitHub webhook.${NC}"
+        else
+            success "Webhook secret set."
+        fi
+
+        echo -en "${BOLD}Allowed repos (comma-separated owner/repo, leave blank for all):${NC} "
+        read -r ALLOWED_REPOS
+    fi
+
     # --- Summary ---
     header "Configuration Summary"
     echo -e "  ${BOLD}Server IP:${NC}     $SERVER_IP"
@@ -225,6 +280,10 @@ gather_info() {
     echo -e "  ${BOLD}Interface:${NC}     $INTERFACE"
     echo -e "  ${BOLD}Prefix length:${NC} /$PREFIX_LENGTH"
     echo -e "  ${BOLD}SSH Key:${NC}       ${SSH_KEY:0:50}..."
+    if [[ "$SETUP_PREVIEWS" == "y" ]]; then
+        echo -e "  ${BOLD}Previews:${NC}      enabled"
+        echo -e "  ${BOLD}Preview domain:${NC} *.${PREVIEW_DOMAIN}"
+    fi
     echo ""
 
     if ! confirm "Proceed with these settings?"; then
@@ -326,6 +385,17 @@ configure_server() {
     sed -i.tmp "s|ssh-ed25519 AAAA... your-key-here|$SSH_KEY|g" "$agent_cfg"
     rm -f "$agent_cfg.tmp"
 
+    # --- preview-config.nix ---
+    local preview_cfg="$tmp_dir/preview-config.nix"
+    sed -i.tmp "s|ssh-ed25519 AAAA... your-key-here|$SSH_KEY|g" "$preview_cfg"
+    rm -f "$preview_cfg.tmp"
+
+    # --- configuration.nix: substitute preview domain ---
+    if [[ "$SETUP_PREVIEWS" == "y" ]]; then
+        sed -i.tmp "s|preview.DOMAIN|${PREVIEW_DOMAIN}|g" "$cfg"
+        rm -f "$cfg.tmp"
+    fi
+
     success "Config files prepared."
 
     info "Copying server configuration to /etc/nixos/..."
@@ -335,6 +405,40 @@ configure_server() {
 
     info "Creating directories..."
     ssh $ssh_opts root@"$SERVER_IP" "mkdir -p /var/secrets/claude /var/lib/claude-agents && chmod 755 /var/secrets /var/secrets/claude"
+
+    # Create preview directories and secrets
+    if [[ "$SETUP_PREVIEWS" == "y" ]]; then
+        info "Setting up preview deployment infrastructure..."
+
+        ssh $ssh_opts root@"$SERVER_IP" "mkdir -p /var/lib/preview-deploys /etc/caddy/previews /opt/preview-webhook"
+
+        # Write /var/secrets/caddy.env
+        ssh $ssh_opts root@"$SERVER_IP" "cat > /var/secrets/caddy.env <<ENVEOF
+AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+AWS_REGION=${AWS_REGION}
+ENVEOF
+chmod 600 /var/secrets/caddy.env"
+
+        # Write /var/secrets/preview.env
+        ssh $ssh_opts root@"$SERVER_IP" "cat > /var/secrets/preview.env <<ENVEOF
+GITHUB_TOKEN=${PREVIEW_GITHUB_TOKEN}
+GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+PREVIEW_DOMAIN=${PREVIEW_DOMAIN}
+WEBHOOK_PORT=3100
+ALLOWED_REPOS=${ALLOWED_REPOS:-}
+ENVEOF
+chmod 600 /var/secrets/preview.env"
+
+        success "Preview secrets written."
+
+        # Copy and build webhook service
+        info "Deploying preview webhook service..."
+        scp $ssh_opts -r "$tmp_dir/preview-webhook"/. root@"$SERVER_IP":/opt/preview-webhook/
+        ssh $ssh_opts root@"$SERVER_IP" "cd /opt/preview-webhook && npm ci && npm run build"
+
+        success "Preview webhook service deployed."
+    fi
 
     success "Directories created."
 
@@ -357,6 +461,13 @@ configure_server() {
     ssh $ssh_opts root@"$SERVER_IP" "agent build" || {
         warn "Agent pre-build failed. The first 'agent create' will build it automatically."
     }
+
+    if [[ "$SETUP_PREVIEWS" == "y" ]]; then
+        info "Pre-building preview container closure..."
+        ssh $ssh_opts root@"$SERVER_IP" "preview build" || {
+            warn "Preview pre-build failed. The first 'preview create' will build it automatically."
+        }
+    fi
 
     # Clean up
     rm -rf "$tmp_dir"
@@ -424,6 +535,27 @@ print_summary() {
     echo -e "  ${CYAN}# Destroy when done${NC}"
     echo "  ssh root@$SERVER_IP 'agent destroy myagent'"
     echo ""
+    if [[ "$SETUP_PREVIEWS" == "y" ]]; then
+        echo ""
+        echo -e "${BOLD}Preview Deployments:${NC}"
+        echo ""
+        echo -e "  ${CYAN}# Deploy a branch as a preview${NC}"
+        echo "  ssh root@$SERVER_IP 'preview create owner/repo branch-name'"
+        echo ""
+        echo -e "  ${CYAN}# List active previews${NC}"
+        echo "  ssh root@$SERVER_IP 'preview list'"
+        echo ""
+        echo -e "  ${CYAN}# View build logs${NC}"
+        echo "  ssh root@$SERVER_IP 'preview logs <slug> --follow'"
+        echo ""
+        echo -e "  ${CYAN}# Destroy a preview${NC}"
+        echo "  ssh root@$SERVER_IP 'preview destroy <slug>'"
+        echo ""
+        echo -e "  ${BOLD}Webhook URL:${NC}  https://$SERVER_IP:3100/webhook/github"
+        echo -e "  ${BOLD}DNS required:${NC} *.${PREVIEW_DOMAIN} A → $SERVER_IP"
+        echo ""
+    fi
+
     echo -e "See ${BOLD}README.md${NC} for more details on managing agents."
 }
 

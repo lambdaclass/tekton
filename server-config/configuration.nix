@@ -81,6 +81,42 @@
   # Enable flakes (needed by `agent build` to evaluate the agent flake output)
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
+  # PostgreSQL for preview deployments
+  services.postgresql = {
+    enable = true;
+    enableTCPIP = true;
+    settings = {
+      listen_addresses = "*";
+    };
+    authentication = ''
+      local all all peer
+      host all all 10.100.0.0/24 md5
+    '';
+  };
+
+  # Caddy reverse proxy for preview deployments (wildcard TLS via DNS-01)
+  services.caddy = {
+    enable = true;
+    package = pkgs.caddy.withPlugins {
+      plugins = [ "github.com/caddy-dns/route53@v1.3.3" ];
+      hash = "";  # Leave empty on first build, then insert the hash from the error
+    };
+    virtualHosts."*.preview.DOMAIN" = {
+      extraConfig = ''
+        tls {
+          dns route53 {
+            access_key_id {env.AWS_ACCESS_KEY_ID}
+            secret_access_key {env.AWS_SECRET_ACCESS_KEY}
+            region {env.AWS_REGION}
+          }
+        }
+        import /etc/caddy/previews/*
+        respond "Preview not found" 404
+      '';
+    };
+  };
+  systemd.services.caddy.serviceConfig.EnvironmentFile = "/var/secrets/caddy.env";
+
   environment.systemPackages = with pkgs; [
     vim
     git
@@ -88,12 +124,36 @@
     htop
     tmux
     claude-code  # For initial credential setup on host
+    postgresql  # For preview DB management (psql)
     (pkgs.writeShellApplication {
       name = "agent";
       runtimeInputs = [ nixos-container openssh ];
       text = builtins.readFile ./agent.sh;
     })
+    (pkgs.writeShellApplication {
+      name = "preview";
+      runtimeInputs = [ nixos-container openssh curl jq postgresql ];
+      text = builtins.readFile ./preview.sh;
+    })
   ];
+
+  # Firewall: allow HTTP, HTTPS, and webhook port
+  networking.firewall.allowedTCPPorts = [ 80 443 3100 ];
+
+  # GitHub PR Preview Webhook service
+  systemd.services.preview-webhook = {
+    description = "GitHub PR Preview Webhook";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "network.target" "caddy.service" "postgresql.service" ];
+    serviceConfig = {
+      Type = "simple";
+      ExecStart = "${pkgs.nodejs_22}/bin/node /opt/preview-webhook/dist/index.js";
+      Restart = "always";
+      RestartSec = 5;
+      EnvironmentFile = "/var/secrets/preview.env";
+      WorkingDirectory = "/opt/preview-webhook";
+    };
+  };
 
   system.stateVersion = "24.11";
 }

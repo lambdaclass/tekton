@@ -28,5 +28,14 @@
         ./agent-config.nix
       ];
     };
+
+    # Preview container configuration (built by `preview build`, used by `preview create`)
+    nixosConfigurations.preview = nixpkgs.lib.nixosSystem {
+      inherit system;
+      modules = [
+        { nixpkgs.pkgs = pkgs; }
+        ./preview-config.nix
+      ];
+    };
   };
 }
