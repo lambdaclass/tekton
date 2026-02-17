@@ -404,6 +404,11 @@ configure_server() {
 
         ssh $ssh_opts root@"$SERVER_IP" "mkdir -p /var/lib/preview-deploys /etc/caddy/previews /opt/preview-webhook"
 
+        # Create webhook Caddy route for HTTPS
+        ssh $ssh_opts root@"$SERVER_IP" "echo 'webhook.${PREVIEW_DOMAIN} {
+    reverse_proxy localhost:3100
+}' > /etc/caddy/previews/webhook.caddy"
+
         # Write /var/secrets/preview.env
         ssh $ssh_opts root@"$SERVER_IP" "cat > /var/secrets/preview.env <<ENVEOF
 GITHUB_TOKEN=${PREVIEW_GITHUB_TOKEN}

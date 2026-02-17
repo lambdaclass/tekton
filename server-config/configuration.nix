@@ -123,8 +123,8 @@
     })
   ];
 
-  # Firewall: allow HTTP, HTTPS, and webhook port
-  networking.firewall.allowedTCPPorts = [ 80 443 3100 ];
+  # Firewall: allow HTTP (ACME challenges) and HTTPS
+  networking.firewall.allowedTCPPorts = [ 80 443 ];
 
   # Trust container veth interfaces (allows containers to reach host PostgreSQL, etc.)
   networking.firewall.trustedInterfaces = [ "ve-+" ];
