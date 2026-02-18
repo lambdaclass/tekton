@@ -319,11 +319,13 @@ cmd_create() {
 
     info "Creating preview '$slug' (type=$type, host=$host_ip, container=$local_ip)..."
 
-    # Create PostgreSQL database
-    local db_pass
-    db_pass=$(create_db "$slug")
+    # Create PostgreSQL database (only for node type — vertex runs its own PostgreSQL)
+    local db_pass=""
     local db_name="preview_${slug//-/_}"
     local db_user="preview_${slug//-/_}"
+    if [[ "$type" != "vertex" ]]; then
+        db_pass=$(create_db "$slug")
+    fi
 
     # Create the container
     nixos-container create "$slug" \
@@ -356,7 +358,7 @@ cmd_create() {
         cat > "$env_file" <<EOF
 PREVIEW_REPO_URL='${clone_url}'
 PREVIEW_BRANCH='${branch}'
-DATABASE_URL='postgresql://${db_user}:${db_pass}@${host_ip}:5432/${db_name}'
+DATABASE_URL='postgresql://vertex@localhost:5432/vertex'
 SECRET_KEY_BASE='${secret_key_base}'
 JWT_SECRET='${jwt_secret}'
 DATABASE_ENCRYPTION_KEY='${db_encryption_key}'
@@ -433,8 +435,12 @@ cmd_destroy() {
     nixos-container stop "$slug" 2>/dev/null || true
     nixos-container destroy "$slug"
 
-    # Drop PostgreSQL database
-    drop_db "$slug"
+    # Drop PostgreSQL database (only for node type — vertex DB is destroyed with the container)
+    local type
+    type=$(get_preview_type "$slug")
+    if [[ "$type" != "vertex" ]]; then
+        drop_db "$slug"
+    fi
 
     # Remove tracking files
     rm -f "$PREVIEW_DIR/$slug"

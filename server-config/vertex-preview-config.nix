@@ -29,6 +29,21 @@ in
   # Open ports: 3000 (admin frontend), 3001 (foods frontend), 4000 (Phoenix backend)
   networking.firewall.allowedTCPPorts = [ 3000 3001 4000 ];
 
+  # PostgreSQL (runs inside the container for isolation — no shared host connections)
+  services.postgresql = {
+    enable = true;
+    ensureDatabases = [ "vertex" ];
+    ensureUsers = [{
+      name = "vertex";
+      ensureDBOwnership = true;
+    }];
+    authentication = lib.mkForce ''
+      local all all trust
+      host all all 127.0.0.1/32 trust
+      host all all ::1/128 trust
+    '';
+  };
+
   # Redis (runs inside the container for isolation)
   services.redis.servers.vertex = {
     enable = true;
@@ -39,8 +54,8 @@ in
   # Setup vertex: clone repo, build backend + frontend, run migrations
   systemd.services.setup-vertex = {
     description = "Setup Vertex preview (clone, build, migrate)";
-    after = [ "systemd-resolved.service" "redis-vertex.service" ];
-    wants = [ "systemd-resolved.service" "redis-vertex.service" ];
+    after = [ "systemd-resolved.service" "redis-vertex.service" "postgresql.service" ];
+    wants = [ "systemd-resolved.service" "redis-vertex.service" "postgresql.service" ];
     before = [ "vertex-backend.service" "vertex-frontend-admin.service" "vertex-frontend-foods.service" ];
     path = [
       pkgs.bash pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.gnused
