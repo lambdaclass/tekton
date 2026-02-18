@@ -171,6 +171,12 @@ ${slug}.${domain} {
     handle /api/* {
         reverse_proxy ${container_ip}:4000
     }
+    handle /websocket {
+        reverse_proxy ${container_ip}:4000
+    }
+    handle /longpoll/* {
+        reverse_proxy ${container_ip}:4000
+    }
     handle /admin/* {
         reverse_proxy ${container_ip}:3000
     }
