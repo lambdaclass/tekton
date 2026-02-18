@@ -10,7 +10,7 @@
   boot.loader.grub = {
     enable = true;
     efiSupport = false;
-    devices = [ "/dev/sda" "/dev/sdb" ];
+    devices = [ "DISK_DEVICE_0" "DISK_DEVICE_1" ];
   };
 
   boot.swraid = {
@@ -18,7 +18,7 @@
     mdadmConf = "MAILADDR root";
   };
 
-  boot.initrd.availableKernelModules = [ "ahci" "sd_mod" "r8169" ];
+  boot.initrd.availableKernelModules = [ INITRD_KERNEL_MODULES ];
 
   # Filesystems (created by disko during initial install)
   fileSystems."/" = {

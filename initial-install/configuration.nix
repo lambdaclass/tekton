@@ -19,8 +19,8 @@
   };
 
   # Kernel modules for Hetzner hardware
-  boot.initrd.availableKernelModules = [ "ahci" "sd_mod" "r8169" ];
-  boot.kernelModules = [ "kvm-intel" ];
+  boot.initrd.availableKernelModules = [ INITRD_KERNEL_MODULES ];
+  boot.kernelModules = [ KVM_KERNEL_MODULE ];
 
   # Network configuration - UPDATE THESE FOR YOUR SERVER
   networking = {

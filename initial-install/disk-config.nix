@@ -3,9 +3,9 @@
 {
   disko.devices = {
     disk = {
-      sda = {
+      disk0 = {
         type = "disk";
-        device = "/dev/sda";
+        device = "DISK_DEVICE_0";
         content = {
           type = "gpt";
           partitions = {
@@ -30,9 +30,9 @@
           };
         };
       };
-      sdb = {
+      disk1 = {
         type = "disk";
-        device = "/dev/sdb";
+        device = "DISK_DEVICE_1";
         content = {
           type = "gpt";
           partitions = {

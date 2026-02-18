@@ -213,6 +213,83 @@ gather_info() {
     fi
     success "Detected prefix length: /$PREFIX_LENGTH"
 
+    # --- Detect disk devices ---
+    info "Detecting disk devices..."
+    local disk_list
+    disk_list=$(ssh $ssh_opts root@"$SERVER_IP" "lsblk -d -n -o NAME,TYPE | awk '\$2==\"disk\" && \$1!~/^loop/ {print \"/dev/\" \$1}'" 2>/dev/null) || true
+
+    if [[ -z "$disk_list" ]]; then
+        fatal "Could not detect any disk devices on the server."
+    fi
+
+    local disks=()
+    while IFS= read -r line; do
+        disks+=("$line")
+    done <<< "$disk_list"
+
+    if [[ ${#disks[@]} -lt 2 ]]; then
+        fatal "Expected at least 2 disks for RAID 1, found ${#disks[@]}: ${disks[*]}"
+    fi
+
+    info "Found ${#disks[@]} disk(s):"
+    for i in "${!disks[@]}"; do
+        echo -e "  ${BOLD}$((i+1)))${NC} ${disks[$i]}"
+    done
+
+    if [[ ${#disks[@]} -eq 2 ]]; then
+        DISK_DEVICE_0="${disks[0]}"
+        DISK_DEVICE_1="${disks[1]}"
+        success "Using ${DISK_DEVICE_0} and ${DISK_DEVICE_1} for RAID 1."
+    else
+        echo -en "${BOLD}Pick disk 1 (1-${#disks[@]}):${NC} "
+        read -r d1
+        echo -en "${BOLD}Pick disk 2 (1-${#disks[@]}):${NC} "
+        read -r d2
+        if [[ "$d1" == "$d2" ]]; then
+            fatal "Cannot use the same disk twice."
+        fi
+        DISK_DEVICE_0="${disks[$((d1-1))]}"
+        DISK_DEVICE_1="${disks[$((d2-1))]}"
+        success "Using ${DISK_DEVICE_0} and ${DISK_DEVICE_1} for RAID 1."
+    fi
+
+    # --- Detect kernel modules ---
+    info "Detecting hardware for kernel modules..."
+
+    # Disk modules: NVMe vs SATA
+    if [[ "$DISK_DEVICE_0" == /dev/nvme* ]]; then
+        INITRD_MODULES='"nvme"'
+        success "NVMe disks detected — using nvme initrd module."
+    else
+        INITRD_MODULES='"ahci" "sd_mod"'
+        success "SATA disks detected — using ahci/sd_mod initrd modules."
+    fi
+
+    # Network driver
+    local net_driver
+    net_driver=$(ssh $ssh_opts root@"$SERVER_IP" "basename \$(readlink -f /sys/class/net/$rescue_iface/device/driver) 2>/dev/null" 2>/dev/null) || true
+    if [[ -n "$net_driver" ]]; then
+        INITRD_MODULES="$INITRD_MODULES \"$net_driver\""
+        success "Detected network driver: $net_driver"
+    else
+        INITRD_MODULES="$INITRD_MODULES \"r8169\""
+        warn "Could not detect network driver, defaulting to r8169"
+    fi
+
+    # CPU vendor → KVM module
+    local cpu_vendor
+    cpu_vendor=$(ssh $ssh_opts root@"$SERVER_IP" "grep -m1 vendor_id /proc/cpuinfo | awk '{print \$3}'" 2>/dev/null) || true
+    if [[ "$cpu_vendor" == "GenuineIntel" ]]; then
+        KVM_MODULE='"kvm-intel"'
+        success "Detected Intel CPU."
+    elif [[ "$cpu_vendor" == "AuthenticAMD" ]]; then
+        KVM_MODULE='"kvm-amd"'
+        success "Detected AMD CPU."
+    else
+        KVM_MODULE='"kvm-intel"'
+        warn "Could not detect CPU vendor, defaulting to kvm-intel."
+    fi
+
     # --- Preview deployment settings ---
     header "Preview Deployment Settings (optional)"
     echo -e "Configure PR preview deployments? This sets up Caddy, PostgreSQL, and a GitHub webhook."
@@ -256,6 +333,8 @@ gather_info() {
     echo -e "  ${BOLD}Gateway:${NC}       $GATEWAY"
     echo -e "  ${BOLD}Interface:${NC}     $INTERFACE"
     echo -e "  ${BOLD}Prefix length:${NC} /$PREFIX_LENGTH"
+    echo -e "  ${BOLD}Disk 1:${NC}        $DISK_DEVICE_0"
+    echo -e "  ${BOLD}Disk 2:${NC}        $DISK_DEVICE_1"
     echo -e "  ${BOLD}SSH Key:${NC}       ${SSH_KEY:0:50}..."
     if [[ "$SETUP_PREVIEWS" == "y" ]]; then
         echo -e "  ${BOLD}Previews:${NC}      enabled"
@@ -297,7 +376,17 @@ install_nixos() {
     sed -i.tmp "s|interfaces\.enp3s0|interfaces.$INTERFACE|g" "$config_file"
     sed -i.tmp "s|interface = \"enp3s0\"|interface = \"$INTERFACE\"|g" "$config_file"
 
+    # Substitute kernel modules in configuration.nix
+    sed -i.tmp "s|INITRD_KERNEL_MODULES|$INITRD_MODULES|g" "$config_file"
+    sed -i.tmp "s|KVM_KERNEL_MODULE|$KVM_MODULE|g" "$config_file"
+
     rm -f "$config_file.tmp"
+
+    # Substitute disk devices in disk-config.nix
+    local disk_config="$work_dir/disk-config.nix"
+    sed -i.tmp "s|DISK_DEVICE_0|$DISK_DEVICE_0|g" "$disk_config"
+    sed -i.tmp "s|DISK_DEVICE_1|$DISK_DEVICE_1|g" "$disk_config"
+    rm -f "$disk_config.tmp"
 
     success "Configuration updated."
 
@@ -363,6 +452,9 @@ configure_server() {
     sed -i.tmp "s|interfaces\.enp3s0|interfaces.$INTERFACE|g" "$cfg"
     sed -i.tmp "s|interface = \"enp3s0\"|interface = \"$INTERFACE\"|g" "$cfg"
     sed -i.tmp "s|externalInterface = \"enp3s0\"|externalInterface = \"$INTERFACE\"|g" "$cfg"
+    sed -i.tmp "s|DISK_DEVICE_0|$DISK_DEVICE_0|g" "$cfg"
+    sed -i.tmp "s|DISK_DEVICE_1|$DISK_DEVICE_1|g" "$cfg"
+    sed -i.tmp "s|INITRD_KERNEL_MODULES|$INITRD_MODULES|g" "$cfg"
     rm -f "$cfg.tmp"
 
     # --- agent-config.nix ---
