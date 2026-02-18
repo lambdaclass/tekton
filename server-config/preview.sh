@@ -497,7 +497,7 @@ cmd_list() {
         read -r _slot _host_ip _local_ip repo branch < "$f"
 
         local status
-        if nixos-container status "$name" 2>/dev/null | grep -q "running"; then
+        if nixos-container status "$name" 2>/dev/null | grep -q "up"; then
             status="${GREEN}running${NC}"
         else
             status="${YELLOW}stopped${NC}"
