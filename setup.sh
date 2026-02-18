@@ -325,6 +325,9 @@ gather_info() {
 
         echo -en "${BOLD}Allowed repos (comma-separated owner/repo, leave blank for all):${NC} "
         read -r ALLOWED_REPOS
+
+        echo -en "${BOLD}Vertex/Elixir repos (comma-separated owner/repo, leave blank for none):${NC} "
+        read -r VERTEX_REPOS
     fi
 
     # --- Summary ---
@@ -508,6 +511,7 @@ GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
 PREVIEW_DOMAIN=${PREVIEW_DOMAIN}
 WEBHOOK_PORT=3100
 ALLOWED_REPOS=${ALLOWED_REPOS:-}
+VERTEX_REPOS=${VERTEX_REPOS:-}
 ENVEOF
 chmod 600 /var/secrets/preview.env"
 
