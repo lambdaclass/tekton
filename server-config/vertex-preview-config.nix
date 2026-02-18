@@ -26,8 +26,8 @@ in
   };
   networking.nameservers = [ "8.8.8.8" "1.1.1.1" ];
 
-  # Open ports: 3000 (admin frontend), 3001 (foods frontend), 4000 (Phoenix backend)
-  networking.firewall.allowedTCPPorts = [ 3000 3001 4000 ];
+  # Open ports: 3000 (admin frontend), 3001 (foods frontend), 3002 (landing page), 4000 (Phoenix backend)
+  networking.firewall.allowedTCPPorts = [ 3000 3001 3002 4000 ];
 
   # PostgreSQL (runs inside the container for isolation — no shared host connections)
   services.postgresql = {
@@ -56,7 +56,7 @@ in
     description = "Setup Vertex preview (clone, build, migrate)";
     after = [ "systemd-resolved.service" "redis-vertex.service" "postgresql.service" ];
     wants = [ "systemd-resolved.service" "redis-vertex.service" "postgresql.service" ];
-    before = [ "vertex-backend.service" "vertex-frontend-admin.service" "vertex-frontend-foods.service" ];
+    before = [ "vertex-backend.service" "vertex-frontend-admin.service" "vertex-frontend-foods.service" "vertex-frontend-landing.service" ];
     path = [
       pkgs.bash pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.gnused
       pkgs.git erlang elixir pkgs.nodejs_22 pkgs.pnpm pkgs.gcc pkgs.gnumake
@@ -140,6 +140,14 @@ in
 
       echo "Frontend build complete."
 
+      # ── Landing page build ──────────────────────────────────────────────
+      echo "Building landing page..."
+      cd "$APP_DIR/landings"
+      ${pkgs.pnpm}/bin/pnpm install
+      cd "$APP_DIR/landings/restolia"
+      ${pkgs.pnpm}/bin/pnpm build
+      echo "Landing page build complete."
+
       # ── Database migrations ────────────────────────────────────────────
       echo "Running database migrations..."
       cd "$APP_DIR"
@@ -199,6 +207,21 @@ in
       User = "preview";
       WorkingDirectory = "/home/preview/app/frontend/apps/platform";
       ExecStart = "${pkgs.nodejs_22}/bin/npx serve -s dist-foods -l 3001";
+      Restart = "on-failure";
+      RestartSec = 5;
+    };
+  };
+
+  systemd.services.vertex-frontend-landing = {
+    description = "Vertex landing page (port 3002)";
+    after = [ "setup-vertex.service" ];
+    requires = [ "setup-vertex.service" ];
+    path = [ pkgs.bash pkgs.coreutils pkgs.nodejs_22 ];
+    serviceConfig = {
+      Type = "simple";
+      User = "preview";
+      WorkingDirectory = "/home/preview/app/landings/restolia";
+      ExecStart = "${pkgs.nodejs_22}/bin/npx serve -s dist -l 3002";
       Restart = "on-failure";
       RestartSec = 5;
     };

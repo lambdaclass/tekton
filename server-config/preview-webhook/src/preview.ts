@@ -44,7 +44,8 @@ export async function addPreviewLinkToPR(
   repo: string,
   prNumber: number,
   previewUrl: string,
-  token: string
+  token: string,
+  landingUrl?: string
 ): Promise<void> {
   console.log(`[preview] Adding preview link to ${repo}#${prNumber}`);
   try {
@@ -70,6 +71,9 @@ export async function addPreviewLinkToPR(
 
     // Append preview link
     body += `\n\n${PREVIEW_LINK_MARKER}\n---\n**Preview:** ${previewUrl}`;
+    if (landingUrl) {
+      body += `\n**Landing:** ${landingUrl}`;
+    }
 
     // Update PR
     const patchRes = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNumber}`, {

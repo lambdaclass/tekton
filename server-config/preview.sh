@@ -157,7 +157,7 @@ EOF
 
 remove_caddy_route() {
     local slug="$1"
-    rm -f "${CADDY_DIR}/${slug}.caddy"
+    rm -f "${CADDY_DIR}/${slug}.caddy" "${CADDY_DIR}/${slug}-landing.caddy"
     systemctl reload caddy
 }
 
@@ -171,10 +171,17 @@ ${slug}.${domain} {
     handle /api/* {
         reverse_proxy ${container_ip}:4000
     }
-    handle /admin/* {
+    redir /admin /admin/
+    handle_path /admin/* {
         reverse_proxy ${container_ip}:3000
     }
     reverse_proxy ${container_ip}:3001
+}
+EOF
+
+    cat > "${CADDY_DIR}/${slug}-landing.caddy" <<EOF
+landing-${slug}.${domain} {
+    reverse_proxy ${container_ip}:3002
 }
 EOF
 
@@ -395,7 +402,7 @@ EOF
 
     # Kick off setup and services (type-specific)
     if [[ "$type" == "vertex" ]]; then
-        nixos-container run "$slug" -- systemctl start setup-vertex vertex-backend vertex-frontend-admin vertex-frontend-foods &
+        nixos-container run "$slug" -- systemctl start setup-vertex vertex-backend vertex-frontend-admin vertex-frontend-foods vertex-frontend-landing &
         write_vertex_caddy_route "$slug" "$local_ip"
     else
         nixos-container run "$slug" -- systemctl start setup-preview preview-app &
@@ -405,6 +412,9 @@ EOF
     success "Preview '$slug' created and starting."
     echo ""
     echo -e "  ${BOLD}URL:${NC}           ${preview_url}"
+    if [[ "$type" == "vertex" ]]; then
+        echo -e "  ${BOLD}Landing:${NC}       https://landing-${slug}.${domain}"
+    fi
     echo -e "  ${BOLD}Type:${NC}          $type"
     echo -e "  ${BOLD}Container IP:${NC}  $local_ip"
     echo -e "  ${BOLD}Repo:${NC}          $repo"
@@ -469,7 +479,7 @@ cmd_update() {
 
     if [[ "$type" == "vertex" ]]; then
         nixos-container run "$slug" -- bash -c \
-            "systemctl restart setup-vertex && systemctl restart vertex-backend vertex-frontend-admin vertex-frontend-foods"
+            "systemctl restart setup-vertex && systemctl restart vertex-backend vertex-frontend-admin vertex-frontend-foods vertex-frontend-landing"
     else
         nixos-container run "$slug" -- bash -c \
             "systemctl restart setup-preview && systemctl restart preview-app"
@@ -537,7 +547,7 @@ cmd_logs() {
 
     local -a units
     if [[ "$type" == "vertex" ]]; then
-        units=(-u setup-vertex -u vertex-backend -u vertex-frontend-admin -u vertex-frontend-foods)
+        units=(-u setup-vertex -u vertex-backend -u vertex-frontend-admin -u vertex-frontend-foods -u vertex-frontend-landing)
     else
         units=(-u setup-preview -u preview-app)
     fi
@@ -561,7 +571,7 @@ cmd_help() {
     echo ""
     echo -e "${BOLD}Preview types:${NC}"
     echo "  node     Node.js app (npm ci, npm build, npm start on port 3000)"
-    echo "  vertex   Elixir/Phoenix + React SPA monorepo (backend:4000, frontends:3000/3001)"
+    echo "  vertex   Elixir/Phoenix + React SPA monorepo (backend:4000, frontends:3000/3001, landing:3002)"
     echo ""
     echo -e "${BOLD}Examples:${NC}"
     echo "  preview build"
