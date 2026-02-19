@@ -423,6 +423,7 @@ install_nixos() {
     echo ""
 
     if ! (cd "$work_dir" && nix run github:nix-community/nixos-anywhere/1.13.0 -- \
+        --build-on-remote \
         --flake '.#hetzner-dedicated' \
         root@"$SERVER_IP"); then
         rm -rf "$work_dir"
