@@ -434,19 +434,42 @@ install_nixos() {
     success "nixos-anywhere completed."
     info "Waiting for server to come back online..."
 
-    local ssh_opts="$SSH_IDENTITY_OPT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o LogLevel=ERROR"
+    local ssh_opts="$SSH_IDENTITY_OPT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o BatchMode=yes"
     local attempts=0
     local max_attempts=60
 
     while (( attempts < max_attempts )); do
-        if ssh $ssh_opts root@"$SERVER_IP" true; then
+        attempts=$((attempts + 1))
+        echo -ne "\r  attempt ${attempts}/${max_attempts}... "
+
+        # Run SSH with a hard 15-second timeout via a background watchdog.
+        # ConnectTimeout only covers TCP; if auth stalls (e.g. an SSH agent
+        # GUI prompt), SSH hangs forever.  macOS lacks `timeout`.
+        #
+        # The watchdog pattern (background jobs + wait + kill) does not work
+        # under set -e, so we run it in a subshell with set +e.  The subshell
+        # exits 0 only when SSH succeeds.
+        if (
+            set +e
+            ssh $ssh_opts root@"$SERVER_IP" true &>/dev/null &
+            pid=$!
+            ( sleep 15 && kill $pid 2>/dev/null ) &
+            wpid=$!
+            wait $pid 2>/dev/null
+            rc=$?
+            kill $wpid 2>/dev/null
+            wait $wpid 2>/dev/null
+            exit $rc
+        ); then
+            echo ""
             success "Server is back online!"
             return
         fi
-        attempts=$((attempts + 1))
+
         sleep 5
     done
 
+    echo ""
     fatal "Server did not come back online after 5 minutes. Check the Hetzner console."
 }
 
