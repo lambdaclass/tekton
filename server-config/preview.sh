@@ -324,10 +324,23 @@ cmd_create() {
     fi
 
     local domain="${PREVIEW_DOMAIN:-preview.example.com}"
-    local github_token="${GITHUB_TOKEN:-}"
+
+    # Get GitHub token: prefer webhook's /internal/token endpoint (supports
+    # both PAT and GitHub App auth), fall back to GITHUB_TOKEN env var.
+    local github_token=""
+    local webhook_port="${WEBHOOK_PORT:-3100}"
+    local token_response
+    if token_response=$(curl -sf "http://127.0.0.1:${webhook_port}/internal/token" 2>/dev/null); then
+        github_token=$(echo "$token_response" | jq -r '.token')
+        local auth_mode
+        auth_mode=$(echo "$token_response" | jq -r '.mode')
+        info "Using token from webhook (auth mode: $auth_mode)"
+    else
+        github_token="${GITHUB_TOKEN:-}"
+    fi
 
     if [[ -z "$github_token" ]]; then
-        fatal "GITHUB_TOKEN not set. Check $SECRETS_FILE"
+        fatal "No GitHub token available. Check $SECRETS_FILE or ensure the webhook is running."
     fi
 
     # Get pre-built system path (type-specific)

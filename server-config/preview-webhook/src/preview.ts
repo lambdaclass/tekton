@@ -1,4 +1,5 @@
 import { execaCommand } from "execa";
+import type { TokenProvider } from "./auth.js";
 
 const PREVIEW_BIN = "/run/current-system/sw/bin/preview";
 
@@ -59,11 +60,12 @@ export async function addPreviewLinkToPR(
   repo: string,
   prNumber: number,
   previewUrl: string,
-  token: string,
+  provider: TokenProvider,
   landingUrl?: string
 ): Promise<void> {
   console.log(`[preview] Adding preview link to ${repo}#${prNumber}`);
   try {
+    const token = await provider.getToken();
     const body = await getPRBody(repo, prNumber, token);
     if (body === null) return;
 
@@ -80,9 +82,10 @@ export async function ensurePreviewLinkOnPR(
   prNumber: number,
   slug: string,
   previewDomain: string,
-  token: string
+  provider: TokenProvider
 ): Promise<void> {
   try {
+    const token = await provider.getToken();
     const body = await getPRBody(repo, prNumber, token);
     if (body === null) return;
 

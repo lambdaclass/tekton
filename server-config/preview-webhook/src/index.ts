@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import { config } from "./config.js";
+import { config, tokenProvider } from "./config.js";
 import { verifySignature, parsePREvent } from "./github.js";
 import {
   prToSlug,
@@ -37,6 +37,27 @@ async function main(): Promise<void> {
 
   fastify.get("/health", async () => {
     return { status: "ok", uptime: process.uptime() };
+  });
+
+  fastify.get("/internal/token", async (request, reply) => {
+    // Only allow direct localhost requests (not proxied through Caddy).
+    // Caddy reverse-proxies all paths on webhook.DOMAIN to localhost:3100,
+    // so request.ip is always 127.0.0.1.  We reject proxied requests by
+    // checking for X-Forwarded-For which Caddy always sets.
+    const remoteAddr = request.ip;
+    const isLocalhost = remoteAddr === "127.0.0.1" || remoteAddr === "::1" || remoteAddr === "::ffff:127.0.0.1";
+    const isProxied = !!request.headers["x-forwarded-for"];
+    if (!isLocalhost || isProxied) {
+      return reply.code(403).send({ error: "Forbidden: localhost only" });
+    }
+
+    try {
+      const token = await tokenProvider.getToken();
+      return { token, mode: tokenProvider.mode };
+    } catch (error) {
+      console.error("[internal/token] Failed to get token:", error);
+      return reply.code(500).send({ error: "Failed to obtain token" });
+    }
   });
 
   fastify.post("/webhook/github", async (request, reply) => {
@@ -97,9 +118,9 @@ async function main(): Promise<void> {
             const url = `https://${slug}.${config.previewDomain}`;
             if (type === "vertex") {
               const landingUrl = `https://landing-${slug}.${config.previewDomain}`;
-              await addPreviewLinkToPR(repo, prNumber, url, config.githubToken, landingUrl);
+              await addPreviewLinkToPR(repo, prNumber, url, tokenProvider, landingUrl);
             } else {
-              await addPreviewLinkToPR(repo, prNumber, url, config.githubToken);
+              await addPreviewLinkToPR(repo, prNumber, url, tokenProvider);
             }
             break;
           }
@@ -109,7 +130,7 @@ async function main(): Promise<void> {
           }
           case "edited": {
             if (activePreviews.has(slug)) {
-              await ensurePreviewLinkOnPR(repo, prNumber, slug, config.previewDomain, config.githubToken);
+              await ensurePreviewLinkOnPR(repo, prNumber, slug, config.previewDomain, tokenProvider);
             }
             break;
           }

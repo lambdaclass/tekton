@@ -326,12 +326,49 @@ gather_info() {
         fi
         success "Preview domain: $PREVIEW_DOMAIN"
 
-        echo -en "${BOLD}GitHub token (for cloning repos into preview containers):${NC} "
-        read -r PREVIEW_GITHUB_TOKEN
-        if [[ -z "$PREVIEW_GITHUB_TOKEN" ]]; then
-            fatal "GitHub token is required."
+        echo -e "${BOLD}GitHub authentication method:${NC}"
+        echo -e "  ${BOLD}1)${NC} Personal Access Token (PAT)"
+        echo -e "  ${BOLD}2)${NC} GitHub App (recommended for orgs)"
+        echo -en "${BOLD}Choose auth method (1-2):${NC} "
+        read -r AUTH_METHOD_CHOICE
+        AUTH_METHOD_CHOICE="${AUTH_METHOD_CHOICE:-1}"
+
+        PREVIEW_AUTH_MODE="pat"
+        PREVIEW_GITHUB_TOKEN=""
+        PREVIEW_APP_ID=""
+        PREVIEW_INSTALLATION_ID=""
+        PREVIEW_PEM_PATH=""
+
+        if [[ "$AUTH_METHOD_CHOICE" == "2" ]]; then
+            PREVIEW_AUTH_MODE="github-app"
+
+            echo -en "${BOLD}GitHub App ID:${NC} "
+            read -r PREVIEW_APP_ID
+            if [[ -z "$PREVIEW_APP_ID" ]]; then
+                fatal "App ID is required."
+            fi
+
+            echo -en "${BOLD}Installation ID:${NC} "
+            read -r PREVIEW_INSTALLATION_ID
+            if [[ -z "$PREVIEW_INSTALLATION_ID" ]]; then
+                fatal "Installation ID is required."
+            fi
+
+            echo -en "${BOLD}Path to .pem private key file:${NC} "
+            read -r PREVIEW_PEM_PATH
+            if [[ -z "$PREVIEW_PEM_PATH" ]] || [[ ! -f "$PREVIEW_PEM_PATH" ]]; then
+                fatal "PEM file not found: ${PREVIEW_PEM_PATH:-<empty>}"
+            fi
+
+            success "GitHub App auth configured (App ID: $PREVIEW_APP_ID, Installation: $PREVIEW_INSTALLATION_ID)."
+        else
+            echo -en "${BOLD}GitHub token (for cloning repos into preview containers):${NC} "
+            read -r PREVIEW_GITHUB_TOKEN
+            if [[ -z "$PREVIEW_GITHUB_TOKEN" ]]; then
+                fatal "GitHub token is required."
+            fi
+            success "GitHub token set."
         fi
-        success "GitHub token set."
 
         echo -en "${BOLD}GitHub webhook secret (leave blank to auto-generate):${NC} "
         read -r GITHUB_WEBHOOK_SECRET
@@ -548,8 +585,26 @@ configure_server() {
     reverse_proxy localhost:3100
 }' > /etc/caddy/previews/webhook.caddy"
 
-        # Write /var/secrets/preview.env
-        ssh $ssh_opts root@"$SERVER_IP" "cat > /var/secrets/preview.env <<ENVEOF
+        # Write /var/secrets/preview.env (auth-mode-specific)
+        if [[ "$PREVIEW_AUTH_MODE" == "github-app" ]]; then
+            # Upload PEM file to server
+            info "Uploading GitHub App private key..."
+            scp $ssh_opts "$PREVIEW_PEM_PATH" root@"$SERVER_IP":/var/secrets/github-app.pem
+            ssh $ssh_opts root@"$SERVER_IP" "chmod 600 /var/secrets/github-app.pem"
+
+            ssh $ssh_opts root@"$SERVER_IP" "cat > /var/secrets/preview.env <<ENVEOF
+GITHUB_APP_ID=${PREVIEW_APP_ID}
+GITHUB_APP_INSTALLATION_ID=${PREVIEW_INSTALLATION_ID}
+GITHUB_APP_PRIVATE_KEY_PATH=/var/secrets/github-app.pem
+GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+PREVIEW_DOMAIN=${PREVIEW_DOMAIN}
+WEBHOOK_PORT=3100
+ALLOWED_REPOS=${ALLOWED_REPOS:-}
+VERTEX_REPOS=${VERTEX_REPOS:-}
+ENVEOF
+chmod 600 /var/secrets/preview.env"
+        else
+            ssh $ssh_opts root@"$SERVER_IP" "cat > /var/secrets/preview.env <<ENVEOF
 GITHUB_TOKEN=${PREVIEW_GITHUB_TOKEN}
 GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
 PREVIEW_DOMAIN=${PREVIEW_DOMAIN}
@@ -558,6 +613,7 @@ ALLOWED_REPOS=${ALLOWED_REPOS:-}
 VERTEX_REPOS=${VERTEX_REPOS:-}
 ENVEOF
 chmod 600 /var/secrets/preview.env"
+        fi
 
         success "Preview secrets written."
 
