@@ -178,12 +178,12 @@ in
     description = "Vertex admin frontend (port 3000)";
     after = [ "setup-vertex.service" ];
     requires = [ "setup-vertex.service" ];
-    path = [ pkgs.bash pkgs.coreutils pkgs.nodejs_22 ];
+    path = [ pkgs.bash pkgs.coreutils pkgs.static-web-server ];
     serviceConfig = {
       Type = "simple";
       User = "preview";
       WorkingDirectory = "/home/preview/app/frontend/apps/platform";
-      ExecStart = "${pkgs.nodejs_22}/bin/npx serve -s dist-admin -l 3000";
+      ExecStart = "${pkgs.static-web-server}/bin/static-web-server --port 3000 --root dist-admin --page-fallback dist-admin/index.html";
       Restart = "on-failure";
       RestartSec = 5;
     };
@@ -193,12 +193,12 @@ in
     description = "Vertex foods frontend (port 3001)";
     after = [ "setup-vertex.service" ];
     requires = [ "setup-vertex.service" ];
-    path = [ pkgs.bash pkgs.coreutils pkgs.nodejs_22 ];
+    path = [ pkgs.bash pkgs.coreutils pkgs.static-web-server ];
     serviceConfig = {
       Type = "simple";
       User = "preview";
       WorkingDirectory = "/home/preview/app/frontend/apps/platform";
-      ExecStart = "${pkgs.nodejs_22}/bin/npx serve -s dist-foods -l 3001";
+      ExecStart = "${pkgs.static-web-server}/bin/static-web-server --port 3001 --root dist-foods --page-fallback dist-foods/index.html";
       Restart = "on-failure";
       RestartSec = 5;
     };
@@ -242,6 +242,7 @@ in
     jq
     gh
     chromium  # Required by ChromicPDF for PDF generation
+    static-web-server  # Static file server for frontend SPAs
   ];
 
   system.stateVersion = "24.11";
