@@ -139,12 +139,32 @@ gather_info() {
         SSH_IDENTITY=""
     fi
 
+    # Detect 1Password SSH agent -- its socket path in ~/.ssh/config is the
+    # telltale sign.  When present and we have a key file, add IdentitiesOnly
+    # so SSH never queries the 1Password agent (which pops a GUI prompt that
+    # hangs non-interactive loops).
+    local onepassword_agent=false
+    if [[ -f "$HOME/.ssh/config" ]] && grep -q '2BUA8C4S2C.com.1password' "$HOME/.ssh/config" 2>/dev/null; then
+        onepassword_agent=true
+    fi
+
     # Build SSH identity flag (used in ssh_opts throughout the script)
     if [[ -n "$SSH_IDENTITY" ]]; then
-        SSH_IDENTITY_OPT="-i $SSH_IDENTITY"
-        success "SSH key selected (identity: $SSH_IDENTITY)."
+        if $onepassword_agent; then
+            SSH_IDENTITY_OPT="-i $SSH_IDENTITY -o IdentitiesOnly=yes"
+            success "SSH key selected (identity: $SSH_IDENTITY)."
+            info "1Password SSH agent detected -- using IdentitiesOnly to prevent GUI prompts."
+        else
+            SSH_IDENTITY_OPT="-i $SSH_IDENTITY"
+            success "SSH key selected (identity: $SSH_IDENTITY)."
+        fi
     else
         SSH_IDENTITY_OPT=""
+        if $onepassword_agent; then
+            warn "1Password SSH agent detected but no key file specified."
+            warn "SSH may stall waiting for 1Password approval popups during automated steps."
+            warn "Consider specifying a key file (e.g. ~/.ssh/id_ed25519) to avoid hangs."
+        fi
         success "SSH key selected (will use SSH agent/defaults for auth)."
     fi
 
