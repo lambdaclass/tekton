@@ -82,7 +82,8 @@ export async function ensurePreviewLinkOnPR(
   prNumber: number,
   slug: string,
   previewDomain: string,
-  provider: TokenProvider
+  provider: TokenProvider,
+  type: string = "node"
 ): Promise<void> {
   try {
     const token = await provider.getToken();
@@ -93,8 +94,9 @@ export async function ensurePreviewLinkOnPR(
     if (body.includes(PREVIEW_LINK_MARKER)) return;
 
     const previewUrl = `https://${slug}.${previewDomain}`;
+    const landingUrl = type === "vertex" ? `https://landing-${slug}.${previewDomain}` : undefined;
     console.log(`[preview] Re-adding missing preview link to ${repo}#${prNumber}`);
-    const newBody = appendPreviewLink(body, previewUrl);
+    const newBody = appendPreviewLink(body, previewUrl, landingUrl);
     await patchPRBody(repo, prNumber, newBody, token);
     console.log(`[preview] Re-added preview link to ${repo}#${prNumber}`);
   } catch (error) {

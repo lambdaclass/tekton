@@ -130,7 +130,7 @@ async function main(): Promise<void> {
           }
           case "edited": {
             if (activePreviews.has(slug)) {
-              await ensurePreviewLinkOnPR(repo, prNumber, slug, config.previewDomain, tokenProvider);
+              await ensurePreviewLinkOnPR(repo, prNumber, slug, config.previewDomain, tokenProvider, type);
             }
             break;
           }
