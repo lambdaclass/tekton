@@ -1,0 +1,51 @@
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::SqlitePool;
+use std::str::FromStr;
+
+pub async fn init_pool(database_url: &str) -> anyhow::Result<SqlitePool> {
+    let opts = SqliteConnectOptions::from_str(database_url)?
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(opts)
+        .await?;
+
+    run_migrations(&pool).await?;
+    Ok(pool)
+}
+
+async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS tasks (
+            id TEXT PRIMARY KEY,
+            prompt TEXT NOT NULL,
+            repo TEXT NOT NULL,
+            base_branch TEXT NOT NULL DEFAULT 'main',
+            branch_name TEXT,
+            agent_name TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            preview_slug TEXT,
+            preview_url TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS task_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL REFERENCES tasks(id),
+            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+            line TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}

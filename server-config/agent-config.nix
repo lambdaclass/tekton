@@ -39,6 +39,27 @@
       cp -r /mnt/claude-creds/statsig /home/agent/.claude/ 2>/dev/null || true
       chown -R agent:users /home/agent/.claude
       chmod -R 700 /home/agent/.claude
+
+      # Copy SSH signing key for signed git commits
+      mkdir -p /home/agent/.ssh
+      cp /mnt/claude-creds/signing_key /home/agent/.ssh/signing_key 2>/dev/null || true
+      chown -R agent:users /home/agent/.ssh
+      chmod 700 /home/agent/.ssh
+      chmod 600 /home/agent/.ssh/signing_key 2>/dev/null || true
+
+      # Configure git to sign commits with SSH key
+      cat > /home/agent/.gitconfig << 'GITEOF'
+[user]
+	name = Claude (Dashboard)
+	email = jrchatruc@gmail.com
+[gpg]
+	format = ssh
+[user]
+	signingkey = /home/agent/.ssh/signing_key
+[commit]
+	gpgsign = true
+GITEOF
+      chown agent:users /home/agent/.gitconfig
     '';
   };
 
@@ -59,7 +80,8 @@
     extraGroups = [ "wheel" ];
     # UPDATE: Your SSH public key (substituted by setup.sh)
     openssh.authorizedKeys.keys = [
-      "ssh-ed25519 AAAA... your-key-here"
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEWMu5wyCIJclVNVk3Judmu5zkWxkbtTJrcC0BpEcVfy jrchatruc@gmail.com"
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBIrWQgyW2acM35arp+DVr8Jo5S7A4vqbP9gLk3pMRhw root@nixos-server"
     ];
   };
 
@@ -68,7 +90,8 @@
   users.users.root = {
     password = "changeme";  # Fallback password
     openssh.authorizedKeys.keys = [
-      "ssh-ed25519 AAAA... your-key-here"
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEWMu5wyCIJclVNVk3Judmu5zkWxkbtTJrcC0BpEcVfy jrchatruc@gmail.com"
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBIrWQgyW2acM35arp+DVr8Jo5S7A4vqbP9gLk3pMRhw root@nixos-server"
     ];
   };
 

@@ -102,6 +102,11 @@
         tls /var/secrets/cloudflare-origin.pem /var/secrets/cloudflare-origin-key.pem
       }
 
+      dashboard.hipermegared.link {
+        import cloudflare_tls
+        reverse_proxy localhost:3200
+      }
+
       import /etc/caddy/previews/*.caddy
     '';
   };
@@ -132,6 +137,23 @@
 
   # Trust container veth interfaces (allows containers to reach host PostgreSQL, etc.)
   networking.firewall.trustedInterfaces = [ "ve-+" ];
+
+  # Dashboard service
+  systemd.services.dashboard = {
+    description = "Preview Dashboard";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "network.target" "caddy.service" ];
+    serviceConfig = {
+      Type = "simple";
+      Environment = "PATH=/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin";
+      ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p /var/lib/dashboard";
+      ExecStart = "/opt/dashboard/dashboard";
+      Restart = "always";
+      RestartSec = 5;
+      EnvironmentFile = "/var/secrets/dashboard.env";
+      WorkingDirectory = "/opt/dashboard";
+    };
+  };
 
   # GitHub PR Preview Webhook service
   systemd.services.preview-webhook = {
