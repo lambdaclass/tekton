@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { ChevronLeft, RefreshCw, ExternalLink } from 'lucide-react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { ChevronLeft, RefreshCw, ExternalLink, RotateCcw } from 'lucide-react';
 import LogViewer from '@/components/LogViewer';
 import TaskChat from '@/components/TaskChat';
-import { getTask, listSubtasks, getMe, parseImageUrls } from '@/lib/api';
+import { getTask, listSubtasks, getMe, parseImageUrls, reopenTask } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -54,7 +54,16 @@ export default function TaskDetail() {
 
   const onConnectionChange = useCallback((c: boolean) => setConnected(c), []);
 
+  const queryClient = useQueryClient();
+  const reopenMutation = useMutation({
+    mutationFn: () => reopenTask(id!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['task', id] });
+    },
+  });
+
   const showChat = task && CHAT_STATUSES.includes(task.status);
+  const canReopen = task && (task.status === 'completed' || task.status === 'failed');
 
   return (
     <div>
@@ -68,6 +77,17 @@ export default function TaskDetail() {
         <Badge variant={connected ? 'default' : 'outline'}>
           {connected ? 'Live' : 'Disconnected'}
         </Badge>
+        {canReopen && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => reopenMutation.mutate()}
+            disabled={reopenMutation.isPending}
+          >
+            <RotateCcw className="size-4 mr-1" />
+            {reopenMutation.isPending ? 'Reopening...' : 'Reopen'}
+          </Button>
+        )}
       </div>
 
       {task && (
