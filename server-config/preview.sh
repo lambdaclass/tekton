@@ -538,7 +538,7 @@ cmd_update() {
     fi
 
     # Signal the setup service to do a full rebuild (not skip due to existing build)
-    nixos-container run "$slug" -- touch /tmp/force-rebuild
+    nixos-container run "$slug" -- su -s /bin/sh preview -c "touch /tmp/force-rebuild"
 
     if [[ "$type" == "vertex" ]]; then
         nixos-container run "$slug" -- bash -c \
