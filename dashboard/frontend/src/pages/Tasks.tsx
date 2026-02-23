@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { listTasks, createTask, classifyPrompt } from '@/lib/api';
+import { listTasks, createTask, classifyPrompt, uploadImage } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,6 +10,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { statusVariant } from '@/lib/status';
 import VoiceInput from '@/components/VoiceInput';
+import { ImagePlus, X } from 'lucide-react';
 
 export default function Tasks() {
   const queryClient = useQueryClient();
@@ -24,6 +25,10 @@ export default function Tasks() {
   const [repo, setRepo] = useState('');
   const [baseBranch, setBaseBranch] = useState('main');
   const [repoAutoDetected, setRepoAutoDetected] = useState(false);
+  const [imageFiles, setImageFiles] = useState<File[]>([]);
+  const [imagePreviews, setImagePreviews] = useState<string[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
   const classifyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -61,8 +66,32 @@ export default function Tasks() {
     setRepoAutoDetected(false);
   };
 
+  const addImageFiles = (files: FileList | File[]) => {
+    const newFiles = Array.from(files).filter((f) => f.type.startsWith('image/'));
+    if (newFiles.length === 0) return;
+    setImageFiles((prev) => [...prev, ...newFiles]);
+    for (const file of newFiles) {
+      const reader = new FileReader();
+      reader.onload = (e) =>
+        setImagePreviews((prev) => [...prev, e.target?.result as string]);
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const removeImage = (index: number) => {
+    setImageFiles((prev) => prev.filter((_, i) => i !== index));
+    setImagePreviews((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleImageDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    addImageFiles(e.dataTransfer.files);
+  };
+
   const createMutation = useMutation({
-    mutationFn: createTask,
+    mutationFn: async (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[] }) => {
+      return createTask(data);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
       setShowCreate(false);
@@ -70,15 +99,32 @@ export default function Tasks() {
       setRepo('');
       setBaseBranch('main');
       setRepoAutoDetected(false);
+      setImageFiles([]);
+      setImagePreviews([]);
     },
   });
 
-  const handleCreate = (e: React.FormEvent) => {
+  const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
+    let image_urls: string[] | undefined;
+
+    if (imageFiles.length > 0) {
+      setUploading(true);
+      try {
+        const results = await Promise.all(imageFiles.map((f) => uploadImage(f)));
+        image_urls = results.map((r) => r.url);
+      } catch {
+        setUploading(false);
+        return;
+      }
+      setUploading(false);
+    }
+
     createMutation.mutate({
       prompt,
       repo,
       base_branch: baseBranch || undefined,
+      image_urls,
     });
   };
 
@@ -117,6 +163,59 @@ export default function Tasks() {
                     <VoiceInput onTranscript={handleTranscript} />
                   </div>
                 </div>
+                <div className="space-y-2">
+                  <Label>Image Attachments</Label>
+                  <div
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={handleImageDrop}
+                    className="border-2 border-dashed border-border rounded-lg p-4 text-center hover:border-muted-foreground/50 transition-colors cursor-pointer"
+                    onClick={() => imageInputRef.current?.click()}
+                  >
+                    <input
+                      ref={imageInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/gif,image/webp"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => {
+                        if (e.target.files?.length) addImageFiles(e.target.files);
+                        e.target.value = '';
+                      }}
+                    />
+                    {imagePreviews.length > 0 ? (
+                      <div className="flex flex-wrap gap-3 justify-center">
+                        {imagePreviews.map((preview, i) => (
+                          <div key={i} className="relative inline-block">
+                            <img
+                              src={preview}
+                              alt={`Upload preview ${i + 1}`}
+                              className="max-h-32 rounded-md border border-border"
+                            />
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                removeImage(i);
+                              }}
+                              className="absolute -top-2 -right-2 bg-destructive text-destructive-foreground rounded-full p-0.5"
+                            >
+                              <X className="size-3" />
+                            </button>
+                          </div>
+                        ))}
+                        <div className="flex items-center justify-center w-20 h-20 rounded-md border-2 border-dashed border-border text-muted-foreground hover:border-muted-foreground/50">
+                          <ImagePlus className="size-6" />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                        <ImagePlus className="size-8" />
+                        <span className="text-sm">Drop images here or click to select</span>
+                        <span className="text-xs">PNG, JPG, GIF, WebP (max 10MB each)</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <div className="flex items-center gap-2">
@@ -144,8 +243,8 @@ export default function Tasks() {
                   </div>
                 </div>
               </div>
-              <Button type="submit" disabled={createMutation.isPending}>
-                {createMutation.isPending ? 'Creating...' : 'Submit Task'}
+              <Button type="submit" disabled={createMutation.isPending || uploading}>
+                {uploading ? 'Uploading images...' : createMutation.isPending ? 'Creating...' : 'Submit Task'}
               </Button>
               {createMutation.isError && (
                 <p className="mt-2 text-destructive text-sm">

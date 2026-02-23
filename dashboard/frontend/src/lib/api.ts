@@ -27,6 +27,7 @@ export interface Task {
   parent_task_id: string | null;
   created_by: string | null;
   screenshot_url: string | null;
+  image_url: string | null;
 }
 
 export interface TaskMessage {
@@ -35,6 +36,7 @@ export interface TaskMessage {
   sender: string;
   content: string;
   created_at: string;
+  image_url: string | null;
 }
 
 export interface TaskLog {
@@ -87,10 +89,22 @@ export const destroyPreview = (slug: string) =>
 export const updatePreview = (slug: string) =>
   apiFetch<{ message: string; output: string }>(`/api/previews/${slug}/update`, { method: 'POST' });
 
+// Uploads
+export const uploadImage = async (file: File): Promise<{ url: string }> => {
+  const formData = new FormData();
+  formData.append('image', file);
+  const res = await fetch('/api/uploads', { method: 'POST', body: formData, credentials: 'include' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error || 'Upload failed');
+  }
+  return res.json();
+};
+
 // Tasks
 export const listTasks = () => apiFetch<Task[]>('/api/tasks');
 export const getTask = (id: string) => apiFetch<Task>(`/api/tasks/${id}`);
-export const createTask = (data: { prompt: string; repo: string; base_branch?: string }) =>
+export const createTask = (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[] }) =>
   apiFetch<Task>('/api/tasks', {
     method: 'POST',
     body: JSON.stringify(data),
@@ -98,11 +112,23 @@ export const createTask = (data: { prompt: string; repo: string; base_branch?: s
 export const getTaskLogs = (id: string) => apiFetch<TaskLog[]>(`/api/tasks/${id}/logs`);
 export const listSubtasks = (id: string) => apiFetch<Task[]>(`/api/tasks/${id}/subtasks`);
 export const listTaskMessages = (id: string) => apiFetch<TaskMessage[]>(`/api/tasks/${id}/messages`);
-export const sendTaskMessage = (id: string, content: string) =>
+export const sendTaskMessage = (id: string, content: string, image_urls?: string[]) =>
   apiFetch<TaskMessage>(`/api/tasks/${id}/messages`, {
     method: 'POST',
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, image_urls }),
   });
+
+/** Parse image_url JSON column (stored as JSON array string) into an array of URLs. */
+export function parseImageUrls(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    // Backwards compat: single URL string
+    return [raw];
+  }
+}
 export const classifyPrompt = (prompt: string) =>
   apiFetch<{ repo: string }>('/api/classify', {
     method: 'POST',

@@ -8,8 +8,10 @@ mod shell;
 mod tasks;
 mod ws;
 
-use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse};
+use axum::extract::Request;
+use axum::http::{header, HeaderValue};
+use axum::middleware::{self, Next};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::Router;
 use sqlx::SqlitePool;
@@ -66,6 +68,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/tasks/{id}/subtasks", get(tasks::get_subtasks))
         .route("/tasks/{id}/messages", get(tasks::list_messages))
         .route("/tasks/{id}/messages", post(tasks::send_message))
+        // Uploads
+        .route("/uploads", post(tasks::upload_image))
         // Classify
         .route("/classify", post(tasks::classify))
         // WebSockets
@@ -86,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
                     async move { Html(html).into_response() }
                 })),
         )
+        .layer(middleware::from_fn(cache_headers))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -95,4 +100,24 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+/// Middleware: hashed assets get immutable cache, HTML gets no-cache.
+async fn cache_headers(request: Request, next: Next) -> Response {
+    let path = request.uri().path().to_string();
+    let mut response = next.run(request).await;
+
+    if path.starts_with("/assets/") {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=31536000, immutable"),
+        );
+    } else if !path.starts_with("/api/") && !path.starts_with("/ws/") {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+        );
+    }
+
+    response
 }

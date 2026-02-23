@@ -33,7 +33,8 @@ async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             parent_task_id TEXT,
             created_by TEXT,
-            screenshot_url TEXT
+            screenshot_url TEXT,
+            image_url TEXT
         )",
     )
     .execute(pool)
@@ -44,6 +45,7 @@ async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
         "ALTER TABLE tasks ADD COLUMN parent_task_id TEXT",
         "ALTER TABLE tasks ADD COLUMN created_by TEXT",
         "ALTER TABLE tasks ADD COLUMN screenshot_url TEXT",
+        "ALTER TABLE tasks ADD COLUMN image_url TEXT",
     ] {
         // Ignore errors — column likely already exists
         let _ = sqlx::query(col_sql).execute(pool).await;
@@ -66,11 +68,19 @@ async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
             task_id TEXT NOT NULL REFERENCES tasks(id),
             sender TEXT NOT NULL,
             content TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            image_url TEXT
         )",
     )
     .execute(pool)
     .await?;
+
+    // Add new columns to task_messages if they don't exist (for upgrades)
+    for col_sql in &[
+        "ALTER TABLE task_messages ADD COLUMN image_url TEXT",
+    ] {
+        let _ = sqlx::query(col_sql).execute(pool).await;
+    }
 
     Ok(())
 }

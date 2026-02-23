@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ChevronLeft, RefreshCw, ExternalLink } from 'lucide-react';
 import LogViewer from '@/components/LogViewer';
 import TaskChat from '@/components/TaskChat';
-import { getTask, listSubtasks, getMe } from '@/lib/api';
+import { getTask, listSubtasks, getMe, parseImageUrls } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -130,6 +130,20 @@ export default function TaskDetail() {
             <div>
               <span className="text-muted-foreground text-sm">Prompt</span>
               <p className="mt-1 text-sm whitespace-pre-wrap">{task.prompt}</p>
+              {parseImageUrls(task.image_url).length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {parseImageUrls(task.image_url).map((url, i) => (
+                    <a key={i} href={url} target="_blank" rel="noopener noreferrer">
+                      <img
+                        src={url}
+                        alt={`Task reference image ${i + 1}`}
+                        className="max-w-full rounded-md border border-border hover:opacity-90 transition-opacity"
+                        style={{ maxHeight: '300px', objectFit: 'contain' }}
+                      />
+                    </a>
+                  ))}
+                </div>
+              )}
             </div>
             {task.error_message && (
               <>

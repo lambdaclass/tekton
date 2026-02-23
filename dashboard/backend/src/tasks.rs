@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{Multipart, Path, State};
 use axum::Json;
 use dashmap::DashMap;
 use sqlx::SqlitePool;
@@ -19,6 +19,73 @@ pub type TaskChannels = Arc<DashMap<String, broadcast::Sender<String>>>;
 
 pub fn new_task_channels() -> TaskChannels {
     Arc::new(DashMap::new())
+}
+
+const MAX_UPLOAD_SIZE: usize = 10 * 1024 * 1024; // 10MB
+
+pub async fn upload_image(
+    _user: AuthUser,
+    State(state): State<crate::AppState>,
+    mut multipart: Multipart,
+) -> Result<Json<serde_json::Value>, AppError> {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Invalid multipart data: {e}")))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        if name != "image" {
+            continue;
+        }
+
+        let content_type = field
+            .content_type()
+            .unwrap_or("application/octet-stream")
+            .to_string();
+
+        let ext = match content_type.as_str() {
+            "image/png" => "png",
+            "image/jpeg" | "image/jpg" => "jpg",
+            "image/gif" => "gif",
+            "image/webp" => "webp",
+            _ => {
+                return Err(AppError::BadRequest(format!(
+                    "Unsupported image type: {content_type}. Allowed: png, jpg, gif, webp"
+                )));
+            }
+        };
+
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| AppError::BadRequest(format!("Failed to read upload: {e}")))?;
+
+        if data.len() > MAX_UPLOAD_SIZE {
+            return Err(AppError::BadRequest(format!(
+                "Image too large ({} bytes). Max: {} bytes",
+                data.len(),
+                MAX_UPLOAD_SIZE
+            )));
+        }
+
+        let filename = format!("{}.{}", Uuid::new_v4(), ext);
+        let uploads_dir = format!("{}/uploads", state.config.static_dir);
+        tokio::fs::create_dir_all(&uploads_dir)
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to create uploads dir: {e}")))?;
+
+        let file_path = format!("{uploads_dir}/{filename}");
+        tokio::fs::write(&file_path, &data)
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to save upload: {e}")))?;
+
+        let url = format!("/uploads/{filename}");
+        return Ok(Json(serde_json::json!({ "url": url })));
+    }
+
+    Err(AppError::BadRequest(
+        "No 'image' field found in upload".into(),
+    ))
 }
 
 pub async fn list_tasks(
@@ -98,8 +165,14 @@ pub async fn create_task(
     let base_branch = req.base_branch.as_deref().unwrap_or("main");
     let created_by = &user.0.sub;
 
+    let image_url_json = req
+        .image_urls
+        .as_ref()
+        .filter(|v| !v.is_empty())
+        .map(|v| serde_json::to_string(v).unwrap());
+
     sqlx::query(
-        "INSERT INTO tasks (id, prompt, repo, base_branch, status, parent_task_id, created_by) VALUES (?, ?, ?, ?, 'pending', ?, ?)",
+        "INSERT INTO tasks (id, prompt, repo, base_branch, status, parent_task_id, created_by, image_url) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)",
     )
     .bind(&id)
     .bind(&req.prompt)
@@ -107,6 +180,7 @@ pub async fn create_task(
     .bind(base_branch)
     .bind(&req.parent_task_id)
     .bind(created_by)
+    .bind(&image_url_json)
     .execute(&state.db)
     .await?;
 
@@ -127,12 +201,13 @@ pub async fn create_task(
     let prompt = req.prompt.clone();
     let repo = req.repo.clone();
     let base = base_branch.to_string();
+    let image_url_json2 = image_url_json.clone();
     let channels = state.task_channels.clone();
 
     tokio::spawn(async move {
         let agent_name = format!("a-{short}");
         let result = run_task_pipeline(
-            &config, &db, &task_id, &short, &prompt, &repo, &base, tx.clone(),
+            &config, &db, &task_id, &short, &prompt, &repo, &base, image_url_json2.as_deref(), tx.clone(),
         )
         .await;
 
@@ -163,6 +238,7 @@ async fn run_task_pipeline(
     prompt: &str,
     repo: &str,
     base_branch: &str,
+    image_url_json: Option<&str>,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
     let agent_name = format!("a-{short_id}");
@@ -188,13 +264,27 @@ async fn run_task_pipeline(
     shell::agent_exec(&agent_name, &clone_cmd, tx.clone()).await?;
     update_task_field(db, task_id, "branch_name", &branch_name).await?;
 
-    // Step 3: Run Claude (streaming)
+    // Step 3: Copy images and run Claude (streaming)
+    let effective_prompt = augment_prompt_with_images(config, &agent_name, image_url_json, prompt, &tx).await?;
+
     update_task_status(db, task_id, "running_claude", None).await?;
     log_and_send(db, task_id, &tx, "[STEP] Running Claude...");
-    run_claude_streaming(&agent_name, prompt, tx.clone()).await?;
+    run_claude_streaming(&agent_name, &effective_prompt, tx.clone()).await?;
 
-    // Step 3b: Commit any changes
-    commit_changes_in_agent(&agent_name, prompt, tx.clone()).await?;
+    // Step 3b: Commit any changes — retry once if Claude made no edits
+    let made_changes = commit_changes_in_agent(&agent_name, prompt, tx.clone()).await?;
+    if !made_changes {
+        log_and_send(db, task_id, &tx, "[STEP] Re-running Claude — asking it to make actual edits...");
+        let retry_prompt = format!(
+            "You were given this task but made no file changes. You MUST edit the code to accomplish the task. \
+             Do not just analyze — use the Edit or Write tools to make the changes.\n\n{effective_prompt}"
+        );
+        run_claude_streaming(&agent_name, &retry_prompt, tx.clone()).await?;
+        let made_changes_retry = commit_changes_in_agent(&agent_name, prompt, tx.clone()).await?;
+        if !made_changes_retry {
+            log_and_send(db, task_id, &tx, "[WARN] Claude still made no changes after retry.");
+        }
+    }
 
     // Step 3c: Push and create preview
     let mut preview_created = false;
@@ -237,22 +327,114 @@ async fn run_claude_streaming(
     shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
 }
 
+/// Parse image_url JSON and copy all images into an agent container.
+/// Returns a list of remote paths that were successfully copied.
+async fn copy_images_to_agent(
+    config: &Config,
+    agent_name: &str,
+    image_url_json: &str,
+    tx: &broadcast::Sender<String>,
+) -> Result<Vec<String>, AppError> {
+    let urls: Vec<String> = serde_json::from_str(image_url_json).unwrap_or_default();
+    if urls.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let _ = tx.send(format!("[STEP] Copying {} image(s) to agent container...", urls.len()));
+
+    // Create uploads dir in agent
+    if let Err(e) = shell::agent_exec(
+        agent_name,
+        "mkdir -p /home/agent/uploads",
+        tx.clone(),
+    )
+    .await
+    {
+        let _ = tx.send(format!("[WARN] Failed to create uploads dir in agent: {e}"));
+        return Ok(vec![]);
+    }
+
+    let mut remote_paths = Vec::new();
+    for url in &urls {
+        let filename = url.rsplit('/').next().unwrap_or("image.png");
+        let local_path = format!("{}{}", config.static_dir, url);
+        let remote_path = format!("/home/agent/uploads/{filename}");
+
+        match shell::scp_to_agent(agent_name, &local_path, &remote_path).await {
+            Ok(_) => remote_paths.push(remote_path),
+            Err(e) => {
+                let _ = tx.send(format!("[WARN] Failed to copy image {filename}: {e}"));
+            }
+        }
+    }
+
+    Ok(remote_paths)
+}
+
+/// Augment a prompt with image references if any images are present.
+async fn augment_prompt_with_images(
+    config: &Config,
+    agent_name: &str,
+    image_url_json: Option<&str>,
+    prompt: &str,
+    tx: &broadcast::Sender<String>,
+) -> Result<String, AppError> {
+    let json = match image_url_json {
+        Some(j) if !j.is_empty() => j,
+        _ => return Ok(prompt.to_string()),
+    };
+
+    let remote_paths = copy_images_to_agent(config, agent_name, json, tx).await?;
+    if remote_paths.is_empty() {
+        return Ok(prompt.to_string());
+    }
+
+    let paths_list = remote_paths
+        .iter()
+        .map(|p| format!("- {p}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Ok(format!(
+        "I've attached {} reference image(s). Read them first to see what I'm referring to:\n{paths_list}\n\n{prompt}",
+        remote_paths.len()
+    ))
+}
+
+/// Check if the agent repo has uncommitted changes.
+async fn agent_has_changes(agent_name: &str) -> Result<bool, AppError> {
+    let ip = shell::agent_ip_public(agent_name)?;
+    let output = tokio::process::Command::new("ssh")
+        .args([
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            &format!("agent@{ip}"),
+            "cd /home/agent/repo && git add -A && git diff --cached --quiet; echo $?",
+        ])
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to check changes: {e}")))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // exit code 1 means there are differences (changes exist)
+    Ok(stdout.ends_with('1'))
+}
+
 async fn commit_changes_in_agent(
     agent_name: &str,
     prompt: &str,
     tx: broadcast::Sender<String>,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
+    let has_changes = agent_has_changes(agent_name).await?;
+    if !has_changes {
+        let _ = tx.send("[WARN] Claude made no file changes.".to_string());
+        return Ok(false);
+    }
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let commit_cmd = format!(
-        "cd /home/agent/repo && \
-         git add -A && \
-         if git diff --cached --quiet; then \
-           echo 'No changes to commit'; \
-         else \
-           git commit -m 'Claude: {escaped_prompt}'; \
-         fi"
+        "cd /home/agent/repo && git add -A && git commit -m 'Claude: {escaped_prompt}'"
     );
-    shell::agent_exec(agent_name, &commit_cmd, tx).await
+    shell::agent_exec(agent_name, &commit_cmd, tx).await?;
+    Ok(true)
 }
 
 #[derive(PartialEq)]
@@ -271,20 +453,13 @@ async fn follow_up_loop(
     preview_created: &mut bool,
     tx: &broadcast::Sender<String>,
 ) -> Result<FollowUpOutcome, AppError> {
-    let timeout_dur = std::time::Duration::from_secs(5 * 60);
-    let mut deadline = tokio::time::Instant::now() + timeout_dur;
     let mut last_seen_id: i64 = 0;
 
     update_task_status(db, task_id, "awaiting_followup", None).await?;
-    let _ = tx.send("[STATUS] Waiting for follow-up messages (send '__done__' or wait 5 min to finish)...".to_string());
+    let _ = tx.send("[STATUS] Waiting for follow-up messages (click 'Mark Done' to finish)...".to_string());
 
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-
-        if tokio::time::Instant::now() >= deadline {
-            let _ = tx.send("[STATUS] Follow-up timeout elapsed, finishing up.".to_string());
-            break;
-        }
 
         // Check for new messages since last seen (by ID, not timestamp, to avoid
         // missing messages sent during long-running steps like preview create)
@@ -309,25 +484,25 @@ async fn follow_up_loop(
                 return Ok(FollowUpOutcome::Done);
             }
 
+            // Copy images if present, augment prompt
+            let effective_content = augment_prompt_with_images(
+                config, agent_name, msg.image_url.as_deref(), &msg.content, tx,
+            ).await?;
+
             // Re-invoke Claude with the follow-up message
             let _ = tx.send(format!("[FOLLOWUP] Running Claude with follow-up from {}...", msg.sender));
             update_task_status(db, task_id, "running_claude", None).await?;
 
-            run_claude_streaming(agent_name, &msg.content, tx.clone()).await?;
-            commit_changes_in_agent(agent_name, &msg.content, tx.clone()).await?;
+            run_claude_streaming(agent_name, &effective_content, tx.clone()).await?;
+            let _ = commit_changes_in_agent(agent_name, &msg.content, tx.clone()).await?;
 
             // Push and update preview
             push_and_preview(config, db, task_id, short_id, agent_name, repo, branch_name, preview_created, tx).await?;
 
             update_task_status(db, task_id, "awaiting_followup", None).await?;
             let _ = tx.send("[STATUS] Waiting for more follow-up messages...".to_string());
-
-            // Reset the timeout
-            deadline = tokio::time::Instant::now() + timeout_dur;
         }
     }
-
-    Ok(FollowUpOutcome::Done)
 }
 
 async fn push_and_preview(
@@ -535,18 +710,26 @@ pub async fn send_message(
         return Err(AppError::NotFound("Task not found".into()));
     }
 
-    if req.content.trim().is_empty() {
+    let has_images = req.image_urls.as_ref().is_some_and(|v| !v.is_empty());
+    if req.content.trim().is_empty() && !has_images {
         return Err(AppError::BadRequest("Message content cannot be empty".into()));
     }
+
+    let image_url_json = req
+        .image_urls
+        .as_ref()
+        .filter(|v| !v.is_empty())
+        .map(|v| serde_json::to_string(v).unwrap());
 
     let sender = &user.0.sub;
 
     sqlx::query(
-        "INSERT INTO task_messages (task_id, sender, content) VALUES (?, ?, ?)",
+        "INSERT INTO task_messages (task_id, sender, content, image_url) VALUES (?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(sender)
     .bind(&req.content)
+    .bind(&image_url_json)
     .execute(&state.db)
     .await?;
 
