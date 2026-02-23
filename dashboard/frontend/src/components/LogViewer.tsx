@@ -68,7 +68,7 @@ export default function LogViewer({ ws }: LogViewerProps) {
   return (
     <div
       ref={containerRef}
-      className="w-full h-[500px] rounded-lg overflow-hidden border border-gray-700"
+      className="w-full h-[500px] overflow-hidden"
     />
   );
 }

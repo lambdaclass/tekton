@@ -1,10 +1,15 @@
 import { useEffect, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import LogViewer from '../components/LogViewer';
-import { connectPreviewLogs } from '../lib/api';
+import { useParams, useNavigate } from 'react-router-dom';
+import { ChevronLeft, ExternalLink } from 'lucide-react';
+import LogViewer from '@/components/LogViewer';
+import { connectPreviewLogs } from '@/lib/api';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 
 export default function PreviewDetail() {
   const { slug } = useParams<{ slug: string }>();
+  const navigate = useNavigate();
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
 
@@ -25,28 +30,31 @@ export default function PreviewDetail() {
 
   return (
     <div>
-      <div className="flex items-center gap-4 mb-6">
-        <Link to="/previews" className="text-gray-400 hover:text-gray-100 transition-colors">
-          &larr; Previews
-        </Link>
+      <div className="flex items-center gap-3 mb-6">
+        <Button variant="ghost" size="sm" onClick={() => navigate('/previews')}>
+          <ChevronLeft className="size-4" />
+          Previews
+        </Button>
         <h1 className="text-2xl font-bold font-mono">{slug}</h1>
-        <span
-          className={`text-xs px-2 py-0.5 rounded ${
-            connected ? 'bg-green-900 text-green-300' : 'bg-gray-800 text-gray-400'
-          }`}
-        >
+        <Badge variant={connected ? 'default' : 'outline'}>
           {connected ? 'Live' : 'Disconnected'}
-        </span>
-        <a
-          href={previewUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="ml-auto px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 rounded transition-colors"
-        >
-          Open Preview
-        </a>
+        </Badge>
+        <Button size="sm" className="ml-auto" asChild>
+          <a href={previewUrl} target="_blank" rel="noopener noreferrer">
+            Open Preview
+            <ExternalLink className="ml-1 size-3" />
+          </a>
+        </Button>
       </div>
-      <LogViewer ws={ws} />
+
+      <Card>
+        <CardHeader className="py-3">
+          <CardTitle className="text-base">Live Logs</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          <LogViewer ws={ws} />
+        </CardContent>
+      </Card>
     </div>
   );
 }

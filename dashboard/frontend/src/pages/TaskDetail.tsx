@@ -1,22 +1,18 @@
 import { useEffect, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import LogViewer from '../components/LogViewer';
-import { getTask, connectTaskOutput } from '../lib/api';
-
-const STATUS_COLORS: Record<string, string> = {
-  pending: 'bg-gray-800 text-gray-400',
-  creating_agent: 'bg-blue-900 text-blue-300',
-  cloning: 'bg-blue-900 text-blue-300',
-  running_claude: 'bg-purple-900 text-purple-300',
-  pushing: 'bg-blue-900 text-blue-300',
-  creating_preview: 'bg-blue-900 text-blue-300',
-  completed: 'bg-green-900 text-green-300',
-  failed: 'bg-red-900 text-red-300',
-};
+import { ChevronLeft } from 'lucide-react';
+import LogViewer from '@/components/LogViewer';
+import { getTask, connectTaskOutput } from '@/lib/api';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Separator } from '@/components/ui/separator';
+import { statusVariant } from '@/lib/status';
 
 export default function TaskDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
 
@@ -42,70 +38,78 @@ export default function TaskDetail() {
 
   return (
     <div>
-      <div className="flex items-center gap-4 mb-6">
-        <Link to="/tasks" className="text-gray-400 hover:text-gray-100 transition-colors">
-          &larr; Tasks
-        </Link>
+      <div className="flex items-center gap-3 mb-6">
+        <Button variant="ghost" size="sm" onClick={() => navigate('/tasks')}>
+          <ChevronLeft className="size-4" />
+          Tasks
+        </Button>
         <h1 className="text-2xl font-bold font-mono">{id?.slice(0, 8)}</h1>
-        {task && (
-          <span className={`text-xs px-2 py-0.5 rounded ${STATUS_COLORS[task.status] || 'bg-gray-800 text-gray-400'}`}>
-            {task.status}
-          </span>
-        )}
-        <span
-          className={`text-xs px-2 py-0.5 rounded ${
-            connected ? 'bg-green-900 text-green-300' : 'bg-gray-800 text-gray-400'
-          }`}
-        >
+        {task && <Badge variant={statusVariant(task.status).variant} className={statusVariant(task.status).className}>{task.status}</Badge>}
+        <Badge variant={connected ? 'default' : 'outline'}>
           {connected ? 'Live' : 'Disconnected'}
-        </span>
+        </Badge>
       </div>
 
       {task && (
-        <div className="mb-6 p-4 bg-gray-900 rounded-lg border border-gray-800">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-            <div>
-              <span className="text-gray-400">Repo:</span>
-              <span className="ml-2">{task.repo}</span>
-            </div>
-            <div>
-              <span className="text-gray-400">Base:</span>
-              <span className="ml-2">{task.base_branch}</span>
-            </div>
-            {task.branch_name && (
+        <Card className="mb-6">
+          <CardContent className="py-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
               <div>
-                <span className="text-gray-400">Branch:</span>
-                <span className="ml-2 font-mono">{task.branch_name}</span>
+                <span className="text-muted-foreground">Repo</span>
+                <p>{task.repo}</p>
               </div>
-            )}
-            {task.preview_url && (
               <div>
-                <span className="text-gray-400">Preview:</span>
-                <a
-                  href={task.preview_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="ml-2 text-blue-400 hover:text-blue-300"
-                >
-                  {task.preview_slug}
-                </a>
+                <span className="text-muted-foreground">Base</span>
+                <p>{task.base_branch}</p>
               </div>
-            )}
-          </div>
-          <div className="mt-3 pt-3 border-t border-gray-800">
-            <span className="text-gray-400 text-sm">Prompt:</span>
-            <p className="mt-1 text-sm whitespace-pre-wrap">{task.prompt}</p>
-          </div>
-          {task.error_message && (
-            <div className="mt-3 pt-3 border-t border-gray-800">
-              <span className="text-red-400 text-sm">Error:</span>
-              <p className="mt-1 text-sm text-red-300">{task.error_message}</p>
+              {task.branch_name && (
+                <div>
+                  <span className="text-muted-foreground">Branch</span>
+                  <p className="font-mono">{task.branch_name}</p>
+                </div>
+              )}
+              {task.preview_url && (
+                <div>
+                  <span className="text-muted-foreground">Preview</span>
+                  <p>
+                    <a
+                      href={task.preview_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-400 hover:text-blue-300"
+                    >
+                      {task.preview_slug}
+                    </a>
+                  </p>
+                </div>
+              )}
             </div>
-          )}
-        </div>
+            <Separator className="my-3" />
+            <div>
+              <span className="text-muted-foreground text-sm">Prompt</span>
+              <p className="mt-1 text-sm whitespace-pre-wrap">{task.prompt}</p>
+            </div>
+            {task.error_message && (
+              <>
+                <Separator className="my-3" />
+                <div>
+                  <span className="text-destructive text-sm">Error</span>
+                  <p className="mt-1 text-sm text-destructive">{task.error_message}</p>
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
       )}
 
-      <LogViewer ws={ws} />
+      <Card>
+        <CardHeader className="py-3">
+          <CardTitle className="text-base">Live Logs</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          <LogViewer ws={ws} />
+        </CardContent>
+      </Card>
     </div>
   );
 }
