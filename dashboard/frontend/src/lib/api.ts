@@ -117,6 +117,8 @@ export const sendTaskMessage = (id: string, content: string, image_urls?: string
     method: 'POST',
     body: JSON.stringify({ content, image_urls }),
   });
+export const reopenTask = (id: string) =>
+  apiFetch<Task>(`/api/tasks/${id}/reopen`, { method: 'POST' });
 
 /** Parse image_url JSON column (stored as JSON array string) into an array of URLs. */
 export function parseImageUrls(raw: string | null | undefined): string[] {

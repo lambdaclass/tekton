@@ -455,6 +455,15 @@ async fn follow_up_loop(
 ) -> Result<FollowUpOutcome, AppError> {
     let mut last_seen_id: i64 = 0;
 
+    // Fetch the original task prompt for context
+    let original_prompt = sqlx::query_scalar::<_, String>("SELECT prompt FROM tasks WHERE id = ?")
+        .bind(task_id)
+        .fetch_one(db)
+        .await?;
+
+    // Track conversation history for context
+    let mut conversation_history: Vec<String> = Vec::new();
+
     update_task_status(db, task_id, "awaiting_followup", None).await?;
     let _ = tx.send("[STATUS] Waiting for follow-up messages (click 'Mark Done' to finish)...".to_string());
 
@@ -489,11 +498,17 @@ async fn follow_up_loop(
                 config, agent_name, msg.image_url.as_deref(), &msg.content, tx,
             ).await?;
 
+            // Build context-aware prompt with original task + conversation history
+            let context_prompt = build_followup_prompt(&original_prompt, &conversation_history, &effective_content);
+
+            // Add this message to history for future follow-ups
+            conversation_history.push(format!("{}: {}", msg.sender, msg.content));
+
             // Re-invoke Claude with the follow-up message
             let _ = tx.send(format!("[FOLLOWUP] Running Claude with follow-up from {}...", msg.sender));
             update_task_status(db, task_id, "running_claude", None).await?;
 
-            run_claude_streaming(agent_name, &effective_content, tx.clone()).await?;
+            run_claude_streaming(agent_name, &context_prompt, tx.clone()).await?;
             let _ = commit_changes_in_agent(agent_name, &msg.content, tx.clone()).await?;
 
             // Push and update preview
@@ -503,6 +518,22 @@ async fn follow_up_loop(
             let _ = tx.send("[STATUS] Waiting for more follow-up messages...".to_string());
         }
     }
+}
+
+/// Build a follow-up prompt that includes the original task context and conversation history.
+fn build_followup_prompt(original_prompt: &str, history: &[String], new_message: &str) -> String {
+    let mut prompt = format!("ORIGINAL TASK:\n{original_prompt}\n\n");
+
+    if !history.is_empty() {
+        prompt.push_str("PREVIOUS FOLLOW-UP MESSAGES (already addressed):\n");
+        for msg in history {
+            prompt.push_str(&format!("- {msg}\n"));
+        }
+        prompt.push('\n');
+    }
+
+    prompt.push_str(&format!("NEW FOLLOW-UP (address this now):\n{new_message}"));
+    prompt
 }
 
 async fn push_and_preview(
@@ -812,6 +843,119 @@ async fn update_task_field(
         .bind(task_id)
         .execute(db)
         .await?;
+    Ok(())
+}
+
+pub async fn reopen_task(
+    _user: AuthUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Task>, AppError> {
+    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Task not found".into()))?;
+
+    if task.status != "completed" && task.status != "failed" {
+        return Err(AppError::BadRequest(format!(
+            "Can only reopen completed or failed tasks, current status: {}",
+            task.status
+        )));
+    }
+
+    let branch_name = task.branch_name.as_deref().ok_or_else(|| {
+        AppError::BadRequest("Task has no branch — cannot reopen".into())
+    })?;
+
+    let short_id = &id[..6];
+
+    // Reset status and error
+    update_task_status(&state.db, &id, "creating_agent", None).await?;
+
+    // Create broadcast channel
+    let (tx, _) = broadcast::channel(1024);
+    state.task_channels.insert(id.clone(), tx.clone());
+
+    // Spawn background pipeline
+    let config = state.config.clone();
+    let db = state.db.clone();
+    let task_id = id.clone();
+    let short = short_id.to_string();
+    let repo = task.repo.clone();
+    let branch = branch_name.to_string();
+    let has_preview = task.preview_url.is_some();
+    let channels = state.task_channels.clone();
+
+    tokio::spawn(async move {
+        let agent_name = format!("a-{short}");
+        let result = run_reopen_pipeline(
+            &config, &db, &task_id, &short, &repo, &branch, has_preview, tx.clone(),
+        )
+        .await;
+
+        if let Err(e) = &result {
+            let _ = update_task_status(&db, &task_id, "failed", Some(&e.to_string())).await;
+            let _ = tx.send(format!("[ERROR] Reopen failed: {e}"));
+            let _ = shell::destroy_agent(&config, &agent_name).await;
+        }
+
+        let channels2 = channels;
+        let tid = task_id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            channels2.remove(&tid);
+        });
+    });
+
+    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
+        .bind(&id)
+        .fetch_one(&state.db)
+        .await?;
+    Ok(Json(task))
+}
+
+async fn run_reopen_pipeline(
+    config: &Config,
+    db: &SqlitePool,
+    task_id: &str,
+    short_id: &str,
+    repo: &str,
+    branch_name: &str,
+    had_preview: bool,
+    tx: broadcast::Sender<String>,
+) -> Result<(), AppError> {
+    let agent_name = format!("a-{short_id}");
+
+    // Step 1: Create agent container
+    log_and_send(db, task_id, &tx, &format!("[STEP] Creating agent container '{agent_name}' (reopen)..."));
+    shell::create_agent(config, &agent_name).await?;
+    update_task_field(db, task_id, "agent_name", &agent_name).await?;
+
+    // Step 2: Clone repo and checkout existing branch
+    update_task_status(db, task_id, "cloning", None).await?;
+    log_and_send(db, task_id, &tx, &format!("[STEP] Cloning {repo} and checking out existing branch {branch_name}..."));
+
+    let token = get_github_token().await?;
+    let clone_url = format!("https://x-access-token:{token}@github.com/{repo}.git");
+
+    let clone_cmd = format!(
+        "cd /home/agent && git clone '{clone_url}' repo && \
+         cd repo && git checkout '{branch_name}'"
+    );
+    shell::agent_exec(&agent_name, &clone_cmd, tx.clone()).await?;
+
+    // Step 3: Go straight into follow-up loop
+    let mut preview_created = had_preview;
+    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, branch_name, &mut preview_created, &tx).await?;
+
+    // Step 4: Destroy agent
+    log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
+    let _ = shell::destroy_agent(config, &agent_name).await;
+
+    update_task_status(db, task_id, "completed", None).await?;
+    log_and_send(db, task_id, &tx, "[DONE] Task completed.");
+
     Ok(())
 }
 
