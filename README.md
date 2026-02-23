@@ -4,13 +4,13 @@
 
 Tekton is a self-hosted platform for running background AI coding agents at scale. The goal is infrastructure that builds things for you — not a chatbot you talk to, but a system where you describe what you want, and agents write the code, open the PR, and deploy a preview.
 
-Today it runs on NixOS with isolated systemd-nspawn containers on bare metal. You submit a prompt and a repo, an agent spins up in ~3 seconds, does the work, pushes a branch, and creates a PR with a live preview. A web dashboard lets you create tasks, watch logs in real time, and send follow-ups.
+Today it runs on NixOS with isolated systemd-nspawn containers on bare metal. An agent spins up in ~3 seconds, does the work unattended, and creates a PR with a live preview. A web dashboard lets you create tasks, watch logs in real time, and send follow-ups.
 
-Inspired by [Michael Stapelberg's blog post](https://michael.stapelberg.ch/posts/2026-02-01-coding-agent-microvm-nix/) on running coding agents in NixOS. Uses [nixos-anywhere](https://github.com/nix-community/nixos-anywhere) for remote NixOS installation and imperative [systemd-nspawn](https://www.freedesktop.org/software/systemd/man/latest/systemd-nspawn.html) containers for lightweight, instant agent creation.
+Inspired by [Michael Stapelberg's post on running coding agents in NixOS](https://michael.stapelberg.ch/posts/2026-02-01-coding-agent-microvm-nix/).
 
 ## What it does today
 
-- **Background coding agents** — Submit a prompt and repo, an AI agent works in an isolated NixOS container, pushes a branch, and creates a PR
+- **Background coding agents** — Each agent runs in its own isolated NixOS container, works unattended, and pushes results as a PR
 - **PR preview deployments** — Automatic preview environments for Node.js and Elixir/Phoenix apps via GitHub webhooks
 - **Web dashboard** — Create tasks, monitor live logs via WebSocket, send follow-up prompts, view preview screenshots
 - **Voice input & repo auto-detection** — Speak your task, repo is classified automatically
