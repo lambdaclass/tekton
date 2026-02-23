@@ -3,10 +3,10 @@
 # Used by: nixos-container create <name> --system-path <closure>
 #
 # Credentials flow:
-# 1. Host stores Claude credentials at /var/secrets/claude/
-# 2. `agent create` copies them to /mnt/claude-creds in the container filesystem
-# 3. At boot, credentials are copied to /home/agent/.claude/
-# 4. CLAUDE_CONFIG_DIR is set to /home/agent/.claude for all users
+# 1. Host stores long-lived OAuth token at /var/secrets/claude/oauth_token
+# 2. `agent create` copies /var/secrets/claude/ to /mnt/claude-creds in the container
+# 3. At boot, CLAUDE_CODE_OAUTH_TOKEN is set via /etc/profile.d/ for all sessions
+# 4. Claude authenticates via env var — no credential files needed
 { config, lib, pkgs, ... }:
 {
   boot.isContainer = true;
@@ -20,9 +20,9 @@
   };
   networking.nameservers = [ "8.8.8.8" "1.1.1.1" ];
 
-  # Copy credentials at startup to local writable directory
+  # Set up credentials at startup
   systemd.services.setup-claude-creds = {
-    description = "Copy Claude credentials to local directory";
+    description = "Set up Claude credentials and git config";
     wantedBy = [ "multi-user.target" ];
     before = [ "multi-user.target" ];
     serviceConfig = {
@@ -30,15 +30,14 @@
       RemainAfterExit = true;
     };
     script = ''
-      mkdir -p /home/agent/.claude
-      # Copy config files
-      cp /mnt/claude-creds/.claude.json /home/agent/.claude/ 2>/dev/null || true
-      cp /mnt/claude-creds/.credentials.json /home/agent/.claude/ 2>/dev/null || true
-      # Copy subdirectories
-      cp -r /mnt/claude-creds/cache /home/agent/.claude/ 2>/dev/null || true
-      cp -r /mnt/claude-creds/statsig /home/agent/.claude/ 2>/dev/null || true
-      chown -R agent:users /home/agent/.claude
-      chmod -R 700 /home/agent/.claude
+      # Write OAuth token to profile so every SSH session gets it
+      if [ -f /mnt/claude-creds/oauth_token ]; then
+        TOKEN=$(cat /mnt/claude-creds/oauth_token | tr -d '[:space:]')
+        cat > /etc/profile.d/claude-token.sh << EOF
+export CLAUDE_CODE_OAUTH_TOKEN=$TOKEN
+EOF
+        chmod 644 /etc/profile.d/claude-token.sh
+      fi
 
       # Copy SSH signing key for signed git commits
       mkdir -p /home/agent/.ssh
@@ -63,9 +62,6 @@ GITEOF
     '';
   };
 
-  # Set CLAUDE_CONFIG_DIR for the agent user
-  environment.variables.CLAUDE_CONFIG_DIR = "/home/agent/.claude";
-
   # SSH access
   services.openssh = {
     enable = true;
@@ -78,7 +74,6 @@ GITEOF
     home = "/home/agent";
     shell = pkgs.bash;
     extraGroups = [ "wheel" ];
-    # UPDATE: Your SSH public key (substituted by setup.sh)
     openssh.authorizedKeys.keys = [
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEWMu5wyCIJclVNVk3Judmu5zkWxkbtTJrcC0BpEcVfy jrchatruc@gmail.com"
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBIrWQgyW2acM35arp+DVr8Jo5S7A4vqbP9gLk3pMRhw root@nixos-server"

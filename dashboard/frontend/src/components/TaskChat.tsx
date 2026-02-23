@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Send, CheckCircle } from 'lucide-react';
+import { Send, CheckCircle, ExternalLink } from 'lucide-react';
 import { listTaskMessages, sendTaskMessage } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -9,9 +9,10 @@ import { Input } from '@/components/ui/input';
 interface TaskChatProps {
   taskId: string;
   currentUserEmail: string;
+  previewUrl?: string;
 }
 
-export default function TaskChat({ taskId, currentUserEmail }: TaskChatProps) {
+export default function TaskChat({ taskId, currentUserEmail, previewUrl }: TaskChatProps) {
   const queryClient = useQueryClient();
   const [message, setMessage] = useState('');
 
@@ -63,10 +64,26 @@ export default function TaskChat({ taskId, currentUserEmail }: TaskChatProps) {
         </CardTitle>
       </CardHeader>
       <CardContent className="pt-0">
+        {previewUrl && (
+          <div className="mb-4 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center gap-2 text-sm">
+            <ExternalLink className="size-4 text-blue-400 shrink-0" />
+            <span className="text-muted-foreground">Check the current result:</span>
+            <a
+              href={previewUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-400 hover:text-blue-300 font-medium truncate"
+            >
+              {previewUrl}
+            </a>
+          </div>
+        )}
         <div className="space-y-3 mb-4 max-h-80 overflow-y-auto pr-1">
           {!messages?.length && (
             <p className="text-sm text-muted-foreground text-center py-4">
-              No messages yet. Send a follow-up to Claude.
+              {previewUrl
+                ? 'Check the preview above, then send a follow-up if something needs fixing.'
+                : 'No messages yet. Send a follow-up to Claude.'}
             </p>
           )}
           {messages?.map((msg) => (

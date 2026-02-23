@@ -1,23 +1,24 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { ChevronLeft } from 'lucide-react';
+import { ChevronLeft, RefreshCw, ExternalLink } from 'lucide-react';
 import LogViewer from '@/components/LogViewer';
 import TaskChat from '@/components/TaskChat';
-import { getTask, connectTaskOutput, listSubtasks, getMe } from '@/lib/api';
+import { getTask, listSubtasks, getMe } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { statusVariant } from '@/lib/status';
 
-const CHAT_STATUSES = ['awaiting_followup', 'running_claude'];
+const CHAT_STATUSES = ['awaiting_followup', 'running_claude', 'pushing', 'creating_preview'];
 
 export default function TaskDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const [ws, setWs] = useState<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
+  const [iframeKey, setIframeKey] = useState(0);
+  const refreshIframe = () => setIframeKey(k => k + 1);
 
   const { data: task } = useQuery({
     queryKey: ['task', id],
@@ -37,18 +38,21 @@ export default function TaskDetail() {
     queryFn: getMe,
   });
 
+  // Auto-refresh iframe when a push completes (status goes back to awaiting_followup)
+  const prevStatus = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (!id) return;
+    const status = task?.status;
+    if (
+      prevStatus.current &&
+      prevStatus.current !== status &&
+      (status === 'awaiting_followup' || status === 'completed')
+    ) {
+      setIframeKey(k => k + 1);
+    }
+    prevStatus.current = status;
+  }, [task?.status]);
 
-    const socket = connectTaskOutput(id);
-    socket.addEventListener('open', () => setConnected(true));
-    socket.addEventListener('close', () => setConnected(false));
-    setWs(socket);
-
-    return () => {
-      socket.close();
-    };
-  }, [id]);
+  const onConnectionChange = useCallback((c: boolean) => setConnected(c), []);
 
   const showChat = task && CHAT_STATUSES.includes(task.status);
 
@@ -158,8 +162,36 @@ export default function TaskDetail() {
         </Card>
       )}
 
+      {task?.preview_url && (
+        <Card className="mb-6">
+          <CardHeader className="py-3">
+            <CardTitle className="text-base flex items-center justify-between">
+              <span>Live Preview</span>
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" onClick={refreshIframe}>
+                  <RefreshCw className="size-4" />
+                </Button>
+                <Button size="sm" variant="outline" asChild>
+                  <a href={task.preview_url} target="_blank" rel="noopener noreferrer">
+                    <ExternalLink className="size-4" />
+                  </a>
+                </Button>
+              </div>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <iframe
+              src={task.preview_url}
+              key={iframeKey}
+              className="w-full h-[500px] rounded-b-lg border-0"
+              title="Live Preview"
+            />
+          </CardContent>
+        </Card>
+      )}
+
       {showChat && me && (
-        <TaskChat taskId={id!} currentUserEmail={me.email} />
+        <TaskChat taskId={id!} currentUserEmail={me.email} previewUrl={task.preview_url ?? undefined} />
       )}
 
       {subtasks && subtasks.length > 0 && (
@@ -196,7 +228,7 @@ export default function TaskDetail() {
           <CardTitle className="text-base">Live Logs</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <LogViewer ws={ws} />
+          <LogViewer taskId={id!} onConnectionChange={onConnectionChange} />
         </CardContent>
       </Card>
     </div>

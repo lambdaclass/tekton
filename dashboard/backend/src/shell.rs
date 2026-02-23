@@ -219,6 +219,147 @@ pub async fn agent_exec(
     .await
 }
 
+/// Run Claude in an agent container with stream-json output, parsing events into readable log lines.
+pub async fn agent_exec_claude_streaming(
+    name: &str,
+    cmd_line: &str,
+    tx: broadcast::Sender<String>,
+) -> Result<(), AppError> {
+    let ip = agent_ip(name)?;
+
+    tracing::info!("Streaming Claude JSON: ssh agent@{ip}");
+    let mut child = Command::new("ssh")
+        .args([
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            &format!("agent@{ip}"),
+            cmd_line,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| AppError::Internal(format!("Failed to spawn ssh for Claude streaming: {e}")))?;
+
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+
+    let tx2 = tx.clone();
+    let stdout_handle = tokio::spawn(async move {
+        let reader = BufReader::new(stdout);
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Some(formatted) = format_claude_event(&line) {
+                let _ = tx.send(formatted);
+            }
+        }
+    });
+
+    let stderr_handle = tokio::spawn(async move {
+        let reader = BufReader::new(stderr);
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            // Skip noisy SSH warnings
+            if line.contains("Warning: Permanently added") {
+                continue;
+            }
+            let _ = tx2.send(line);
+        }
+    });
+
+    let _ = stdout_handle.await;
+    let _ = stderr_handle.await;
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to wait on ssh: {e}")))?;
+
+    if !status.success() {
+        return Err(AppError::Internal(format!(
+            "Claude streaming exited with status {status}"
+        )));
+    }
+    Ok(())
+}
+
+/// Parse a stream-json line from Claude and format it as a human-readable log line.
+fn format_claude_event(line: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+
+    let msg_type = v.get("type")?.as_str()?;
+
+    match msg_type {
+        "assistant" => {
+            // Look inside message.content for tool_use or text blocks
+            let content = v.pointer("/message/content")?;
+            if let Some(arr) = content.as_array() {
+                for block in arr {
+                    if let Some(block_type) = block.get("type").and_then(|t| t.as_str()) {
+                        match block_type {
+                            "tool_use" => return format_tool_use(block),
+                            "text" => {
+                                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                                    if text.trim().is_empty() {
+                                        return None;
+                                    }
+                                    let truncated: String = text.chars().take(200).collect();
+                                    return Some(format!("💬 {truncated}"));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            None
+        }
+        "content_block_start" => {
+            let block = v.get("content_block")?;
+            if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                return format_tool_use(block);
+            }
+            None
+        }
+        "result" => Some("✅ Claude finished".to_string()),
+        _ => None,
+    }
+}
+
+fn format_tool_use(block: &serde_json::Value) -> Option<String> {
+    let name = block.get("name")?.as_str()?;
+    let input = block.get("input").unwrap_or(&serde_json::Value::Null);
+
+    match name {
+        "Read" => {
+            let path = input.get("file_path").and_then(|p| p.as_str()).unwrap_or("...");
+            Some(format!("⚡ Reading {path}"))
+        }
+        "Edit" => {
+            let path = input.get("file_path").and_then(|p| p.as_str()).unwrap_or("...");
+            Some(format!("✏️ Editing {path}"))
+        }
+        "Write" => {
+            let path = input.get("file_path").and_then(|p| p.as_str()).unwrap_or("...");
+            Some(format!("✏️ Writing {path}"))
+        }
+        "Grep" => {
+            let pattern = input.get("pattern").and_then(|p| p.as_str()).unwrap_or("...");
+            Some(format!("🔍 Searching for \"{pattern}\""))
+        }
+        "Glob" => {
+            let pattern = input.get("pattern").and_then(|p| p.as_str()).unwrap_or("...");
+            Some(format!("🔍 Globbing \"{pattern}\""))
+        }
+        "Bash" => {
+            let cmd = input.get("command").and_then(|c| c.as_str()).unwrap_or("...");
+            let truncated: String = cmd.chars().take(100).collect();
+            Some(format!("🖥️ Running: {truncated}"))
+        }
+        "Task" => Some("🚀 Spawning sub-agent...".to_string()),
+        _ => Some(format!("🔧 Using tool: {name}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

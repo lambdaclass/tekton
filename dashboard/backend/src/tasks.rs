@@ -130,7 +130,7 @@ pub async fn create_task(
     let channels = state.task_channels.clone();
 
     tokio::spawn(async move {
-        let agent_name = format!("t-{short}");
+        let agent_name = format!("a-{short}");
         let result = run_task_pipeline(
             &config, &db, &task_id, &short, &prompt, &repo, &base, tx.clone(),
         )
@@ -165,7 +165,7 @@ async fn run_task_pipeline(
     base_branch: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
-    let agent_name = format!("t-{short_id}");
+    let agent_name = format!("a-{short_id}");
     let branch_name = format!("claude/{short_id}");
 
     // Step 1: Create agent container
@@ -178,7 +178,6 @@ async fn run_task_pipeline(
     update_task_status(db, task_id, "cloning", None).await?;
     log_and_send(db, task_id, &tx, &format!("[STEP] Cloning {repo} and creating branch {branch_name}..."));
 
-    // Get a fresh GitHub token from the webhook's internal endpoint
     let token = get_github_token().await?;
     let clone_url = format!("https://x-access-token:{token}@github.com/{repo}.git");
 
@@ -189,70 +188,53 @@ async fn run_task_pipeline(
     shell::agent_exec(&agent_name, &clone_cmd, tx.clone()).await?;
     update_task_field(db, task_id, "branch_name", &branch_name).await?;
 
-    // Step 3: Run Claude
+    // Step 3: Run Claude (streaming)
     update_task_status(db, task_id, "running_claude", None).await?;
     log_and_send(db, task_id, &tx, "[STEP] Running Claude...");
+    run_claude_streaming(&agent_name, prompt, tx.clone()).await?;
 
-    run_claude_in_agent(&agent_name, prompt, tx.clone()).await?;
-
-    // Step 3b: Commit any changes Claude made
+    // Step 3b: Commit any changes
     commit_changes_in_agent(&agent_name, prompt, tx.clone()).await?;
-    log_and_send(db, task_id, &tx, "[STEP] Checking for changes...");
 
-    // Step 3c: Follow-up loop — wait up to 5 minutes for follow-up messages
-    let follow_up_result = follow_up_loop(config, db, task_id, &agent_name, prompt, &tx).await?;
-    if follow_up_result == FollowUpOutcome::Done {
-        // __done__ was sent or timeout elapsed — proceed to push
-    }
+    // Step 3c: Push and create preview
+    let mut preview_created = false;
+    push_and_preview(config, db, task_id, short_id, &agent_name, repo, &branch_name, &mut preview_created, &tx).await?;
 
-    // Step 4: Push branch
-    update_task_status(db, task_id, "pushing", None).await?;
-    log_and_send(db, task_id, &tx, "[STEP] Pushing branch to GitHub...");
+    // Step 4: Follow-up loop
+    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, &branch_name, &mut preview_created, &tx).await?;
 
-    // Re-fetch token in case it expired
-    let token = get_github_token().await?;
-    let push_cmd = format!(
-        "cd /home/agent/repo && \
-         git remote set-url origin 'https://x-access-token:{token}@github.com/{repo}.git' && \
-         git push -u origin '{branch_name}'"
-    );
-    shell::agent_exec(&agent_name, &push_cmd, tx.clone()).await?;
-
-    // Step 5: Destroy agent, then create preview (same name slot)
+    // Step 5: Destroy agent
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
     let _ = shell::destroy_agent(config, &agent_name).await;
 
-    update_task_status(db, task_id, "creating_preview", None).await?;
-    let preview_slug = format!("t-{short_id}");
-    log_and_send(db, task_id, &tx, &format!("[STEP] Creating preview '{preview_slug}'..."));
-
-    let preview_type = if config.vertex_repos.contains(&repo.to_string()) { "vertex" } else { "node" };
-    shell::create_preview(config, repo, &branch_name, Some(&preview_slug), preview_type).await?;
-
-    let preview_url = format!("https://{preview_slug}.{}", config.preview_domain);
-    update_task_field(db, task_id, "preview_slug", &preview_slug).await?;
-    update_task_field(db, task_id, "preview_url", &preview_url).await?;
-
-    // Step 6: Take screenshot
-    take_screenshot(config, db, task_id, &preview_slug, &preview_url, &tx).await;
-
     // Done
+    let preview_url = format!("https://t-{short_id}.{}", config.preview_domain);
     update_task_status(db, task_id, "completed", None).await?;
     log_and_send(db, task_id, &tx, &format!("[DONE] Preview available at {preview_url}"));
 
     Ok(())
 }
 
-async fn run_claude_in_agent(
+async fn read_claude_oauth_token() -> Result<String, AppError> {
+    tokio::fs::read_to_string("/var/secrets/claude/oauth_token")
+        .await
+        .map(|s| s.trim().to_string())
+        .map_err(|e| AppError::Internal(format!(
+            "Failed to read Claude OAuth token from /var/secrets/claude/oauth_token: {e}"
+        )))
+}
+
+async fn run_claude_streaming(
     agent_name: &str,
     prompt: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
+    let oauth_token = read_claude_oauth_token().await?;
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
-        "cd /home/agent/repo && claude --dangerously-skip-permissions -p '{escaped_prompt}'"
+        "export CLAUDE_CODE_OAUTH_TOKEN='{oauth_token}' && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose -p '{escaped_prompt}'"
     );
-    shell::agent_exec(agent_name, &claude_cmd, tx).await
+    shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
 }
 
 async fn commit_changes_in_agent(
@@ -279,34 +261,38 @@ enum FollowUpOutcome {
 }
 
 async fn follow_up_loop(
-    _config: &Config,
+    config: &Config,
     db: &SqlitePool,
     task_id: &str,
+    short_id: &str,
     agent_name: &str,
-    _initial_prompt: &str,
+    repo: &str,
+    branch_name: &str,
+    preview_created: &mut bool,
     tx: &broadcast::Sender<String>,
 ) -> Result<FollowUpOutcome, AppError> {
-    let timeout = std::time::Duration::from_secs(5 * 60);
-    let start = tokio::time::Instant::now();
-    let mut last_check = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let timeout_dur = std::time::Duration::from_secs(5 * 60);
+    let mut deadline = tokio::time::Instant::now() + timeout_dur;
+    let mut last_seen_id: i64 = 0;
 
     update_task_status(db, task_id, "awaiting_followup", None).await?;
-    let _ = tx.send("[STATUS] Waiting for follow-up messages (send '__done__' or wait 5 min to push)...".to_string());
+    let _ = tx.send("[STATUS] Waiting for follow-up messages (send '__done__' or wait 5 min to finish)...".to_string());
 
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
 
-        if start.elapsed() >= timeout {
-            let _ = tx.send("[STATUS] Follow-up timeout elapsed, proceeding to push.".to_string());
+        if tokio::time::Instant::now() >= deadline {
+            let _ = tx.send("[STATUS] Follow-up timeout elapsed, finishing up.".to_string());
             break;
         }
 
-        // Check for new messages since last check
+        // Check for new messages since last seen (by ID, not timestamp, to avoid
+        // missing messages sent during long-running steps like preview create)
         let new_messages: Vec<TaskMessage> = sqlx::query_as::<_, TaskMessage>(
-            "SELECT * FROM task_messages WHERE task_id = ? AND created_at > ? ORDER BY created_at ASC",
+            "SELECT * FROM task_messages WHERE task_id = ? AND id > ? ORDER BY id ASC",
         )
         .bind(task_id)
-        .bind(&last_check)
+        .bind(last_seen_id)
         .fetch_all(db)
         .await?;
 
@@ -314,12 +300,12 @@ async fn follow_up_loop(
             continue;
         }
 
-        // Update last_check to latest message time
-        last_check = new_messages.last().unwrap().created_at.clone();
+        // Update last seen to latest message id
+        last_seen_id = new_messages.last().unwrap().id;
 
         for msg in &new_messages {
             if msg.content.trim() == "__done__" {
-                let _ = tx.send("[STATUS] Received '__done__', proceeding to push.".to_string());
+                let _ = tx.send("[STATUS] Received '__done__', finishing up.".to_string());
                 return Ok(FollowUpOutcome::Done);
             }
 
@@ -327,18 +313,79 @@ async fn follow_up_loop(
             let _ = tx.send(format!("[FOLLOWUP] Running Claude with follow-up from {}...", msg.sender));
             update_task_status(db, task_id, "running_claude", None).await?;
 
-            run_claude_in_agent(agent_name, &msg.content, tx.clone()).await?;
+            run_claude_streaming(agent_name, &msg.content, tx.clone()).await?;
             commit_changes_in_agent(agent_name, &msg.content, tx.clone()).await?;
+
+            // Push and update preview
+            push_and_preview(config, db, task_id, short_id, agent_name, repo, branch_name, preview_created, tx).await?;
 
             update_task_status(db, task_id, "awaiting_followup", None).await?;
             let _ = tx.send("[STATUS] Waiting for more follow-up messages...".to_string());
 
-            // Reset the timeout from now
-            // (we can't reset start, but we update last_check and keep looping)
+            // Reset the timeout
+            deadline = tokio::time::Instant::now() + timeout_dur;
         }
     }
 
     Ok(FollowUpOutcome::Done)
+}
+
+async fn push_and_preview(
+    config: &Config,
+    db: &SqlitePool,
+    task_id: &str,
+    short_id: &str,
+    agent_name: &str,
+    repo: &str,
+    branch_name: &str,
+    preview_created: &mut bool,
+    tx: &broadcast::Sender<String>,
+) -> Result<(), AppError> {
+    // Push
+    update_task_status(db, task_id, "pushing", None).await?;
+    log_and_send(db, task_id, tx, "[STEP] Pushing branch to GitHub...");
+
+    let token = get_github_token().await?;
+    let push_cmd = format!(
+        "cd /home/agent/repo && \
+         git remote set-url origin 'https://x-access-token:{token}@github.com/{repo}.git' && \
+         git push -u origin '{branch_name}'"
+    );
+    shell::agent_exec(agent_name, &push_cmd, tx.clone()).await?;
+
+    // Preview
+    let preview_slug = format!("t-{short_id}");
+
+    if !*preview_created {
+        update_task_status(db, task_id, "creating_preview", None).await?;
+        log_and_send(db, task_id, tx, &format!("[STEP] Creating preview '{preview_slug}'..."));
+
+        let preview_type = if config.vertex_repos.contains(&repo.to_string()) { "vertex" } else { "node" };
+        shell::create_preview(config, repo, branch_name, Some(&preview_slug), preview_type).await?;
+
+        let preview_url = format!("https://{preview_slug}.{}", config.preview_domain);
+        update_task_field(db, task_id, "preview_slug", &preview_slug).await?;
+        update_task_field(db, task_id, "preview_url", &preview_url).await?;
+        *preview_created = true;
+    } else {
+        log_and_send(db, task_id, tx, &format!("[STEP] Updating preview '{preview_slug}'..."));
+        let _ = shell::update_preview(config, &preview_slug).await;
+    }
+
+    // Screenshot (fire-and-forget so it doesn't block the follow-up loop)
+    let preview_url = format!("https://{preview_slug}.{}", config.preview_domain);
+    let config2 = config.clone();
+    let db2 = db.clone();
+    let task_id2 = task_id.to_string();
+    let preview_slug2 = preview_slug.clone();
+    let preview_url2 = preview_url.clone();
+    let tx2 = tx.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        take_screenshot(&config2, &db2, &task_id2, &preview_slug2, &preview_url2, &tx2).await;
+    });
+
+    Ok(())
 }
 
 async fn take_screenshot(
@@ -421,9 +468,10 @@ pub async fn classify(
     let full_prompt = format!("{system_prompt}\n\nTask: {}", req.prompt);
     let escaped = full_prompt.replace('\'', "'\\''");
 
-    // Run claude CLI on the host using the credentials directory
+    // Run claude CLI on the host using the long-lived OAuth token
+    let oauth_token = read_claude_oauth_token().await?;
     let output = tokio::process::Command::new(&state.config.claude_bin)
-        .env("CLAUDE_CONFIG_DIR", &state.config.claude_config_dir)
+        .env("CLAUDE_CODE_OAUTH_TOKEN", &oauth_token)
         .args(["--dangerously-skip-permissions", "-p", &escaped])
         .output()
         .await
