@@ -1,8 +1,18 @@
-# NixOS Setup for Claude Code Agents on Hetzner
+# Tekton
 
-> Inspired by [Michael Stapelberg's blog post](https://michael.stapelberg.ch/posts/2026-02-01-coding-agent-microvm-nix/) on running coding agents in NixOS. Uses [nixos-anywhere](https://github.com/nix-community/nixos-anywhere) for remote NixOS installation and imperative [systemd-nspawn](https://www.freedesktop.org/software/systemd/man/latest/systemd-nspawn.html) containers for lightweight, instant agent creation.
+> *tekton* (τέκτων) — Greek for "builder"
 
-This repo sets up a Hetzner bare metal server with NixOS and nspawn containers for running Claude Code agents in isolated, ephemeral environments. It also supports PR preview deployments — both Node.js apps and Elixir/Phoenix (Vertex) monorepos — with automatic GitHub webhook integration.
+A self-hosted platform for running background AI coding agents on NixOS. Agents run in isolated systemd-nspawn containers on bare metal, with automatic PR preview deployments and a web dashboard for managing tasks.
+
+Inspired by [Michael Stapelberg's blog post](https://michael.stapelberg.ch/posts/2026-02-01-coding-agent-microvm-nix/) on running coding agents in NixOS. Uses [nixos-anywhere](https://github.com/nix-community/nixos-anywhere) for remote NixOS installation and imperative [systemd-nspawn](https://www.freedesktop.org/software/systemd/man/latest/systemd-nspawn.html) containers for lightweight, instant agent creation.
+
+## What it does
+
+- **Background coding agents** — Submit a prompt and repo, Claude works in an isolated NixOS container, pushes a branch, and creates a PR
+- **PR preview deployments** — Automatic preview environments for Node.js and Elixir/Phoenix apps via GitHub webhooks
+- **Web dashboard** — Create tasks, monitor live logs via WebSocket, send follow-up prompts, view preview screenshots
+- **Voice input & repo auto-detection** — Speak your task, repo is classified automatically
+- **Subtask spawning** — Agents can split work into parallel child tasks
 
 ## Documentation
 
@@ -13,13 +23,16 @@ This repo sets up a Hetzner bare metal server with NixOS and nspawn containers f
 ## Directory Structure
 
 ```
-nixos-claude/
+tekton/
 ├── README.md
 ├── setup.sh                          # Automated setup script (--vertex for Elixir support)
 ├── docs/
 │   ├── deployment-guide.md           # Full deployment walkthrough
 │   ├── preview-deployments.md        # Preview system documentation
 │   └── architecture.md               # System architecture overview
+├── dashboard/
+│   ├── backend/                      # Rust (Axum) API server
+│   └── frontend/                     # React + shadcn/ui dashboard
 ├── initial-install/                  # Used once for nixos-anywhere installation
 │   ├── flake.nix
 │   ├── disk-config.nix               # RAID 1 across two SSDs

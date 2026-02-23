@@ -1,0 +1,98 @@
+mod auth;
+mod config;
+mod db;
+mod error;
+mod models;
+mod previews;
+mod shell;
+mod tasks;
+mod ws;
+
+use axum::http::StatusCode;
+use axum::response::{Html, IntoResponse};
+use axum::routing::{delete, get, post};
+use axum::Router;
+use sqlx::SqlitePool;
+use std::sync::Arc;
+use tower_http::services::ServeDir;
+use tower_http::trace::TraceLayer;
+
+use config::Config;
+use tasks::TaskChannels;
+
+#[derive(Clone)]
+pub struct AppState {
+    pub config: Arc<Config>,
+    pub db: SqlitePool,
+    pub task_channels: TaskChannels,
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "dashboard=info,tower_http=info".into()),
+        )
+        .init();
+
+    let config = Config::from_env()?;
+    let db = db::init_pool(&config.database_url).await?;
+    let listen_addr = config.listen_addr.clone();
+    let static_dir = config.static_dir.clone();
+
+    let state = AppState {
+        config: Arc::new(config),
+        db,
+        task_channels: tasks::new_task_channels(),
+    };
+
+    let api = Router::new()
+        // Auth
+        .route("/auth/login", get(auth::login))
+        .route("/auth/callback", get(auth::callback))
+        .route("/auth/logout", post(auth::logout))
+        .route("/auth/me", get(auth::me))
+        // Previews
+        .route("/previews", get(previews::list_previews))
+        .route("/previews", post(previews::create_preview))
+        .route("/previews/{slug}", delete(previews::destroy_preview))
+        .route("/previews/{slug}/update", post(previews::update_preview))
+        // Tasks
+        .route("/tasks", get(tasks::list_tasks))
+        .route("/tasks", post(tasks::create_task))
+        .route("/tasks/{id}", get(tasks::get_task))
+        .route("/tasks/{id}/logs", get(tasks::get_task_logs))
+        .route("/tasks/{id}/subtasks", get(tasks::get_subtasks))
+        .route("/tasks/{id}/messages", get(tasks::list_messages))
+        .route("/tasks/{id}/messages", post(tasks::send_message))
+        // Classify
+        .route("/classify", post(tasks::classify))
+        // WebSockets
+        .route("/ws/logs/{slug}", get(ws::preview_logs_ws))
+        .route("/ws/tasks/{id}", get(ws::task_output_ws));
+
+    // Read index.html once at startup for SPA fallback
+    let index_html = std::fs::read_to_string(format!("{static_dir}/index.html"))
+        .unwrap_or_else(|_| "<h1>index.html not found</h1>".into());
+
+    let app = Router::new()
+        .nest("/api", api)
+        .fallback_service(
+            ServeDir::new(&static_dir)
+                .append_index_html_on_directories(true)
+                .fallback(get(move || {
+                    let html = index_html.clone();
+                    async move { Html(html).into_response() }
+                })),
+        )
+        .layer(TraceLayer::new_for_http())
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
+    tracing::info!("Dashboard listening on {listen_addr}");
+    tracing::info!("Serving static files from {static_dir}");
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
