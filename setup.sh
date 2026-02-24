@@ -41,6 +41,13 @@ confirm() {
     [[ "$answer" =~ ^[Yy]$ ]]
 }
 
+# -- Source env file if present -----------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/setup.env" ]]; then
+    info "Loading values from setup.env..."
+    source "$SCRIPT_DIR/setup.env"
+fi
+
 # -- Validation ---------------------------------------------------------------
 validate_ip() {
     local ip="$1"
@@ -87,49 +94,68 @@ gather_info() {
     header "Phase 1: Gather Information"
 
     # --- Server IP ---
-    echo -en "${BOLD}Enter your Hetzner server IP address:${NC} "
-    read -r SERVER_IP
-    if ! validate_ip "$SERVER_IP"; then
-        fatal "Invalid IP address: $SERVER_IP"
+    if [[ -n "${SERVER_IP:-}" ]]; then
+        if ! validate_ip "$SERVER_IP"; then
+            fatal "Invalid IP address from env: $SERVER_IP"
+        fi
+        success "Server IP: $SERVER_IP (from env)"
+    else
+        echo -en "${BOLD}Enter your Hetzner server IP address:${NC} "
+        read -r SERVER_IP
+        if ! validate_ip "$SERVER_IP"; then
+            fatal "Invalid IP address: $SERVER_IP"
+        fi
+        success "Server IP: $SERVER_IP"
     fi
-    success "Server IP: $SERVER_IP"
 
     # --- SSH Key ---
-    info "Looking for SSH public keys..."
-    local pub_keys=()
-    for f in "$HOME"/.ssh/*.pub; do
-        [[ -f "$f" ]] && pub_keys+=("$f")
-    done
-
     SSH_IDENTITY=""  # path to private key (if known)
 
-    if [[ ${#pub_keys[@]} -eq 0 ]]; then
-        warn "No SSH public keys found in ~/.ssh/"
-        echo -en "${BOLD}Paste your SSH public key:${NC} "
-        read -r SSH_KEY
-    elif [[ ${#pub_keys[@]} -eq 1 ]]; then
-        SSH_KEY=$(cat "${pub_keys[0]}")
-        SSH_IDENTITY="${pub_keys[0]%.pub}"
-        success "Using SSH key: ${pub_keys[0]}"
-        echo -e "  ${CYAN}${SSH_KEY:0:60}...${NC}"
-    else
-        info "Found multiple SSH public keys:"
-        for i in "${!pub_keys[@]}"; do
-            local key_content
-            key_content=$(cat "${pub_keys[$i]}")
-            echo -e "  ${BOLD}$((i+1)))${NC} ${pub_keys[$i]}"
-            echo -e "     ${CYAN}${key_content:0:60}...${NC}"
+    if [[ -n "${SSH_KEY:-}" ]]; then
+        # SSH_KEY set from env — derive SSH_IDENTITY by finding matching .pub file
+        success "SSH key: ${SSH_KEY:0:50}... (from env)"
+        for f in "$HOME"/.ssh/*.pub; do
+            if [[ -f "$f" ]] && [[ "$(cat "$f")" == "$SSH_KEY" ]]; then
+                SSH_IDENTITY="${f%.pub}"
+                success "Matched identity file: $SSH_IDENTITY"
+                break
+            fi
         done
-        echo -en "${BOLD}Pick a key (1-${#pub_keys[@]}) or 0 to paste a different one:${NC} "
-        read -r key_choice
-        if [[ "$key_choice" == "0" ]]; then
+    else
+        info "Looking for SSH public keys..."
+        local pub_keys=()
+        for f in "$HOME"/.ssh/*.pub; do
+            [[ -f "$f" ]] && pub_keys+=("$f")
+        done
+
+        if [[ ${#pub_keys[@]} -eq 0 ]]; then
+            warn "No SSH public keys found in ~/.ssh/"
             echo -en "${BOLD}Paste your SSH public key:${NC} "
             read -r SSH_KEY
-        elif [[ "$key_choice" =~ ^[0-9]+$ ]] && (( key_choice >= 1 && key_choice <= ${#pub_keys[@]} )); then
-            SSH_KEY=$(cat "${pub_keys[$((key_choice-1))]}")
-            SSH_IDENTITY="${pub_keys[$((key_choice-1))]%.pub}"
+        elif [[ ${#pub_keys[@]} -eq 1 ]]; then
+            SSH_KEY=$(cat "${pub_keys[0]}")
+            SSH_IDENTITY="${pub_keys[0]%.pub}"
+            success "Using SSH key: ${pub_keys[0]}"
+            echo -e "  ${CYAN}${SSH_KEY:0:60}...${NC}"
         else
-            fatal "Invalid selection."
+            info "Found multiple SSH public keys:"
+            for i in "${!pub_keys[@]}"; do
+                local key_content
+                key_content=$(cat "${pub_keys[$i]}")
+                echo -e "  ${BOLD}$((i+1)))${NC} ${pub_keys[$i]}"
+                echo -e "     ${CYAN}${key_content:0:60}...${NC}"
+            done
+            echo -en "${BOLD}Pick a key (1-${#pub_keys[@]}) or 0 to paste a different one:${NC} "
+            read -r key_choice
+            if [[ "$key_choice" == "0" ]]; then
+                echo -en "${BOLD}Paste your SSH public key:${NC} "
+                read -r SSH_KEY
+            elif [[ "$key_choice" =~ ^[0-9]+$ ]] && (( key_choice >= 1 && key_choice <= ${#pub_keys[@]} )); then
+                SSH_KEY=$(cat "${pub_keys[$((key_choice-1))]}")
+                SSH_IDENTITY="${pub_keys[$((key_choice-1))]%.pub}"
+            else
+                fatal "Invalid selection."
+            fi
         fi
     fi
 
@@ -330,28 +356,43 @@ gather_info() {
     echo -e "You can also upload them later manually to /var/secrets/ on the server."
     echo ""
 
-    ORIGIN_CERT_PATH=""
-    ORIGIN_KEY_PATH=""
-    GITHUB_PAT=""
+    if [[ -n "${ORIGIN_CERT_PATH:-}" ]] && [[ -n "${ORIGIN_KEY_PATH:-}" ]]; then
+        # Both paths set from env — validate they exist
+        if [[ ! -f "$ORIGIN_CERT_PATH" ]]; then
+            fatal "Certificate not found (from env): $ORIGIN_CERT_PATH"
+        fi
+        if [[ ! -f "$ORIGIN_KEY_PATH" ]]; then
+            fatal "Private key not found (from env): $ORIGIN_KEY_PATH"
+        fi
+        success "Cloudflare Origin CA cert + key found (from env)."
+    else
+        ORIGIN_CERT_PATH="${ORIGIN_CERT_PATH:-}"
+        ORIGIN_KEY_PATH="${ORIGIN_KEY_PATH:-}"
 
-    if confirm "Upload Cloudflare Origin CA certificate + key?"; then
-        echo -en "${BOLD}Path to Cloudflare Origin CA certificate (.pem):${NC} "
-        read -r ORIGIN_CERT_PATH
-        if [[ -z "$ORIGIN_CERT_PATH" ]] || [[ ! -f "$ORIGIN_CERT_PATH" ]]; then
-            fatal "Certificate not found: ${ORIGIN_CERT_PATH:-<empty>}"
+        if confirm "Upload Cloudflare Origin CA certificate + key?"; then
+            echo -en "${BOLD}Path to Cloudflare Origin CA certificate (.pem):${NC} "
+            read -r ORIGIN_CERT_PATH
+            if [[ -z "$ORIGIN_CERT_PATH" ]] || [[ ! -f "$ORIGIN_CERT_PATH" ]]; then
+                fatal "Certificate not found: ${ORIGIN_CERT_PATH:-<empty>}"
+            fi
+            echo -en "${BOLD}Path to Cloudflare Origin CA private key (.pem):${NC} "
+            read -r ORIGIN_KEY_PATH
+            if [[ -z "$ORIGIN_KEY_PATH" ]] || [[ ! -f "$ORIGIN_KEY_PATH" ]]; then
+                fatal "Private key not found: ${ORIGIN_KEY_PATH:-<empty>}"
+            fi
+            success "Cloudflare Origin CA cert + key found."
         fi
-        echo -en "${BOLD}Path to Cloudflare Origin CA private key (.pem):${NC} "
-        read -r ORIGIN_KEY_PATH
-        if [[ -z "$ORIGIN_KEY_PATH" ]] || [[ ! -f "$ORIGIN_KEY_PATH" ]]; then
-            fatal "Private key not found: ${ORIGIN_KEY_PATH:-<empty>}"
-        fi
-        success "Cloudflare Origin CA cert + key found."
     fi
 
-    echo -en "${BOLD}Enter GitHub Personal Access Token (leave blank to set up later):${NC} "
-    read -r GITHUB_PAT
-    if [[ -n "$GITHUB_PAT" ]]; then
-        success "GitHub PAT provided."
+    if [[ -n "${GITHUB_PAT:-}" ]]; then
+        success "GitHub PAT provided (from env)."
+    else
+        GITHUB_PAT=""
+        echo -en "${BOLD}Enter GitHub Personal Access Token (leave blank to set up later):${NC} "
+        read -r GITHUB_PAT
+        if [[ -n "$GITHUB_PAT" ]]; then
+            success "GitHub PAT provided."
+        fi
     fi
 
     # --- Summary ---
@@ -519,6 +560,13 @@ setup_server() {
         fi
     "
     success "Repository ready at /opt/src/"
+
+    # Upload setup.env so server-setup.sh can read it too
+    if [[ -f "$SCRIPT_DIR/setup.env" ]]; then
+        info "Uploading setup.env to server..."
+        scp $ssh_opts "$SCRIPT_DIR/setup.env" root@"$SERVER_IP":/opt/src/setup.env
+        success "setup.env uploaded."
+    fi
 
     # Upload secret files
     ssh $ssh_opts root@"$SERVER_IP" "mkdir -p /var/secrets"

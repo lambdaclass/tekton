@@ -23,6 +23,11 @@ SERVER_CONFIG="$SCRIPT_DIR/server-config"
 # Ensure common tools are on PATH (NixOS doesn't put everything in /usr/bin)
 export PATH="/run/current-system/sw/bin:$PATH"
 
+# Source env file if present
+if [[ -f "$SCRIPT_DIR/setup.env" ]]; then
+    source "$SCRIPT_DIR/setup.env"
+fi
+
 # -- Colors -------------------------------------------------------------------
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -53,6 +58,13 @@ prompt() {
     local default="${3:-}"
     local value
 
+    # If variable is already set (from env), use it and skip prompt
+    local current="${!var_name:-}"
+    if [[ -n "$current" ]]; then
+        echo -e "${BOLD}${prompt_text}${NC}: ${GREEN}${current}${NC} (from env)"
+        return
+    fi
+
     if [[ -n "$default" ]]; then
         echo -ne "${BOLD}${prompt_text}${NC} [${default}]: "
         read -r value
@@ -72,6 +84,13 @@ prompt_secret() {
     local var_name="$1"
     local prompt_text="$2"
     local value
+
+    # If variable is already set (from env), use it and skip prompt
+    local current="${!var_name:-}"
+    if [[ -n "$current" ]]; then
+        echo -e "${BOLD}${prompt_text}${NC}: ${GREEN}****${current: -4}${NC} (from env)"
+        return
+    fi
 
     echo -ne "${BOLD}${prompt_text}${NC}: "
     read -rs value
@@ -124,29 +143,37 @@ echo -e "${BOLD}--- GitHub Personal Access Token ---${NC}"
 echo "Create at: GitHub > Settings > Developer settings > Personal access tokens > Tokens (classic)"
 echo "Required scope: repo (full control of private repositories)"
 echo ""
-GITHUB_TOKEN_DEFAULT=""
-if [[ -f /var/secrets/github-pat ]]; then
-    GITHUB_TOKEN_DEFAULT=$(cat /var/secrets/github-pat)
-    success "GitHub PAT found at /var/secrets/github-pat (uploaded by setup.sh)"
-fi
-if [[ -n "$GITHUB_TOKEN_DEFAULT" ]]; then
-    echo -ne "${BOLD}GitHub Personal Access Token${NC} [****${GITHUB_TOKEN_DEFAULT: -4}]: "
-    read -r GITHUB_TOKEN_INPUT
-    GITHUB_TOKEN="${GITHUB_TOKEN_INPUT:-$GITHUB_TOKEN_DEFAULT}"
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    echo -e "${BOLD}GitHub Personal Access Token${NC}: ${GREEN}****${GITHUB_TOKEN: -4}${NC} (from env)"
 else
-    prompt GITHUB_TOKEN "GitHub Personal Access Token"
+    GITHUB_TOKEN_DEFAULT=""
+    if [[ -f /var/secrets/github-pat ]]; then
+        GITHUB_TOKEN_DEFAULT=$(cat /var/secrets/github-pat)
+        success "GitHub PAT found at /var/secrets/github-pat (uploaded by setup.sh)"
+    fi
+    if [[ -n "$GITHUB_TOKEN_DEFAULT" ]]; then
+        echo -ne "${BOLD}GitHub Personal Access Token${NC} [****${GITHUB_TOKEN_DEFAULT: -4}]: "
+        read -r GITHUB_TOKEN_INPUT
+        GITHUB_TOKEN="${GITHUB_TOKEN_INPUT:-$GITHUB_TOKEN_DEFAULT}"
+    else
+        prompt GITHUB_TOKEN "GitHub Personal Access Token"
+    fi
 fi
 echo ""
 
 echo -e "${BOLD}--- Webhook Secret ---${NC}"
-echo -en "${BOLD}GitHub webhook secret (leave blank to auto-generate):${NC} "
-read -r GITHUB_WEBHOOK_SECRET
-if [[ -z "$GITHUB_WEBHOOK_SECRET" ]]; then
-    GITHUB_WEBHOOK_SECRET=$(openssl rand -hex 16)
-    success "Generated webhook secret: $GITHUB_WEBHOOK_SECRET"
-    echo -e "  ${YELLOW}Save this secret — you'll need it when configuring the GitHub webhook.${NC}"
+if [[ -n "${GITHUB_WEBHOOK_SECRET:-}" ]]; then
+    success "Webhook secret set (from env)."
 else
-    success "Webhook secret set."
+    echo -en "${BOLD}GitHub webhook secret (leave blank to auto-generate):${NC} "
+    read -r GITHUB_WEBHOOK_SECRET
+    if [[ -z "$GITHUB_WEBHOOK_SECRET" ]]; then
+        GITHUB_WEBHOOK_SECRET=$(openssl rand -hex 16)
+        success "Generated webhook secret: $GITHUB_WEBHOOK_SECRET"
+        echo -e "  ${YELLOW}Save this secret — you'll need it when configuring the GitHub webhook.${NC}"
+    else
+        success "Webhook secret set."
+    fi
 fi
 echo ""
 
@@ -159,18 +186,22 @@ echo ""
 echo -e "${BOLD}--- Repository Configuration ---${NC}"
 echo "Restrict which repos can be deployed as previews."
 echo ""
-echo -en "${BOLD}Allowed repos (comma-separated owner/repo, leave blank for all):${NC} "
-read -r ALLOWED_REPOS
-ALLOWED_REPOS="${ALLOWED_REPOS:-}"
-echo -en "${BOLD}Vertex/Elixir repos (comma-separated owner/repo, leave blank for none):${NC} "
-read -r VERTEX_REPOS
-VERTEX_REPOS="${VERTEX_REPOS:-}"
-if [[ -n "$ALLOWED_REPOS" ]]; then
+if [[ -z "${ALLOWED_REPOS+x}" ]]; then
+    echo -en "${BOLD}Allowed repos (comma-separated owner/repo, leave blank for all):${NC} "
+    read -r ALLOWED_REPOS
+    ALLOWED_REPOS="${ALLOWED_REPOS:-}"
+fi
+if [[ -z "${VERTEX_REPOS+x}" ]]; then
+    echo -en "${BOLD}Vertex/Elixir repos (comma-separated owner/repo, leave blank for none):${NC} "
+    read -r VERTEX_REPOS
+    VERTEX_REPOS="${VERTEX_REPOS:-}"
+fi
+if [[ -n "${ALLOWED_REPOS:-}" ]]; then
     success "Allowed repos: $ALLOWED_REPOS"
 else
     success "All repos allowed."
 fi
-if [[ -n "$VERTEX_REPOS" ]]; then
+if [[ -n "${VERTEX_REPOS:-}" ]]; then
     success "Vertex repos: $VERTEX_REPOS"
 fi
 echo ""
