@@ -146,6 +146,7 @@ ssh root@YOUR_SERVER_IP 'agent destroy myagent && agent create myagent'  # pick 
 | IDE-native daily workflow (autocomplete + inline edits + agent in editor) | Continue/Cline/Copilot are strong in-editor | Intentionally not core (browser-first) | N/A | **Do not copy now**: win on shared browser workflows + governance |
 | Policy engine (repo/org guardrails, approvals, restricted actions) | Copilot, Codex, Cline emphasize explicit permissioning | Planned (roadmap) | P0 | **Copy + improve**: policy presets + per-repo overrides |
 | Fine-grained per-tool auto-approval UX | Cline-style safe-vs-risky command behavior | Not explicit | P0/P1 | **Copy + improve**: explicit policy prompts + risk tiers + audit trail |
+| Approval ergonomics (approve with constraints) | Advanced agents support nuanced human gating | Not explicit | P1 | **Improve**: scoped approvals by files/tools/operations |
 | Network egress controls (allowlist/denylist) | Enterprise agents push sandbox network controls | Planned (roadmap) | P0 | **Copy**: ship default-safe profiles first |
 | Pre-task repo intelligence (`ask` + planning context) | Devin Ask flow, planning-first tools | Planned (roadmap) | P0 | **Improve**: couple analysis + plan approval in one flow |
 | Collaborative draft/plan approval workflow | Devin/OpenHands style planning loops | Planned (roadmap) | P0/P1 | **Improve**: comments/approvals tied to execution gates |
@@ -157,6 +158,8 @@ ssh root@YOUR_SERVER_IP 'agent destroy myagent && agent create myagent'  # pick 
 | Cost controls and budgets by org/team/user | Standard in team/enterprise agent platforms | Planned (roadmap) | P1 | **Copy**: hard limits + alerts + cost attribution |
 | Observability and auditability | Enterprise expectation across platforms | Planned (roadmap) | P1/P2 | **Copy + improve**: audit trail + quality KPIs tied to repos |
 | Trajectory inspection + evaluation tooling | SWE-agent and eval-first teams emphasize run trace analysis | Not explicit | P1 | **Copy + improve**: trace viewer + replay + quality metrics |
+| Deterministic task replay | Reliability/compliance teams need reproducible runs | Not explicit | P1 | **Improve**: snapshot inputs/runtime/tool versions for exact replay |
+| Secrets provenance + leak detection | Enterprise platforms require stronger secret governance | Not explicit | P0/P1 | **Copy + improve**: source tracking + redaction + exfil alerts |
 | Multi-runtime ecosystem breadth | OpenHands-style runtime flexibility (local/docker/remote) | Partial (nspawn-centric) | P2/P3 | **Improve**: runtime adapter interface with policy parity |
 
 ### Why Tekton Is Useful (Even With Strong Competitors)
@@ -180,7 +183,7 @@ If Tekton executes on these dimensions, it does not need to out-market incumbent
 | Phase | Exit criteria |
 |-------|---------------|
 | P0 | Persisted task/thread history, policy engine + egress controls, repo intelligence, plan approval flow, multi-model routing, and repo-local agent config support |
-| P1 | Elastic fleet management, queue priority/preemption, cost/budget controls, audit log baseline, collaborative threads, and playbook generation with batch execution |
+| P1 | Elastic fleet management, queue priority/preemption, cost/budget controls, audit log baseline, collaborative threads, deterministic replay, constrained approvals, and playbook generation with batch execution |
 | P2 | CI/review auto-iteration to merged state, GitHub App + Slack/Linear/Jira workflow sync, API/SDK maturity, and plugin ecosystem with guarded runtime permissions |
 | P3 | Multi-repo/monorepo orchestration, recurring/event-driven tasks, rollback/undo workflows, and review-mode task types |
 | P4 | Org-wide quality intelligence, checkpoint/fork workflows, conflict prevention/resolution, and optimization loops from historical outcomes |
@@ -206,6 +209,7 @@ If Tekton executes on these dimensions, it does not need to out-market incumbent
 - **Security and access control.** RBAC for teams and orgs: who can create tasks, which repos they can target, who can approve plans, who can see costs. Secret management for agent credentials (database passwords, API keys, service tokens) injected at runtime, never stored in prompts or logs.
 - **Policy engine and sandbox controls.** Repo and org guardrails for what agents are allowed to do: branch protections, command approval policies, network egress allowlists/denylists, and runtime capability restrictions.
 - **Fine-grained tool approval UX.** Per-tool and per-command risk tiers (auto-allow, ask, deny), with clear safe-vs-risky behavior, policy explanations, and full decision logging.
+- **Secrets provenance and leak prevention.** Track provenance for every injected secret, enforce redaction in prompts/logs/artifacts, and detect likely exfiltration patterns with alerting.
 - **Identity-safe PR authorship.** Support user-token PR creation and pushing (in addition to app identity) so branch protection and approval policies stay compliant with org rules.
 - **Multi-model support.** Each user connects their own API accounts (Claude, ChatGPT, Gemini, etc.) and Tekton auto-detects access based on their email. For overflow or users without keys, a shared pool routes through OpenRouter. Configuration is per-org: which models are available, which is the default, and spending limits per user/team.
 
@@ -232,6 +236,10 @@ If Tekton executes on these dimensions, it does not need to out-market incumbent
 **Audit log baseline.** Every action, every prompt, and every external call tied to actor identity and timestamp for compliance, security, and incident review.
 
 **Trajectory inspection and evaluation tooling.** Persist run trajectories (actions, tool calls, outputs, decisions), provide replay/inspection, and score outcomes across task types. Use this to improve prompts, policies, model routing, and failure recovery.
+
+**Deterministic task replay.** Snapshot task inputs, runtime image/version, model settings, and tool versions so failed or risky runs can be reproduced exactly for debugging and compliance.
+
+**Constrained approval ergonomics.** Allow "approve with constraints" decisions (for example: allowed file paths, denied operations, budget/time ceilings) instead of only binary approve/deny.
 
 **Conversational threads.** Every task has a conversation thread, like GitHub PR discussions. Anyone on the team can jump into a running task, add follow-up prompts, see the full history, and see every preview URL generated along the way. Every message shows who submitted it.
 
