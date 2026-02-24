@@ -31,6 +31,7 @@
     };
     script = ''
       # Write OAuth token to profile so every SSH session gets it
+      mkdir -p /etc/profile.d
       if [ -f /mnt/claude-creds/oauth_token ]; then
         TOKEN=$(cat /mnt/claude-creds/oauth_token | tr -d '[:space:]')
         cat > /etc/profile.d/claude-token.sh << EOF
