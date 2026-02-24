@@ -15,7 +15,7 @@ Complete guide to deploying Tekton from scratch and maintaining it afterwards.
 **External services (set up before or during install):**
 - [Cloudflare](https://dash.cloudflare.com) account with your domain added
 - [GitHub Personal Access Token](https://github.com/settings/tokens) with `repo` scope
-- [Google Cloud](https://console.cloud.google.com/) OAuth credentials
+- [GitHub OAuth App](https://github.com/settings/developers) for dashboard login
 - Claude Max/Teams subscription
 
 ## External Services Setup
@@ -80,16 +80,26 @@ Create a Personal Access Token (classic) at [GitHub Settings > Developer setting
 4. Click **Generate token**
 5. **Copy the token** — it's only shown once
 
-### 3. Google OAuth
+### 3. GitHub OAuth App
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project (or use an existing one)
-3. Go to APIs & Services > Credentials > Create Credentials > OAuth 2.0 Client IDs
-4. Application type: **Web application**
-5. Authorized redirect URIs: `https://dashboard.yourdomain.com/api/auth/callback`
-6. Note the **Client ID** and **Client Secret**
+The dashboard uses GitHub OAuth for login. Users must be members of a specified GitHub organization to access it. Their OAuth token (with `repo` scope) is also used to create verified (signed) commits via the GitHub GraphQL API.
 
-If you want to restrict login to a specific domain (e.g., `@yourdomain.com`), the dashboard enforces this via the `ALLOWED_DOMAIN` environment variable (prompted during setup).
+1. Go to [GitHub Settings > Developer settings > OAuth Apps](https://github.com/settings/developers)
+2. Click **New OAuth App**
+3. Fill in:
+   - **Application name**: e.g., "Preview Dashboard"
+   - **Homepage URL**: `https://dashboard.yourdomain.com`
+   - **Authorization callback URL**: `https://dashboard.yourdomain.com/api/auth/callback`
+4. Click **Register application**
+5. Note the **Client ID** (shown on the app page)
+6. Click **Generate a new client secret** and **copy it immediately** — it's only shown once
+
+The setup script will prompt for:
+- **GitHub OAuth App Client ID** — the Client ID from step 5
+- **GitHub OAuth App Client Secret** — the secret from step 6
+- **GitHub organization** — only members of this org can log in (e.g., `lambdaclass`)
+
+**Important**: The OAuth App requests `repo` and `read:org` scopes. The `repo` scope is required so the dashboard can create branches and verified commits on behalf of each user via the GitHub API. The `read:org` scope is used to verify org membership.
 
 ## First-Time Setup
 
@@ -142,9 +152,9 @@ Skipped with `--skip-install`.
 
 The `server-setup.sh` script is the main server-side configuration tool. It prompts for all configuration values and handles the full build:
 
-1. **Configuration prompts**: domain, Google OAuth credentials, GitHub PAT, webhook secret, allowed repos, vertex repos, SSH public key, git commit email
+1. **Configuration prompts**: domain, GitHub OAuth App credentials, GitHub organization, GitHub PAT, webhook secret, allowed repos, vertex repos, SSH public key
 2. **Hardware detection**: auto-detects server IP, gateway, interface, disks, and kernel modules from the running system
-3. **Secret generation**: JWT secret, SSH signing key (for git commits), root SSH key
+3. **Secret generation**: JWT secret, root SSH key
 4. **NixOS configuration**: substitutes all placeholders in `.nix` config files and installs to `/etc/nixos/`
 5. **Environment files**: writes `dashboard.env`, `preview.env`, and Caddy webhook route
 6. **NixOS rebuild**: runs `nixos-rebuild switch` (handles Caddy hash auto-fix on first build)
@@ -246,7 +256,7 @@ No service restart needed — the dashboard reads the file on each task.
                      |
               Agent containers (a-XXXXXX)
               - Claude Code (auth via CLAUDE_CODE_OAUTH_TOKEN)
-              - Git operations (SSH-signed commits)
+              - Git operations (verified commits via GitHub GraphQL API)
               - Created per task, destroyed after completion
 ```
 
@@ -257,18 +267,19 @@ When a user submits a task via the dashboard:
 ```
 1. Create agent container (a-{short_id})
 2. Clone repo, create branch claude/{short_id}
-3. Run Claude (stream-json) -> commit -> push -> create preview (t-{short_id}) -> screenshot
+3. Run Claude (stream-json) -> commit locally -> push via GitHub API -> create preview (t-{short_id}) -> screenshot
 4. Follow-up loop:
    a. Status -> awaiting_followup
-   b. Wait for message (poll 10s, 5min timeout)
-   c. If message: run Claude -> commit -> push -> update preview -> screenshot -> repeat
-   d. If done/timeout: break
+   b. Wait for message (poll 10s)
+   c. If message: run Claude -> commit -> push via API -> update preview -> screenshot -> repeat
+   d. If __done__: break
 5. Destroy agent container -> status: completed
 ```
 
 Key points:
 - Agent and preview containers have different prefixes (`a-` for agents, `t-` for previews)
 - Push + preview happen after each Claude run, not just at the end
+- Pushes use the GitHub GraphQL `createCommitOnBranch` mutation, producing verified (signed) commits attributed to the logged-in user
 - Claude's actions are streamed via `--output-format stream-json --verbose`
 - Claude authenticates via `CLAUDE_CODE_OAUTH_TOKEN` env var
 
@@ -294,11 +305,6 @@ Key points:
   github-pat                            # GitHub Personal Access Token
   claude/
     oauth_token                        # Long-lived Claude OAuth token
-    signing_key                        # SSH signing key for git commits
-    signing_key.pub                    # Public key (add to GitHub as signing key)
-  claude-signing/
-    signing_key                        # Master copy of signing key
-    signing_key.pub
 
 /var/lib/dashboard/
   dashboard.db                         # SQLite database (created automatically)
@@ -336,10 +342,10 @@ Key points:
 LISTEN_ADDR=0.0.0.0:3200
 DATABASE_URL=sqlite:///var/lib/dashboard/dashboard.db
 JWT_SECRET=<random-64-char-hex-string>
-GOOGLE_CLIENT_ID=<from-google-cloud-console>
-GOOGLE_CLIENT_SECRET=<from-google-cloud-console>
-GOOGLE_REDIRECT_URI=https://dashboard.yourdomain.com/api/auth/callback
-ALLOWED_DOMAIN=yourdomain.com
+GITHUB_CLIENT_ID=<from-github-oauth-app>
+GITHUB_CLIENT_SECRET=<from-github-oauth-app>
+GITHUB_REDIRECT_URI=https://dashboard.yourdomain.com/api/auth/callback
+GITHUB_ORG=yourorg
 PREVIEW_DOMAIN=yourdomain.com
 ALLOWED_REPOS=yourorg/repo1,yourorg/repo2
 VERTEX_REPOS=yourorg/elixir-repo
@@ -379,7 +385,6 @@ Template files in the repo have placeholder values that `server-setup.sh` substi
 | `configuration.nix` | `INITRD_KERNEL_MODULES` | Initrd kernel modules |
 | `configuration.nix` | `dashboard.YOUR_DOMAIN` | Dashboard domain |
 | `configuration.nix` | `ssh-ed25519 AAAA... your-key-here` | Your SSH public key |
-| `agent-config.nix` | `YOUR_GIT_EMAIL` | Git commit email |
 | `agent-config.nix` | `ssh-ed25519 AAAA... your-key-here` | Your SSH public key |
 | `agent-config.nix` | `ssh-ed25519 AAAA... root-key-here` | Server's root SSH public key |
 
@@ -412,7 +417,7 @@ Template files in the repo have placeholder values that `server-setup.sh` substi
 | Claude "Failed to read Claude OAuth token" | File `/var/secrets/claude/oauth_token` doesn't exist. Create it (see Claude OAuth section above). |
 | SSH asks for password | SSH key not baked into container config. Run `agent build` after config changes, then recreate. |
 | SSH host key warning | `ssh-keygen -R <container-ip>` |
-| Push rejected (signed commits) | Verify signing key in `/var/secrets/claude/signing_key`. Verify public key is added to GitHub as a **Signing Key** (not Authentication Key). The commit email in `agent-config.nix` must match the GitHub account. |
+| Push rejected / commit not verified | Commits are created via the GitHub GraphQL API using each user's OAuth token. Verify the user's token has `repo` scope (re-login to the dashboard to refresh it). |
 
 ### Network issues
 
