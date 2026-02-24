@@ -143,20 +143,20 @@ echo -e "${BOLD}--- GitHub Personal Access Token ---${NC}"
 echo "Create at: GitHub > Settings > Developer settings > Personal access tokens > Tokens (classic)"
 echo "Required scope: repo (full control of private repositories)"
 echo ""
-if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    echo -e "${BOLD}GitHub Personal Access Token${NC}: ${GREEN}****${GITHUB_TOKEN: -4}${NC} (from env)"
+if [[ -n "${GITHUB_PAT:-}" ]]; then
+    echo -e "${BOLD}GitHub Personal Access Token${NC}: ${GREEN}****${GITHUB_PAT: -4}${NC} (from env)"
 else
-    GITHUB_TOKEN_DEFAULT=""
+    GITHUB_PAT_DEFAULT=""
     if [[ -f /var/secrets/github-pat ]]; then
-        GITHUB_TOKEN_DEFAULT=$(cat /var/secrets/github-pat)
+        GITHUB_PAT_DEFAULT=$(cat /var/secrets/github-pat)
         success "GitHub PAT found at /var/secrets/github-pat (uploaded by setup.sh)"
     fi
-    if [[ -n "$GITHUB_TOKEN_DEFAULT" ]]; then
-        echo -ne "${BOLD}GitHub Personal Access Token${NC} [****${GITHUB_TOKEN_DEFAULT: -4}]: "
-        read -r GITHUB_TOKEN_INPUT
-        GITHUB_TOKEN="${GITHUB_TOKEN_INPUT:-$GITHUB_TOKEN_DEFAULT}"
+    if [[ -n "$GITHUB_PAT_DEFAULT" ]]; then
+        echo -ne "${BOLD}GitHub Personal Access Token${NC} [****${GITHUB_PAT_DEFAULT: -4}]: "
+        read -r GITHUB_PAT_INPUT
+        GITHUB_PAT="${GITHUB_PAT_INPUT:-$GITHUB_PAT_DEFAULT}"
     else
-        prompt GITHUB_TOKEN "GitHub Personal Access Token"
+        prompt GITHUB_PAT "GitHub Personal Access Token"
     fi
 fi
 echo ""
@@ -180,7 +180,7 @@ echo ""
 echo -e "${BOLD}--- SSH Key ---${NC}"
 echo "Your SSH public key for accessing agent/preview containers."
 echo ""
-prompt SSH_PUBKEY "Your SSH public key (ssh-ed25519 ...)"
+prompt SSH_KEY "Your SSH public key (ssh-ed25519 ...)"
 echo ""
 
 echo -e "${BOLD}--- Repository Configuration ---${NC}"
@@ -321,7 +321,7 @@ echo "  Disk 1:         $DISK_DEVICE_1"
 echo "  Domain:         $DOMAIN"
 echo "  Login domain:   $ALLOWED_DOMAIN"
 echo "  Google Client:  ${GOOGLE_CLIENT_ID:0:20}..."
-echo "  GitHub PAT:     ****${GITHUB_TOKEN: -4}"
+echo "  GitHub PAT:     ****${GITHUB_PAT: -4}"
 echo "  Allowed repos:  ${ALLOWED_REPOS:-<all>}"
 echo "  Vertex repos:   ${VERTEX_REPOS:-<none>}"
 echo "  Git email:      $GIT_EMAIL"
@@ -391,7 +391,7 @@ cfg="$TMPDIR/configuration.nix"
 
 sed -i "s|YOUR.SERVER.IP.HERE|$SERVER_IP|g" "$cfg"
 sed -i "s|YOUR.GATEWAY.IP.HERE|$GATEWAY|g" "$cfg"
-sed -i "s|ssh-ed25519 AAAA\.\.\. your-key-here|$SSH_PUBKEY|g" "$cfg"
+sed -i "s|ssh-ed25519 AAAA\.\.\. your-key-here|$SSH_KEY|g" "$cfg"
 sed -i "s|prefixLength = [0-9]*;|prefixLength = $PREFIX_LENGTH;|g" "$cfg"
 sed -i "s|interfaces\.enp3s0|interfaces.$INTERFACE|g" "$cfg"
 sed -i "s|interface = \"enp3s0\"|interface = \"$INTERFACE\"|g" "$cfg"
@@ -406,7 +406,7 @@ success "configuration.nix prepared."
 cp "$SERVER_CONFIG/agent-config.nix" "$TMPDIR/agent-config.nix"
 agent_cfg="$TMPDIR/agent-config.nix"
 
-sed -i "s|ssh-ed25519 AAAA\.\.\. your-key-here|$SSH_PUBKEY|g" "$agent_cfg"
+sed -i "s|ssh-ed25519 AAAA\.\.\. your-key-here|$SSH_KEY|g" "$agent_cfg"
 sed -i "s|ssh-ed25519 AAAA\.\.\. root-key-here|$ROOT_PUBKEY|g" "$agent_cfg"
 sed -i "s|email = YOUR_GIT_EMAIL|email = $GIT_EMAIL|g" "$agent_cfg"
 success "agent-config.nix prepared."
@@ -414,13 +414,13 @@ success "agent-config.nix prepared."
 # --- preview-config.nix ---
 cp "$SERVER_CONFIG/preview-config.nix" "$TMPDIR/preview-config.nix"
 preview_cfg="$TMPDIR/preview-config.nix"
-sed -i "s|ssh-ed25519 AAAA\.\.\. your-key-here|$SSH_PUBKEY|g" "$preview_cfg"
+sed -i "s|ssh-ed25519 AAAA\.\.\. your-key-here|$SSH_KEY|g" "$preview_cfg"
 success "preview-config.nix prepared."
 
 # --- vertex-preview-config.nix ---
 cp "$SERVER_CONFIG/vertex-preview-config.nix" "$TMPDIR/vertex-preview-config.nix"
 vertex_cfg="$TMPDIR/vertex-preview-config.nix"
-sed -i "s|ssh-ed25519 AAAA\.\.\. your-key-here|$SSH_PUBKEY|g" "$vertex_cfg"
+sed -i "s|ssh-ed25519 AAAA\.\.\. your-key-here|$SSH_KEY|g" "$vertex_cfg"
 success "vertex-preview-config.nix prepared."
 
 # Install all configs to /etc/nixos/
@@ -469,7 +469,7 @@ success "dashboard.env written."
 
 info "Writing preview.env..."
 cat > /var/secrets/preview.env << ENVEOF
-GITHUB_TOKEN=${GITHUB_TOKEN}
+GITHUB_TOKEN=${GITHUB_PAT}
 GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
 PREVIEW_DOMAIN=${DOMAIN}
 WEBHOOK_PORT=3100
@@ -547,6 +547,7 @@ success "Frontend built and deployed."
 info "Building dashboard backend (this takes ~2 minutes on first build)..."
 cd "$SCRIPT_DIR/dashboard/backend"
 nix-shell -p rustc cargo gcc pkg-config --run 'cargo build --release'
+systemctl stop dashboard 2>/dev/null || true
 cp "$SCRIPT_DIR/dashboard/backend/target/release/dashboard" /opt/dashboard/dashboard
 success "Backend built and deployed."
 
@@ -611,37 +612,31 @@ else
 fi
 
 # =============================================================================
-# Step 11: Claude login
+# Step 11: Claude setup token
 # =============================================================================
 header "Step 11: Claude Authentication"
 
-echo -e "${BOLD}Set up Claude Code credentials.${NC}"
-echo -e "You can either:"
-echo -e "  1. Run 'claude login' interactively (OAuth flow)"
-echo -e "  2. Use a setup token: run 'claude setup-token' on your local machine"
-echo -e "     and paste the token into /var/secrets/claude/oauth_token"
-echo ""
-
-if confirm "Run 'claude login' now?"; then
-    CLAUDE_CONFIG_DIR=/var/secrets/claude claude login || {
-        warn "Claude login may have exited with an error (this is OK if you dismissed the trust prompt)."
-    }
-
-    if [[ -f /var/secrets/claude/.credentials.json ]]; then
-        info "Fixing credential permissions..."
-        chmod -R a+rX /var/secrets/claude
-        success "Credentials found and permissions set."
-    else
-        warn "No credentials found. You can log in later with:"
-        echo "  CLAUDE_CONFIG_DIR=/var/secrets/claude claude login"
-        echo "  chmod -R a+rX /var/secrets/claude"
-    fi
+if [[ -n "${CLAUDE_SETUP_TOKEN:-}" ]]; then
+    success "Claude setup token provided (from env)."
 else
-    warn "Skipping Claude login. Set up credentials later:"
-    echo "  Option 1: CLAUDE_CONFIG_DIR=/var/secrets/claude claude login"
-    echo "  Option 2: claude setup-token (on local machine), then:"
-    echo "    echo 'sk-ant-oat01-...' > /var/secrets/claude/oauth_token"
-    echo "    chmod 600 /var/secrets/claude/oauth_token"
+    echo -e "${BOLD}Claude Code requires an OAuth token for agent containers.${NC}"
+    echo -e "Generate one by running ${CYAN}claude setup-token${NC} on your local machine."
+    echo ""
+    echo -en "${BOLD}Claude setup token (leave blank to set up later):${NC} "
+    read -r CLAUDE_SETUP_TOKEN
+fi
+
+if [[ -n "${CLAUDE_SETUP_TOKEN:-}" ]]; then
+    mkdir -p /var/secrets/claude
+    echo "$CLAUDE_SETUP_TOKEN" > /var/secrets/claude/oauth_token
+    chmod 600 /var/secrets/claude/oauth_token
+    success "Token written to /var/secrets/claude/oauth_token"
+else
+    warn "No token provided. Set it up later:"
+    echo "  1. Run 'claude setup-token' on your local machine"
+    echo "  2. Paste the token:"
+    echo "     echo 'sk-ant-oat01-...' > /var/secrets/claude/oauth_token"
+    echo "     chmod 600 /var/secrets/claude/oauth_token"
 fi
 
 # =============================================================================
