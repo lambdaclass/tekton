@@ -501,6 +501,12 @@ setup_server() {
         fi
     fi
 
+    # Convert SSH URLs to HTTPS — the server won't have GitHub SSH keys
+    if [[ "$repo_url" =~ ^git@github\.com:(.+)$ ]]; then
+        repo_url="https://github.com/${BASH_REMATCH[1]}"
+        info "Converted SSH remote to HTTPS for server: $repo_url"
+    fi
+
     ssh $ssh_opts root@"$SERVER_IP" "
         if [ -d /opt/src/.git ]; then
             echo 'Repository already exists at /opt/src/, pulling latest...'
