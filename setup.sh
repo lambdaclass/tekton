@@ -507,12 +507,15 @@ setup_server() {
         info "Converted SSH remote to HTTPS for server: $repo_url"
     fi
 
+    local current_branch
+    current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || current_branch="main"
+
     ssh $ssh_opts root@"$SERVER_IP" "
         if [ -d /opt/src/.git ]; then
             echo 'Repository already exists at /opt/src/, pulling latest...'
-            cd /opt/src && git fetch origin && git pull origin main || true
+            cd /opt/src && git fetch origin && git checkout '$current_branch' && git pull origin '$current_branch' || true
         else
-            git clone '$repo_url' /opt/src
+            git clone --branch '$current_branch' '$repo_url' /opt/src
         fi
     "
     success "Repository ready at /opt/src/"
