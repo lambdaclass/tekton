@@ -407,6 +407,7 @@ JWT_SECRET='${jwt_secret}'
 DATABASE_ENCRYPTION_KEY='${db_encryption_key}'
 PHX_HOST='${slug}.${domain}'
 PORT=4000
+API_URL='${preview_url}'
 FRONTEND_URL='${preview_url}'
 POSTMARK_API_KEY='${postmark_key}'
 GOOGLE_CLIENT_ID='${google_client_id}'

@@ -317,22 +317,12 @@ async fn run_task_pipeline(
 
     update_task_status(db, task_id, "running_claude", None).await?;
     log_and_send(db, task_id, &tx, "[STEP] Running Claude...");
-    run_claude_streaming(&agent_name, &effective_prompt, tx.clone()).await?;
+    let claude_text = run_claude_streaming(&agent_name, &effective_prompt, tx.clone()).await?;
+    save_claude_response_as_message(db, task_id, &claude_text).await?;
 
-    // Step 3b: Commit any changes — retry once if Claude made no edits
-    let made_changes = commit_changes_in_agent(&agent_name, prompt, tx.clone()).await?;
-    if !made_changes {
-        log_and_send(db, task_id, &tx, "[STEP] Re-running Claude — asking it to make actual edits...");
-        let retry_prompt = format!(
-            "You were given this task but made no file changes. You MUST edit the code to accomplish the task. \
-             Do not just analyze — use the Edit or Write tools to make the changes.\n\n{effective_prompt}"
-        );
-        run_claude_streaming(&agent_name, &retry_prompt, tx.clone()).await?;
-        let made_changes_retry = commit_changes_in_agent(&agent_name, prompt, tx.clone()).await?;
-        if !made_changes_retry {
-            log_and_send(db, task_id, &tx, "[WARN] Claude still made no changes after retry.");
-        }
-    }
+    // Step 3b: Commit any changes (if Claude asked a question and made none, that's fine —
+    // the user will see the question in chat and respond via the follow-up loop)
+    let _ = commit_changes_in_agent(&agent_name, prompt, tx.clone()).await?;
 
     // Step 3c: Push and create preview
     let mut preview_created = false;
@@ -367,13 +357,51 @@ async fn run_claude_streaming(
     agent_name: &str,
     prompt: &str,
     tx: broadcast::Sender<String>,
-) -> Result<(), AppError> {
+) -> Result<String, AppError> {
     let oauth_token = read_claude_oauth_token().await?;
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
         "export CLAUDE_CODE_OAUTH_TOKEN='{oauth_token}' && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose -p '{escaped_prompt}'"
     );
     shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
+}
+
+/// Run Claude with --continue to maintain conversation context for follow-ups.
+async fn run_claude_continue(
+    agent_name: &str,
+    prompt: &str,
+    tx: broadcast::Sender<String>,
+) -> Result<String, AppError> {
+    let oauth_token = read_claude_oauth_token().await?;
+    let escaped_prompt = prompt.replace('\'', "'\\''");
+    let claude_cmd = format!(
+        "export CLAUDE_CODE_OAUTH_TOKEN='{oauth_token}' && cd /home/agent/repo && \
+         claude --dangerously-skip-permissions --output-format stream-json --verbose \
+         --continue -p '{escaped_prompt}'"
+    );
+    shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
+}
+
+/// Save Claude's text response as a chat message so it appears in the UI.
+async fn save_claude_response_as_message(
+    db: &SqlitePool,
+    task_id: &str,
+    claude_text: &str,
+) -> Result<(), AppError> {
+    let text = claude_text.trim();
+    if text.is_empty() {
+        return Ok(());
+    }
+    // Truncate to a reasonable length for chat display
+    let display_text: String = text.chars().take(2000).collect();
+    sqlx::query(
+        "INSERT INTO task_messages (task_id, sender, content) VALUES (?, 'claude', ?)",
+    )
+    .bind(task_id)
+    .bind(&display_text)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 /// Parse image_url JSON and copy all images into an agent container.
@@ -507,25 +535,17 @@ async fn follow_up_loop(
 ) -> Result<FollowUpOutcome, AppError> {
     let mut last_seen_id: i64 = 0;
 
-    // Fetch the original task prompt for context
-    let original_prompt = sqlx::query_scalar::<_, String>("SELECT prompt FROM tasks WHERE id = ?")
-        .bind(task_id)
-        .fetch_one(db)
-        .await?;
-
-    // Track conversation history for context
+    // Track conversation history for context (used as fallback if --continue fails)
     let mut conversation_history: Vec<String> = Vec::new();
 
     update_task_status(db, task_id, "awaiting_followup", None).await?;
     let _ = tx.send("[STATUS] Waiting for follow-up messages (click 'Mark Done' to finish)...".to_string());
 
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-
-        // Check for new messages since last seen (by ID, not timestamp, to avoid
-        // missing messages sent during long-running steps like preview create)
+        // Check for new messages IMMEDIATELY (no sleep before first check)
+        // Filter out claude's own messages so we only process user messages
         let new_messages: Vec<TaskMessage> = sqlx::query_as::<_, TaskMessage>(
-            "SELECT * FROM task_messages WHERE task_id = ? AND id > ? ORDER BY id ASC",
+            "SELECT * FROM task_messages WHERE task_id = ? AND id > ? AND sender != 'claude' ORDER BY id ASC",
         )
         .bind(task_id)
         .bind(last_seen_id)
@@ -533,42 +553,58 @@ async fn follow_up_loop(
         .await?;
 
         if new_messages.is_empty() {
+            // Sleep 3s before checking again (reduced from 10s)
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             continue;
         }
 
         // Update last seen to latest message id
         last_seen_id = new_messages.last().unwrap().id;
 
-        for msg in &new_messages {
-            if msg.content.trim() == "__done__" {
-                let _ = tx.send("[STATUS] Received '__done__', finishing up.".to_string());
-                return Ok(FollowUpOutcome::Done);
-            }
+        // Check for __done__ in any message
+        if new_messages.iter().any(|m| m.content.trim() == "__done__") {
+            let _ = tx.send("[STATUS] Received '__done__', finishing up.".to_string());
+            return Ok(FollowUpOutcome::Done);
+        }
 
-            // Copy images if present, augment prompt
-            let effective_content = augment_prompt_with_images(
+        // Batch all pending messages into one prompt
+        let mut combined_parts: Vec<String> = Vec::new();
+        for msg in &new_messages {
+            let effective = augment_prompt_with_images(
                 config, agent_name, msg.image_url.as_deref(), &msg.content, tx,
             ).await?;
-
-            // Build context-aware prompt with original task + conversation history
-            let context_prompt = build_followup_prompt(&original_prompt, &conversation_history, &effective_content);
-
-            // Add this message to history for future follow-ups
+            combined_parts.push(effective);
             conversation_history.push(format!("{}: {}", msg.sender, msg.content));
-
-            // Re-invoke Claude with the follow-up message
-            let _ = tx.send(format!("[FOLLOWUP] Running Claude with follow-up from {}...", msg.sender));
-            update_task_status(db, task_id, "running_claude", None).await?;
-
-            run_claude_streaming(agent_name, &context_prompt, tx.clone()).await?;
-            let _ = commit_changes_in_agent(agent_name, &msg.content, tx.clone()).await?;
-
-            // Push and update preview
-            push_and_preview(config, db, task_id, short_id, agent_name, repo, branch_name, base_branch, branch_pushed, preview_created, git_id, tx).await?;
-
-            update_task_status(db, task_id, "awaiting_followup", None).await?;
-            let _ = tx.send("[STATUS] Waiting for more follow-up messages...".to_string());
         }
+        let combined_prompt = combined_parts.join("\n\n---\n\n");
+
+        // Run Claude with --continue to maintain conversation context
+        update_task_status(db, task_id, "running_claude", None).await?;
+        let _ = tx.send("[FOLLOWUP] Running Claude with follow-up...".to_string());
+
+        let claude_text = match run_claude_continue(agent_name, &combined_prompt, tx.clone()).await {
+            Ok(text) => text,
+            Err(e) => {
+                // Fallback: if --continue fails, use fresh session with full context
+                let _ = tx.send(format!("[WARN] --continue failed ({e}), falling back to fresh session..."));
+                let original_prompt = sqlx::query_scalar::<_, String>("SELECT prompt FROM tasks WHERE id = ?")
+                    .bind(task_id)
+                    .fetch_one(db)
+                    .await?;
+                let context_prompt = build_followup_prompt(&original_prompt, &conversation_history, &combined_prompt);
+                run_claude_streaming(agent_name, &context_prompt, tx.clone()).await?
+            }
+        };
+        save_claude_response_as_message(db, task_id, &claude_text).await?;
+
+        let _ = commit_changes_in_agent(agent_name, &combined_parts[0], tx.clone()).await?;
+
+        // Push and update preview
+        push_and_preview(config, db, task_id, short_id, agent_name, repo, branch_name, base_branch, branch_pushed, preview_created, git_id, tx).await?;
+
+        update_task_status(db, task_id, "awaiting_followup", None).await?;
+        let _ = tx.send("[STATUS] Waiting for more follow-up messages...".to_string());
+        // Loop immediately — check for more messages right away (no sleep before next check)
     }
 }
 
