@@ -38,23 +38,11 @@ The dashboard streams agent logs in real time and lets you send follow-up prompt
 
 ## Getting started
 
-### Prerequisites
-
-- Local machine with [Nix installed](https://nixos.org/download/) (flakes enabled)
-- SSH key pair (`ssh-keygen` if you don't have one)
-- A dedicated server in rescue mode (tested on Hetzner, should work on any provider with standard Linux rescue)
-
-### Setup
-
 ```bash
-# Provision and configure the server (one command)
 ./setup.sh
-
-# With Elixir/Phoenix preview support
-./setup.sh --vertex
 ```
 
-The script handles everything: network detection, NixOS installation, server configuration, and Claude login. See the [Deployment Guide](docs/deployment-guide.md) for details.
+One command handles everything: NixOS installation, server configuration, dashboard + webhook builds, and Claude login. See the [Deployment Guide](docs/deployment-guide.md) for prerequisites and full walkthrough.
 
 ### Agent management
 
@@ -99,28 +87,16 @@ ssh root@YOUR_SERVER_IP 'preview build --type vertex'
 
 See [Preview Deployments](docs/preview-deployments.md) for webhook setup and full reference.
 
-### Host maintenance
+### Deploying changes
 
 ```bash
-# Rebuild NixOS after config changes
-ssh root@YOUR_SERVER_IP 'cd /etc/nixos && nixos-rebuild switch'
-
-# Re-authenticate Claude
-ssh root@YOUR_SERVER_IP 'CLAUDE_CONFIG_DIR=/var/secrets/claude claude login'
-ssh root@YOUR_SERVER_IP 'chmod -R a+rX /var/secrets/claude'
-ssh root@YOUR_SERVER_IP 'agent destroy myagent && agent create myagent'  # pick up new creds
+./deploy.sh <server-ip>              # Deploy everything
+./deploy.sh <server-ip> dashboard    # Dashboard only
+./deploy.sh <server-ip> webhook      # Preview webhook only
+./deploy.sh <server-ip> nix          # NixOS configs only
 ```
 
-### Troubleshooting
-
-| Problem | Solution |
-|---------|----------|
-| Container fails to start | `journalctl -u container@<name>` on host |
-| SSH asks for password | SSH key not baked in. Run `agent build` after config changes, then recreate. |
-| SSH host key warning | `ssh-keygen -R <container-ip>` |
-| Claude "Invalid API key" | Re-run `claude login` on host, fix permissions, recreate container |
-| Preview returns 502 | App is still building. Check `preview logs <slug> --follow`. |
-| Webhook not triggering | `systemctl status preview-webhook` and check GitHub webhook deliveries |
+See the [Deployment Guide](docs/deployment-guide.md) for details, troubleshooting, and server reference.
 
 ## Roadmap
 
@@ -355,7 +331,7 @@ If Tekton executes on these dimensions, it does not need to out-market incumbent
 
 ## Documentation
 
-- **[Deployment Guide](docs/deployment-guide.md)**: Full step-by-step setup for a new Hetzner server
+- **[Deployment Guide](docs/deployment-guide.md)**: Setup, deployment, server reference, and troubleshooting
 - **[Preview Deployments](docs/preview-deployments.md)**: PR preview system, webhook setup, commands reference
 - **[Architecture](docs/architecture.md)**: System design, networking, key decisions
 
@@ -364,9 +340,11 @@ If Tekton executes on these dimensions, it does not need to out-market incumbent
 ```
 tekton/
 ├── README.md
-├── setup.sh                          # Automated setup script (--vertex for Elixir support)
+├── setup.sh                          # Local entry point: NixOS install + server setup
+├── server-setup.sh                   # Server-side setup: config, builds, services
+├── deploy.sh                         # Ongoing deploys: push + build on server
 ├── docs/
-│   ├── deployment-guide.md           # Full deployment walkthrough
+│   ├── deployment-guide.md           # Setup, deployment, and server reference
 │   ├── preview-deployments.md        # Preview system documentation
 │   └── architecture.md               # System architecture overview
 ├── dashboard/

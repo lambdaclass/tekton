@@ -4,8 +4,17 @@ set -euo pipefail
 # =============================================================================
 # NixOS Setup Script for Claude Code Agents on Hetzner
 # =============================================================================
-# Automates the full setup: network detection, NixOS installation, server
-# configuration with nspawn containers, and Claude credential setup.
+# Single entry point for full setup: NixOS installation via nixos-anywhere,
+# repo clone on server, secret upload, and interactive server configuration.
+#
+# Usage:
+#   ./setup.sh                 # Full setup (NixOS install + configure)
+#   ./setup.sh --skip-install  # Skip NixOS install (server already running)
+#
+# Flow:
+#   Phase 1: Gather info (server IP, SSH key, rescue-mode hardware detection)
+#   Phase 2: Install NixOS via nixos-anywhere
+#   Phase 3: Clone repo on server, upload secrets, run server-setup.sh
 # =============================================================================
 
 # -- Colors -------------------------------------------------------------------
@@ -54,18 +63,13 @@ check_prerequisites() {
 
     local missing=()
 
-    if ! command -v nix &>/dev/null; then
-        missing+=("nix (with flakes enabled)")
+    if [[ "$SKIP_INSTALL" != "y" ]]; then
+        command -v nix &>/dev/null || missing+=("nix (with flakes enabled)")
     fi
-    if ! command -v ssh &>/dev/null; then
-        missing+=("ssh")
-    fi
-    if ! command -v scp &>/dev/null; then
-        missing+=("scp")
-    fi
-    if ! command -v sed &>/dev/null; then
-        missing+=("sed")
-    fi
+    command -v ssh &>/dev/null || missing+=("ssh")
+    command -v scp &>/dev/null || missing+=("scp")
+    command -v sed &>/dev/null || missing+=("sed")
+    command -v git &>/dev/null || missing+=("git")
 
     if [[ ${#missing[@]} -gt 0 ]]; then
         error "Missing required tools:"
@@ -168,254 +172,209 @@ gather_info() {
         success "SSH key selected (will use SSH agent/defaults for auth)."
     fi
 
-    # --- Auto-detect network info from rescue mode ---
-    info "Connecting to rescue mode to detect network configuration..."
-    info "(Make sure the server is in rescue mode and you can SSH in.)"
-    echo ""
-
+    # --- SSH connection test + hardware detection ---
     local ssh_opts="$SSH_IDENTITY_OPT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR"
 
-    if ! ssh $ssh_opts root@"$SERVER_IP" true; then
-        fatal "Cannot SSH into rescue mode at root@$SERVER_IP. Is rescue mode active?"
-    fi
-    success "SSH connection to rescue mode successful."
+    if [[ "$SKIP_INSTALL" != "y" ]]; then
+        # Rescue-mode detection (only needed for NixOS install)
+        info "Connecting to rescue mode to detect network configuration..."
+        info "(Make sure the server is in rescue mode and you can SSH in.)"
+        echo ""
 
-    # Detect gateway
-    GATEWAY=$(ssh $ssh_opts root@"$SERVER_IP" "ip route | grep default | awk '{print \$3}'" 2>/dev/null) || true
-    if [[ -z "$GATEWAY" ]] || ! validate_ip "$GATEWAY"; then
-        fatal "Could not detect gateway. Got: '${GATEWAY:-}'"
-    fi
-    success "Detected gateway: $GATEWAY"
+        if ! ssh $ssh_opts root@"$SERVER_IP" true; then
+            fatal "Cannot SSH into rescue mode at root@$SERVER_IP. Is rescue mode active?"
+        fi
+        success "SSH connection to rescue mode successful."
 
-    # Detect interface — rescue mode uses legacy names (eth0) but NixOS uses
-    # predictable names (enp3s0). Derive the predictable name from the PCI slot.
-    local rescue_iface
-    rescue_iface=$(ssh $ssh_opts root@"$SERVER_IP" "ip route | grep default | awk '{print \$5}'" 2>/dev/null) || true
-    if [[ -z "$rescue_iface" ]]; then
-        fatal "Could not detect network interface."
-    fi
+        # Detect gateway
+        GATEWAY=$(ssh $ssh_opts root@"$SERVER_IP" "ip route | grep default | awk '{print \$3}'" 2>/dev/null) || true
+        if [[ -z "$GATEWAY" ]] || ! validate_ip "$GATEWAY"; then
+            fatal "Could not detect gateway. Got: '${GATEWAY:-}'"
+        fi
+        success "Detected gateway: $GATEWAY"
 
-    INTERFACE=$(ssh $ssh_opts root@"$SERVER_IP" "
-        iface='$rescue_iface'
-        # Read the PCI slot from sysfs (e.g. 0000:03:00.0)
-        slot=\$(basename \$(readlink -f /sys/class/net/\$iface/device) 2>/dev/null) || true
-        if [ -n \"\$slot\" ]; then
-            # Parse domain:bus:device.function → enp{bus}s{device}f{function}
-            # Strip leading domain (0000:), then parse bus:dev.fn
-            bdf=\${slot##*:}  # get last part after last colon: e.g. 00.0
-            bus_hex=\$(echo \$slot | rev | cut -d: -f2 | rev)  # second-to-last field
-            dev_hex=\${bdf%%.*}
-            fn=\${bdf##*.}
-            bus=\$((16#\$bus_hex))
-            dev=\$((16#\$dev_hex))
-            if [ \"\$fn\" = \"0\" ]; then
-                echo \"enp\${bus}s\${dev}\"
+        # Detect interface — rescue mode uses legacy names (eth0) but NixOS uses
+        # predictable names (enp3s0). Derive the predictable name from the PCI slot.
+        local rescue_iface
+        rescue_iface=$(ssh $ssh_opts root@"$SERVER_IP" "ip route | grep default | awk '{print \$5}'" 2>/dev/null) || true
+        if [[ -z "$rescue_iface" ]]; then
+            fatal "Could not detect network interface."
+        fi
+
+        INTERFACE=$(ssh $ssh_opts root@"$SERVER_IP" "
+            iface='$rescue_iface'
+            # Read the PCI slot from sysfs (e.g. 0000:03:00.0)
+            slot=\$(basename \$(readlink -f /sys/class/net/\$iface/device) 2>/dev/null) || true
+            if [ -n \"\$slot\" ]; then
+                # Parse domain:bus:device.function -> enp{bus}s{device}f{function}
+                # Strip leading domain (0000:), then parse bus:dev.fn
+                bdf=\${slot##*:}  # get last part after last colon: e.g. 00.0
+                bus_hex=\$(echo \$slot | rev | cut -d: -f2 | rev)  # second-to-last field
+                dev_hex=\${bdf%%.*}
+                fn=\${bdf##*.}
+                bus=\$((16#\$bus_hex))
+                dev=\$((16#\$dev_hex))
+                if [ \"\$fn\" = \"0\" ]; then
+                    echo \"enp\${bus}s\${dev}\"
+                else
+                    echo \"enp\${bus}s\${dev}f\${fn}\"
+                fi
             else
-                echo \"enp\${bus}s\${dev}f\${fn}\"
+                echo \"\$iface\"
             fi
+        " 2>/dev/null) || true
+
+        if [[ -z "$INTERFACE" ]]; then
+            INTERFACE="$rescue_iface"
+            warn "Could not derive predictable interface name, using rescue name: $INTERFACE"
+        fi
+        success "Detected interface: $INTERFACE (rescue: $rescue_iface)"
+
+        # Detect prefix length (use rescue_iface since we're still in rescue mode)
+        PREFIX_LENGTH=$(ssh $ssh_opts root@"$SERVER_IP" \
+            "ip -4 addr show dev $rescue_iface | grep 'inet ' | head -1 | awk '{print \$2}' | cut -d/ -f2" 2>/dev/null) || true
+        if [[ -z "$PREFIX_LENGTH" ]]; then
+            warn "Could not detect prefix length, defaulting to 26"
+            PREFIX_LENGTH="26"
+        fi
+        success "Detected prefix length: /$PREFIX_LENGTH"
+
+        # --- Detect disk devices ---
+        info "Detecting disk devices..."
+        local disk_list
+        disk_list=$(ssh $ssh_opts root@"$SERVER_IP" "lsblk -d -n -o NAME,TYPE | awk '\$2==\"disk\" && \$1!~/^loop/ {print \"/dev/\" \$1}'" 2>/dev/null) || true
+
+        if [[ -z "$disk_list" ]]; then
+            fatal "Could not detect any disk devices on the server."
+        fi
+
+        local disks=()
+        while IFS= read -r line; do
+            disks+=("$line")
+        done <<< "$disk_list"
+
+        if [[ ${#disks[@]} -lt 2 ]]; then
+            fatal "Expected at least 2 disks for RAID 1, found ${#disks[@]}: ${disks[*]}"
+        fi
+
+        info "Found ${#disks[@]} disk(s):"
+        for i in "${!disks[@]}"; do
+            echo -e "  ${BOLD}$((i+1)))${NC} ${disks[$i]}"
+        done
+
+        if [[ ${#disks[@]} -eq 2 ]]; then
+            DISK_DEVICE_0="${disks[0]}"
+            DISK_DEVICE_1="${disks[1]}"
+            success "Using ${DISK_DEVICE_0} and ${DISK_DEVICE_1} for RAID 1."
         else
-            echo \"\$iface\"
+            echo -en "${BOLD}Pick disk 1 (1-${#disks[@]}):${NC} "
+            read -r d1
+            echo -en "${BOLD}Pick disk 2 (1-${#disks[@]}):${NC} "
+            read -r d2
+            if [[ "$d1" == "$d2" ]]; then
+                fatal "Cannot use the same disk twice."
+            fi
+            DISK_DEVICE_0="${disks[$((d1-1))]}"
+            DISK_DEVICE_1="${disks[$((d2-1))]}"
+            success "Using ${DISK_DEVICE_0} and ${DISK_DEVICE_1} for RAID 1."
         fi
-    " 2>/dev/null) || true
 
-    if [[ -z "$INTERFACE" ]]; then
-        INTERFACE="$rescue_iface"
-        warn "Could not derive predictable interface name, using rescue name: $INTERFACE"
-    fi
-    success "Detected interface: $INTERFACE (rescue: $rescue_iface)"
+        # --- Detect kernel modules ---
+        info "Detecting hardware for kernel modules..."
 
-    # Detect prefix length (use rescue_iface since we're still in rescue mode)
-    PREFIX_LENGTH=$(ssh $ssh_opts root@"$SERVER_IP" \
-        "ip -4 addr show dev $rescue_iface | grep 'inet ' | head -1 | awk '{print \$2}' | cut -d/ -f2" 2>/dev/null) || true
-    if [[ -z "$PREFIX_LENGTH" ]]; then
-        warn "Could not detect prefix length, defaulting to 26"
-        PREFIX_LENGTH="26"
-    fi
-    success "Detected prefix length: /$PREFIX_LENGTH"
-
-    # --- Detect disk devices ---
-    info "Detecting disk devices..."
-    local disk_list
-    disk_list=$(ssh $ssh_opts root@"$SERVER_IP" "lsblk -d -n -o NAME,TYPE | awk '\$2==\"disk\" && \$1!~/^loop/ {print \"/dev/\" \$1}'" 2>/dev/null) || true
-
-    if [[ -z "$disk_list" ]]; then
-        fatal "Could not detect any disk devices on the server."
-    fi
-
-    local disks=()
-    while IFS= read -r line; do
-        disks+=("$line")
-    done <<< "$disk_list"
-
-    if [[ ${#disks[@]} -lt 2 ]]; then
-        fatal "Expected at least 2 disks for RAID 1, found ${#disks[@]}: ${disks[*]}"
-    fi
-
-    info "Found ${#disks[@]} disk(s):"
-    for i in "${!disks[@]}"; do
-        echo -e "  ${BOLD}$((i+1)))${NC} ${disks[$i]}"
-    done
-
-    if [[ ${#disks[@]} -eq 2 ]]; then
-        DISK_DEVICE_0="${disks[0]}"
-        DISK_DEVICE_1="${disks[1]}"
-        success "Using ${DISK_DEVICE_0} and ${DISK_DEVICE_1} for RAID 1."
-    else
-        echo -en "${BOLD}Pick disk 1 (1-${#disks[@]}):${NC} "
-        read -r d1
-        echo -en "${BOLD}Pick disk 2 (1-${#disks[@]}):${NC} "
-        read -r d2
-        if [[ "$d1" == "$d2" ]]; then
-            fatal "Cannot use the same disk twice."
+        # Disk modules: NVMe vs SATA
+        if [[ "$DISK_DEVICE_0" == /dev/nvme* ]]; then
+            INITRD_MODULES='"nvme"'
+            success "NVMe disks detected — using nvme initrd module."
+        else
+            INITRD_MODULES='"ahci" "sd_mod"'
+            success "SATA disks detected — using ahci/sd_mod initrd modules."
         fi
-        DISK_DEVICE_0="${disks[$((d1-1))]}"
-        DISK_DEVICE_1="${disks[$((d2-1))]}"
-        success "Using ${DISK_DEVICE_0} and ${DISK_DEVICE_1} for RAID 1."
-    fi
 
-    # --- Detect kernel modules ---
-    info "Detecting hardware for kernel modules..."
+        # Network driver
+        local net_driver
+        net_driver=$(ssh $ssh_opts root@"$SERVER_IP" "basename \$(readlink -f /sys/class/net/$rescue_iface/device/driver) 2>/dev/null" 2>/dev/null) || true
+        if [[ -n "$net_driver" ]]; then
+            INITRD_MODULES="$INITRD_MODULES \"$net_driver\""
+            success "Detected network driver: $net_driver"
+        else
+            INITRD_MODULES="$INITRD_MODULES \"r8169\""
+            warn "Could not detect network driver, defaulting to r8169"
+        fi
 
-    # Disk modules: NVMe vs SATA
-    if [[ "$DISK_DEVICE_0" == /dev/nvme* ]]; then
-        INITRD_MODULES='"nvme"'
-        success "NVMe disks detected — using nvme initrd module."
+        # CPU vendor -> KVM module
+        local cpu_vendor
+        cpu_vendor=$(ssh $ssh_opts root@"$SERVER_IP" "grep -m1 vendor_id /proc/cpuinfo | awk '{print \$3}'" 2>/dev/null) || true
+        if [[ "$cpu_vendor" == "GenuineIntel" ]]; then
+            KVM_MODULE='"kvm-intel"'
+            success "Detected Intel CPU."
+        elif [[ "$cpu_vendor" == "AuthenticAMD" ]]; then
+            KVM_MODULE='"kvm-amd"'
+            success "Detected AMD CPU."
+        else
+            KVM_MODULE='"kvm-intel"'
+            warn "Could not detect CPU vendor, defaulting to kvm-intel."
+        fi
     else
-        INITRD_MODULES='"ahci" "sd_mod"'
-        success "SATA disks detected — using ahci/sd_mod initrd modules."
+        # --skip-install: just verify SSH works (server already running NixOS)
+        info "Testing SSH connection to server..."
+        if ! ssh $ssh_opts root@"$SERVER_IP" true; then
+            fatal "Cannot SSH into root@$SERVER_IP."
+        fi
+        success "SSH connection successful."
     fi
 
-    # Network driver
-    local net_driver
-    net_driver=$(ssh $ssh_opts root@"$SERVER_IP" "basename \$(readlink -f /sys/class/net/$rescue_iface/device/driver) 2>/dev/null" 2>/dev/null) || true
-    if [[ -n "$net_driver" ]]; then
-        INITRD_MODULES="$INITRD_MODULES \"$net_driver\""
-        success "Detected network driver: $net_driver"
-    else
-        INITRD_MODULES="$INITRD_MODULES \"r8169\""
-        warn "Could not detect network driver, defaulting to r8169"
-    fi
-
-    # CPU vendor → KVM module
-    local cpu_vendor
-    cpu_vendor=$(ssh $ssh_opts root@"$SERVER_IP" "grep -m1 vendor_id /proc/cpuinfo | awk '{print \$3}'" 2>/dev/null) || true
-    if [[ "$cpu_vendor" == "GenuineIntel" ]]; then
-        KVM_MODULE='"kvm-intel"'
-        success "Detected Intel CPU."
-    elif [[ "$cpu_vendor" == "AuthenticAMD" ]]; then
-        KVM_MODULE='"kvm-amd"'
-        success "Detected AMD CPU."
-    else
-        KVM_MODULE='"kvm-intel"'
-        warn "Could not detect CPU vendor, defaulting to kvm-intel."
-    fi
-
-    # --- Preview deployment settings ---
-    header "Preview Deployment Settings (optional)"
-    echo -e "Configure PR preview deployments? This sets up Caddy, PostgreSQL, and a GitHub webhook."
+    # --- Secret files (optional) ---
+    header "Secret Files (optional)"
+    echo -e "Upload secret files for preview deployments."
+    echo -e "You can also upload them later manually to /var/secrets/ on the server."
     echo ""
 
-    SETUP_PREVIEWS="n"
-    if confirm "Enable PR preview deployments?"; then
-        SETUP_PREVIEWS="y"
+    ORIGIN_CERT_PATH=""
+    ORIGIN_KEY_PATH=""
+    PEM_PATH=""
 
-        echo -en "${BOLD}Enter your preview domain (e.g. preview.example.com):${NC} "
-        read -r PREVIEW_DOMAIN
-        if [[ -z "$PREVIEW_DOMAIN" ]]; then
-            fatal "Preview domain is required."
-        fi
-        success "Preview domain: $PREVIEW_DOMAIN"
-
-        echo -e "${BOLD}GitHub authentication method:${NC}"
-        echo -e "  ${BOLD}1)${NC} Personal Access Token (PAT)"
-        echo -e "  ${BOLD}2)${NC} GitHub App (recommended for orgs)"
-        echo -en "${BOLD}Choose auth method (1-2):${NC} "
-        read -r AUTH_METHOD_CHOICE
-        AUTH_METHOD_CHOICE="${AUTH_METHOD_CHOICE:-1}"
-
-        PREVIEW_AUTH_MODE="pat"
-        PREVIEW_GITHUB_TOKEN=""
-        PREVIEW_APP_ID=""
-        PREVIEW_INSTALLATION_ID=""
-        PREVIEW_PEM_PATH=""
-
-        if [[ "$AUTH_METHOD_CHOICE" == "2" ]]; then
-            PREVIEW_AUTH_MODE="github-app"
-
-            echo -en "${BOLD}GitHub App ID:${NC} "
-            read -r PREVIEW_APP_ID
-            if [[ -z "$PREVIEW_APP_ID" ]]; then
-                fatal "App ID is required."
-            fi
-
-            echo -en "${BOLD}Installation ID:${NC} "
-            read -r PREVIEW_INSTALLATION_ID
-            if [[ -z "$PREVIEW_INSTALLATION_ID" ]]; then
-                fatal "Installation ID is required."
-            fi
-
-            echo -en "${BOLD}Path to .pem private key file:${NC} "
-            read -r PREVIEW_PEM_PATH
-            if [[ -z "$PREVIEW_PEM_PATH" ]] || [[ ! -f "$PREVIEW_PEM_PATH" ]]; then
-                fatal "PEM file not found: ${PREVIEW_PEM_PATH:-<empty>}"
-            fi
-
-            success "GitHub App auth configured (App ID: $PREVIEW_APP_ID, Installation: $PREVIEW_INSTALLATION_ID)."
-        else
-            echo -en "${BOLD}GitHub token (for cloning repos into preview containers):${NC} "
-            read -r PREVIEW_GITHUB_TOKEN
-            if [[ -z "$PREVIEW_GITHUB_TOKEN" ]]; then
-                fatal "GitHub token is required."
-            fi
-            success "GitHub token set."
-        fi
-
-        echo -en "${BOLD}GitHub webhook secret (leave blank to auto-generate):${NC} "
-        read -r GITHUB_WEBHOOK_SECRET
-        if [[ -z "$GITHUB_WEBHOOK_SECRET" ]]; then
-            GITHUB_WEBHOOK_SECRET=$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32)
-            success "Generated webhook secret: $GITHUB_WEBHOOK_SECRET"
-            echo -e "  ${YELLOW}Save this secret — you'll need it when configuring the GitHub webhook.${NC}"
-        else
-            success "Webhook secret set."
-        fi
-
-        echo -en "${BOLD}Allowed repos (comma-separated owner/repo, leave blank for all):${NC} "
-        read -r ALLOWED_REPOS
-
-        echo -en "${BOLD}Vertex/Elixir repos (comma-separated owner/repo, leave blank for none):${NC} "
-        read -r VERTEX_REPOS
-
-        echo ""
-        echo -e "${BOLD}Cloudflare Origin CA Certificate${NC}"
-        echo -e "  A wildcard Origin CA cert avoids Let's Encrypt rate limits."
-        echo -e "  Generate one at: Cloudflare Dashboard > SSL/TLS > Origin Server > Create Certificate"
+    if confirm "Upload Cloudflare Origin CA certificate + key?"; then
         echo -en "${BOLD}Path to Cloudflare Origin CA certificate (.pem):${NC} "
         read -r ORIGIN_CERT_PATH
         if [[ -z "$ORIGIN_CERT_PATH" ]] || [[ ! -f "$ORIGIN_CERT_PATH" ]]; then
-            fatal "Origin CA certificate not found: ${ORIGIN_CERT_PATH:-<empty>}"
+            fatal "Certificate not found: ${ORIGIN_CERT_PATH:-<empty>}"
         fi
         echo -en "${BOLD}Path to Cloudflare Origin CA private key (.pem):${NC} "
         read -r ORIGIN_KEY_PATH
         if [[ -z "$ORIGIN_KEY_PATH" ]] || [[ ! -f "$ORIGIN_KEY_PATH" ]]; then
-            fatal "Origin CA private key not found: ${ORIGIN_KEY_PATH:-<empty>}"
+            fatal "Private key not found: ${ORIGIN_KEY_PATH:-<empty>}"
         fi
-        success "Origin CA certificate and key found."
+        success "Cloudflare Origin CA cert + key found."
+    fi
+
+    if confirm "Upload GitHub App private key?"; then
+        echo -en "${BOLD}Path to GitHub App private key (.pem):${NC} "
+        read -r PEM_PATH
+        if [[ -z "$PEM_PATH" ]] || [[ ! -f "$PEM_PATH" ]]; then
+            fatal "PEM file not found: ${PEM_PATH:-<empty>}"
+        fi
+        success "GitHub App private key found."
     fi
 
     # --- Summary ---
     header "Configuration Summary"
     echo -e "  ${BOLD}Server IP:${NC}     $SERVER_IP"
-    echo -e "  ${BOLD}Gateway:${NC}       $GATEWAY"
-    echo -e "  ${BOLD}Interface:${NC}     $INTERFACE"
-    echo -e "  ${BOLD}Prefix length:${NC} /$PREFIX_LENGTH"
-    echo -e "  ${BOLD}Disk 1:${NC}        $DISK_DEVICE_0"
-    echo -e "  ${BOLD}Disk 2:${NC}        $DISK_DEVICE_1"
-    echo -e "  ${BOLD}SSH Key:${NC}       ${SSH_KEY:0:50}..."
-    if [[ "$SETUP_PREVIEWS" == "y" ]]; then
-        echo -e "  ${BOLD}Previews:${NC}      enabled"
-        echo -e "  ${BOLD}Preview domain:${NC} *.${PREVIEW_DOMAIN}"
+    if [[ "$SKIP_INSTALL" != "y" ]]; then
+        echo -e "  ${BOLD}Gateway:${NC}       $GATEWAY"
+        echo -e "  ${BOLD}Interface:${NC}     $INTERFACE"
+        echo -e "  ${BOLD}Prefix length:${NC} /$PREFIX_LENGTH"
+        echo -e "  ${BOLD}Disk 1:${NC}        $DISK_DEVICE_0"
+        echo -e "  ${BOLD}Disk 2:${NC}        $DISK_DEVICE_1"
     fi
+    echo -e "  ${BOLD}SSH Key:${NC}       ${SSH_KEY:0:50}..."
+    local secrets_summary=""
+    [[ -n "$ORIGIN_CERT_PATH" ]] && secrets_summary="Cloudflare cert"
+    if [[ -n "$PEM_PATH" ]]; then
+        [[ -n "$secrets_summary" ]] && secrets_summary="$secrets_summary, "
+        secrets_summary="${secrets_summary}GitHub App PEM"
+    fi
+    echo -e "  ${BOLD}Secrets:${NC}       ${secrets_summary:-none}"
     echo ""
 
     if ! confirm "Proceed with these settings?"; then
@@ -527,287 +486,68 @@ install_nixos() {
     fatal "Server did not come back online after 5 minutes. Check the Hetzner console."
 }
 
-# -- Phase 3: Configure server -----------------------------------------------
-configure_server() {
-    header "Phase 3: Configure Server with Agent Container Support"
+# -- Phase 3: Server setup ---------------------------------------------------
+setup_server() {
+    header "Phase 3: Server Setup"
 
-    local script_dir
-    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local server_dir="$script_dir/server-config"
     local ssh_opts="$SSH_IDENTITY_OPT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
 
-    # Create temp working copies (exclude node_modules and dist from webhook)
-    local tmp_dir
-    tmp_dir=$(mktemp -d)
-    rsync -a --exclude='node_modules' --exclude='dist' "$server_dir"/ "$tmp_dir/"
-
-    info "Substituting values in server-config files..."
-
-    # --- configuration.nix ---
-    local cfg="$tmp_dir/configuration.nix"
-    sed -i.tmp "s|YOUR.SERVER.IP.HERE|$SERVER_IP|g" "$cfg"
-    sed -i.tmp "s|YOUR.GATEWAY.IP.HERE|$GATEWAY|g" "$cfg"
-    sed -i.tmp "s|ssh-ed25519 AAAA... your-key-here|$SSH_KEY|g" "$cfg"
-    sed -i.tmp "s|prefixLength = [0-9]*;|prefixLength = $PREFIX_LENGTH;|g" "$cfg"
-    sed -i.tmp "s|interfaces\.enp3s0|interfaces.$INTERFACE|g" "$cfg"
-    sed -i.tmp "s|interface = \"enp3s0\"|interface = \"$INTERFACE\"|g" "$cfg"
-    sed -i.tmp "s|externalInterface = \"enp3s0\"|externalInterface = \"$INTERFACE\"|g" "$cfg"
-    sed -i.tmp "s|DISK_DEVICE_0|$DISK_DEVICE_0|g" "$cfg"
-    sed -i.tmp "s|DISK_DEVICE_1|$DISK_DEVICE_1|g" "$cfg"
-    sed -i.tmp "s|INITRD_KERNEL_MODULES|$INITRD_MODULES|g" "$cfg"
-    rm -f "$cfg.tmp"
-
-    # --- agent-config.nix ---
-    local agent_cfg="$tmp_dir/agent-config.nix"
-    sed -i.tmp "s|ssh-ed25519 AAAA... your-key-here|$SSH_KEY|g" "$agent_cfg"
-    rm -f "$agent_cfg.tmp"
-
-    # --- preview-config.nix ---
-    local preview_cfg="$tmp_dir/preview-config.nix"
-    sed -i.tmp "s|ssh-ed25519 AAAA... your-key-here|$SSH_KEY|g" "$preview_cfg"
-    rm -f "$preview_cfg.tmp"
-
-    # --- vertex-preview-config.nix ---
-    local vertex_cfg="$tmp_dir/vertex-preview-config.nix"
-    if [[ -f "$vertex_cfg" ]]; then
-        sed -i.tmp "s|ssh-ed25519 AAAA... your-key-here|$SSH_KEY|g" "$vertex_cfg"
-        rm -f "$vertex_cfg.tmp"
+    # Clone repo on server
+    info "Setting up repository on server at /opt/src/..."
+    local repo_url
+    repo_url=$(git remote get-url origin 2>/dev/null) || true
+    if [[ -z "$repo_url" ]]; then
+        echo -en "${BOLD}Git remote URL for cloning on server:${NC} "
+        read -r repo_url
+        if [[ -z "$repo_url" ]]; then
+            fatal "Repository URL is required."
+        fi
     fi
 
-    # --- configuration.nix: substitute preview domain ---
-    if [[ "$SETUP_PREVIEWS" == "y" ]]; then
-        sed -i.tmp "s|preview.DOMAIN|${PREVIEW_DOMAIN}|g" "$cfg"
-        rm -f "$cfg.tmp"
-    fi
+    ssh $ssh_opts root@"$SERVER_IP" "
+        if [ -d /opt/src/.git ]; then
+            echo 'Repository already exists at /opt/src/, pulling latest...'
+            cd /opt/src && git fetch origin && git pull origin main || true
+        else
+            git clone '$repo_url' /opt/src
+        fi
+    "
+    success "Repository ready at /opt/src/"
 
-    success "Config files prepared."
+    # Upload secret files
+    ssh $ssh_opts root@"$SERVER_IP" "mkdir -p /var/secrets"
 
-    info "Copying server configuration to /etc/nixos/..."
-    scp $ssh_opts -r "$tmp_dir"/. root@"$SERVER_IP":/etc/nixos/
-
-    success "Files copied."
-
-    info "Creating directories..."
-    ssh $ssh_opts root@"$SERVER_IP" "mkdir -p /var/secrets/claude /var/lib/claude-agents && chmod 755 /var/secrets /var/secrets/claude"
-
-    # Create preview directories and secrets
-    if [[ "$SETUP_PREVIEWS" == "y" ]]; then
-        info "Setting up preview deployment infrastructure..."
-
-        ssh $ssh_opts root@"$SERVER_IP" "mkdir -p /var/lib/preview-deploys /etc/caddy/previews /opt/preview-webhook"
-
-        # Deploy Cloudflare Origin CA certificate and key (permissions fixed after nixos-rebuild creates caddy group)
-        info "Uploading Cloudflare Origin CA certificate and key..."
+    if [[ -n "$ORIGIN_CERT_PATH" ]]; then
+        info "Uploading Cloudflare Origin CA certificate + key..."
         scp $ssh_opts "$ORIGIN_CERT_PATH" root@"$SERVER_IP":/var/secrets/cloudflare-origin.pem
         scp $ssh_opts "$ORIGIN_KEY_PATH" root@"$SERVER_IP":/var/secrets/cloudflare-origin-key.pem
-        success "Origin CA certificate uploaded."
-
-        # Create webhook Caddy route for HTTPS (with Cloudflare Origin CA)
-        ssh $ssh_opts root@"$SERVER_IP" "echo 'webhook.${PREVIEW_DOMAIN} {
-    import cloudflare_tls
-    reverse_proxy localhost:3100
-}' > /etc/caddy/previews/webhook.caddy"
-
-        # Write /var/secrets/preview.env (auth-mode-specific)
-        if [[ "$PREVIEW_AUTH_MODE" == "github-app" ]]; then
-            # Upload PEM file to server
-            info "Uploading GitHub App private key..."
-            scp $ssh_opts "$PREVIEW_PEM_PATH" root@"$SERVER_IP":/var/secrets/github-app.pem
-            ssh $ssh_opts root@"$SERVER_IP" "chmod 600 /var/secrets/github-app.pem"
-
-            ssh $ssh_opts root@"$SERVER_IP" "cat > /var/secrets/preview.env <<ENVEOF
-GITHUB_APP_ID=${PREVIEW_APP_ID}
-GITHUB_APP_INSTALLATION_ID=${PREVIEW_INSTALLATION_ID}
-GITHUB_APP_PRIVATE_KEY_PATH=/var/secrets/github-app.pem
-GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
-PREVIEW_DOMAIN=${PREVIEW_DOMAIN}
-WEBHOOK_PORT=3100
-ALLOWED_REPOS=${ALLOWED_REPOS:-}
-VERTEX_REPOS=${VERTEX_REPOS:-}
-ENVEOF
-chmod 600 /var/secrets/preview.env"
-        else
-            ssh $ssh_opts root@"$SERVER_IP" "cat > /var/secrets/preview.env <<ENVEOF
-GITHUB_TOKEN=${PREVIEW_GITHUB_TOKEN}
-GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
-PREVIEW_DOMAIN=${PREVIEW_DOMAIN}
-WEBHOOK_PORT=3100
-ALLOWED_REPOS=${ALLOWED_REPOS:-}
-VERTEX_REPOS=${VERTEX_REPOS:-}
-ENVEOF
-chmod 600 /var/secrets/preview.env"
-        fi
-
-        success "Preview secrets written."
-
-        # Copy webhook source (build happens after nixos-rebuild makes npm available)
-        info "Copying preview webhook source..."
-        scp $ssh_opts -r "$tmp_dir/preview-webhook"/. root@"$SERVER_IP":/opt/preview-webhook/
-        success "Preview webhook source copied."
+        success "Cloudflare Origin CA cert + key uploaded."
     fi
 
-    success "Directories created."
-
-    info "Running nixos-rebuild switch (this may take a while on first run)..."
-    local gen_before gen_after rebuild_output
-    gen_before=$(ssh $ssh_opts root@"$SERVER_IP" "readlink /nix/var/nix/profiles/system")
-
-    if ! rebuild_output=$(ssh $ssh_opts root@"$SERVER_IP" "cd /etc/nixos && nixos-rebuild switch 2>&1"); then
-        # Check if it failed due to the empty Caddy plugin hash — extract the real hash and retry
-        local caddy_hash
-        caddy_hash=$(echo "$rebuild_output" | sed -n 's/.*got: *\(sha256-[A-Za-z0-9+/=]*\).*/\1/p' | head -1)
-        if [[ -n "$caddy_hash" ]]; then
-            warn "Caddy plugin hash was empty. Got: $caddy_hash — patching and retrying..."
-            ssh $ssh_opts root@"$SERVER_IP" "sed -i 's|hash = \".*\";.*# Leave empty on first build.*|hash = \"$caddy_hash\";|' /etc/nixos/configuration.nix"
-            if ! ssh $ssh_opts root@"$SERVER_IP" "cd /etc/nixos && nixos-rebuild switch"; then
-                warn "nixos-rebuild switch exited with errors on retry, verifying..."
-                gen_after=$(ssh $ssh_opts root@"$SERVER_IP" "readlink /nix/var/nix/profiles/system")
-                if [[ "$gen_before" == "$gen_after" ]]; then
-                    fatal "nixos-rebuild switch failed and no new generation was created. SSH into the server to investigate."
-                fi
-                warn "New generation active ($gen_after). Non-critical service errors occurred during activation — safe to continue."
-            fi
-        else
-            warn "nixos-rebuild switch exited with errors, verifying the switch applied..."
-            gen_after=$(ssh $ssh_opts root@"$SERVER_IP" "readlink /nix/var/nix/profiles/system")
-            if [[ "$gen_before" == "$gen_after" ]]; then
-                echo "$rebuild_output"
-                fatal "nixos-rebuild switch failed and no new generation was created. SSH into the server to investigate."
-            fi
-            warn "New generation active ($gen_after). Non-critical service errors occurred during activation — safe to continue."
-        fi
+    if [[ -n "$PEM_PATH" ]]; then
+        info "Uploading GitHub App private key..."
+        scp $ssh_opts "$PEM_PATH" root@"$SERVER_IP":/var/secrets/github-app.pem
+        ssh $ssh_opts root@"$SERVER_IP" "chmod 600 /var/secrets/github-app.pem"
+        success "GitHub App private key uploaded."
     fi
 
-    success "Server configured with agent container support."
-
-    if [[ "$SETUP_PREVIEWS" == "y" ]]; then
-        # Fix Origin CA cert permissions now that nixos-rebuild created the caddy group
-        info "Setting Origin CA certificate permissions..."
-        ssh $ssh_opts root@"$SERVER_IP" "chown root:caddy /var/secrets/cloudflare-origin.pem /var/secrets/cloudflare-origin-key.pem && chmod 640 /var/secrets/cloudflare-origin.pem /var/secrets/cloudflare-origin-key.pem"
-
-        info "Building preview webhook service..."
-        ssh $ssh_opts root@"$SERVER_IP" "cd /opt/preview-webhook && npm ci && npm run build"
-        success "Preview webhook service deployed."
-    fi
-
-    info "Pre-building agent container closure (so first 'agent create' is instant)..."
-    ssh $ssh_opts root@"$SERVER_IP" "agent build" || {
-        warn "Agent pre-build failed. The first 'agent create' will build it automatically."
-    }
-
-    if [[ "$SETUP_PREVIEWS" == "y" ]]; then
-        info "Pre-building preview container closure..."
-        ssh $ssh_opts root@"$SERVER_IP" "preview build" || {
-            warn "Preview pre-build failed. The first 'preview create' will build it automatically."
-        }
-    fi
-
-    if [[ "$SETUP_VERTEX" == "y" ]]; then
-        info "Pre-building vertex preview container closure (this may take a while)..."
-        ssh $ssh_opts root@"$SERVER_IP" "preview build --type vertex" || {
-            warn "Vertex pre-build failed. The first 'preview create --type vertex' will build it automatically."
-        }
-    fi
-
-    # Clean up
-    rm -rf "$tmp_dir"
-}
-
-# -- Phase 4: Claude login ---------------------------------------------------
-setup_claude() {
-    header "Phase 4: Claude Code Login"
-
-    local ssh_opts="$SSH_IDENTITY_OPT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
-
-    echo -e "${BOLD}This will run 'claude login' on the server.${NC}"
-    echo -e "You'll see an OAuth URL - ${YELLOW}open it in your browser${NC} to authenticate."
-    echo -e "The login process is interactive and runs on the remote server."
+    # Run server-setup.sh interactively
+    info "Starting interactive server setup..."
+    echo ""
+    echo -e "${YELLOW}Handing off to server-setup.sh on the server.${NC}"
+    echo -e "${YELLOW}Follow the prompts below to complete configuration.${NC}"
     echo ""
 
-    if ! confirm "Ready to log in to Claude?"; then
-        warn "Skipping Claude login. You can do this later by running:"
-        echo "  ssh -t root@$SERVER_IP 'CLAUDE_CONFIG_DIR=/var/secrets/claude claude login'"
-        return
-    fi
-
-    ssh -t $ssh_opts root@"$SERVER_IP" 'CLAUDE_CONFIG_DIR=/var/secrets/claude claude login' || {
-        warn "Claude login may have exited with an error (this can happen if you dismiss the trust prompt — that's OK)."
-    }
-
-    # Always fix permissions if credentials exist — the login may have succeeded
-    # even if claude exited non-zero (e.g. trust prompt dismissed).
-    # Files must be world-readable so they can be copied into containers.
-    if ssh $ssh_opts root@"$SERVER_IP" "test -f /var/secrets/claude/.credentials.json"; then
-        info "Fixing credential permissions..."
-        ssh $ssh_opts root@"$SERVER_IP" "chmod -R a+rX /var/secrets/claude"
-        success "Credentials found and permissions set."
-    else
-        warn "No credentials found at /var/secrets/claude/.credentials.json"
-        warn "You can log in later with:"
-        echo "  ssh -t root@$SERVER_IP 'CLAUDE_CONFIG_DIR=/var/secrets/claude claude login'"
-        echo "  ssh root@$SERVER_IP 'chmod -R a+rX /var/secrets/claude'"
-    fi
-}
-
-# -- Phase 5: Done -----------------------------------------------------------
-print_summary() {
-    header "Setup Complete!"
-
-    echo -e "${GREEN}Your NixOS server with agent container support is ready.${NC}"
-    echo ""
-    echo -e "${BOLD}Quick Start:${NC}"
-    echo ""
-    echo -e "  ${CYAN}# Create a new agent container (instant after first build)${NC}"
-    echo "  ssh root@$SERVER_IP 'agent create myagent'"
-    echo ""
-    echo -e "  ${CYAN}# SSH into the agent${NC}"
-    echo "  ssh -J root@$SERVER_IP agent@<container-ip>"
-    echo ""
-    echo -e "  ${CYAN}# Run Claude in the container${NC}"
-    echo "  claude"
-    echo ""
-    echo -e "  ${CYAN}# Run Claude headlessly (skip all permission prompts)${NC}"
-    echo "  claude --dangerously-skip-permissions"
-    echo ""
-    echo -e "  ${CYAN}# List agents${NC}"
-    echo "  ssh root@$SERVER_IP 'agent list'"
-    echo ""
-    echo -e "  ${CYAN}# Destroy when done${NC}"
-    echo "  ssh root@$SERVER_IP 'agent destroy myagent'"
-    echo ""
-    if [[ "$SETUP_PREVIEWS" == "y" ]]; then
-        echo ""
-        echo -e "${BOLD}Preview Deployments:${NC}"
-        echo ""
-        echo -e "  ${CYAN}# Deploy a branch as a preview${NC}"
-        echo "  ssh root@$SERVER_IP 'preview create owner/repo branch-name'"
-        echo ""
-        echo -e "  ${CYAN}# List active previews${NC}"
-        echo "  ssh root@$SERVER_IP 'preview list'"
-        echo ""
-        echo -e "  ${CYAN}# View build logs${NC}"
-        echo "  ssh root@$SERVER_IP 'preview logs <slug> --follow'"
-        echo ""
-        echo -e "  ${CYAN}# Destroy a preview${NC}"
-        echo "  ssh root@$SERVER_IP 'preview destroy <slug>'"
-        echo ""
-        echo -e "  ${BOLD}Webhook URL:${NC}  https://$SERVER_IP:3100/webhook/github"
-        echo -e "  ${BOLD}DNS required:${NC} *.${PREVIEW_DOMAIN} A → $SERVER_IP (Cloudflare proxied)"
-        echo ""
-    fi
-
-    echo -e "See ${BOLD}README.md${NC} for more details on managing agents."
+    ssh -t $ssh_opts root@"$SERVER_IP" 'cd /opt/src && ./server-setup.sh'
 }
 
 # -- Main ---------------------------------------------------------------------
-SETUP_VERTEX="n"
 SKIP_INSTALL="n"
 
 main() {
     # Parse flags
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --vertex) SETUP_VERTEX="y"; shift ;;
             --skip-install) SKIP_INSTALL="y"; shift ;;
             *) fatal "Unknown argument: $1" ;;
         esac
@@ -820,10 +560,6 @@ main() {
     echo "  ╚══════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 
-    if [[ "$SETUP_VERTEX" == "y" ]]; then
-        info "Vertex preview support enabled."
-    fi
-
     check_prerequisites
     gather_info
     if [[ "$SKIP_INSTALL" == "y" ]]; then
@@ -831,9 +567,7 @@ main() {
     else
         install_nixos
     fi
-    configure_server
-    setup_claude
-    print_summary
+    setup_server
 }
 
 main "$@"
