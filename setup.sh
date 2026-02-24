@@ -513,7 +513,7 @@ setup_server() {
     ssh $ssh_opts root@"$SERVER_IP" "
         if [ -d /opt/src/.git ]; then
             echo 'Repository already exists at /opt/src/, pulling latest...'
-            cd /opt/src && git fetch origin && git checkout '$current_branch' && git pull origin '$current_branch' || true
+            cd /opt/src && git fetch origin && git checkout '$current_branch' && git reset --hard 'origin/$current_branch'
         else
             git clone --branch '$current_branch' '$repo_url' /opt/src
         fi
