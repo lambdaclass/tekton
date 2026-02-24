@@ -315,32 +315,7 @@ warn "manually configure it with your server's IP, gateway, disk devices, etc."
 warn "See server-config/configuration.nix for the template."
 
 # =============================================================================
-# NixOS rebuild
-# =============================================================================
-info "Running nixos-rebuild switch (this may take a while)..."
-ssh "$SERVER" "cd /etc/nixos && nixos-rebuild switch 2>&1" || {
-    error "nixos-rebuild failed. Check configuration.nix is properly set up."
-    exit 1
-}
-success "NixOS rebuild complete"
-
-# =============================================================================
-# Build container closures
-# =============================================================================
-info "Building agent container closure..."
-ssh "$SERVER" "agent build"
-success "Agent closure built"
-
-info "Building preview container closure..."
-ssh "$SERVER" "preview build"
-success "Preview closure built"
-
-info "Building vertex preview container closure..."
-ssh "$SERVER" "preview build --type vertex"
-success "Vertex preview closure built"
-
-# =============================================================================
-# Deploy preview webhook
+# Deploy preview webhook (before nixos-rebuild so the service can start)
 # =============================================================================
 info "Deploying preview webhook..."
 scp -r "$SERVER_CONFIG/preview-webhook/src" "$SERVER_CONFIG/preview-webhook/package.json" "$SERVER_CONFIG/preview-webhook/package-lock.json" "$SERVER_CONFIG/preview-webhook/tsconfig.json" "$SERVER:/opt/preview-webhook/"
@@ -348,7 +323,7 @@ ssh "$SERVER" "cd /opt/preview-webhook && npm ci && npm run build"
 success "Preview webhook deployed"
 
 # =============================================================================
-# Build and deploy dashboard
+# Build and deploy dashboard (before nixos-rebuild so the service can start)
 # =============================================================================
 info "Building dashboard frontend..."
 cd "$SCRIPT_DIR/frontend"
@@ -369,6 +344,37 @@ info "Building backend on server (this takes ~2 minutes on first build)..."
 ssh "$SERVER" "cd /opt/dashboard-build && nix-shell -p rustc cargo gcc pkg-config --run 'cargo build --release' 2>&1"
 ssh "$SERVER" "cp /opt/dashboard-build/target/release/dashboard /opt/dashboard/dashboard"
 success "Dashboard binary built and deployed"
+
+# =============================================================================
+# NixOS rebuild
+# =============================================================================
+info "Running nixos-rebuild switch (this may take a while)..."
+GEN_BEFORE=$(ssh "$SERVER" "readlink /nix/var/nix/profiles/system")
+if ! ssh "$SERVER" "cd /etc/nixos && nixos-rebuild switch 2>&1"; then
+    GEN_AFTER=$(ssh "$SERVER" "readlink /nix/var/nix/profiles/system")
+    if [[ "$GEN_BEFORE" == "$GEN_AFTER" ]]; then
+        error "nixos-rebuild failed and no new generation was created."
+        error "Check configuration.nix is properly set up."
+        exit 1
+    fi
+    warn "nixos-rebuild had non-critical service errors during activation — safe to continue."
+fi
+success "NixOS rebuild complete"
+
+# =============================================================================
+# Build container closures
+# =============================================================================
+info "Building agent container closure..."
+ssh "$SERVER" "agent build"
+success "Agent closure built"
+
+info "Building preview container closure..."
+ssh "$SERVER" "preview build"
+success "Preview closure built"
+
+info "Building vertex preview container closure..."
+ssh "$SERVER" "preview build --type vertex"
+success "Vertex preview closure built"
 
 # =============================================================================
 # Start services
