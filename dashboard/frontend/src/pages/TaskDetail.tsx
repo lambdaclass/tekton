@@ -225,7 +225,7 @@ export default function TaskDetail() {
       )}
 
       {showChat && me && (
-        <TaskChat taskId={id!} currentUserEmail={me.email} previewUrl={task.preview_url ?? undefined} />
+        <TaskChat taskId={id!} currentUserEmail={me.login} previewUrl={task.preview_url ?? undefined} />
       )}
 
       {subtasks && subtasks.length > 0 && (

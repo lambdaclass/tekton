@@ -4,27 +4,27 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
-    pub sub: String,   // email
+    pub sub: String,   // github_login
     pub name: String,
     pub exp: usize,
 }
 
 #[derive(Debug, Serialize)]
 pub struct UserInfo {
-    pub email: String,
+    pub login: String,
     pub name: String,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct GoogleTokenResponse {
+pub struct GitHubTokenResponse {
     pub access_token: String,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct GoogleUserInfo {
-    pub email: String,
+pub struct GitHubUserInfo {
+    pub login: String,
     pub name: Option<String>,
-    pub hd: Option<String>, // hosted domain
+    pub email: Option<String>,
 }
 
 // ── Previews ──

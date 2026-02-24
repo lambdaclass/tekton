@@ -50,10 +50,10 @@ export default function Layout() {
         <div className="text-center">
           <h1 className="text-2xl font-bold mb-4">Preview Dashboard</h1>
           <p className="text-muted-foreground mb-6">
-            Sign in with your Google account
+            Sign in with your GitHub account
           </p>
           <Button asChild size="lg">
-            <a href="/api/auth/login">Sign in with Google</a>
+            <a href="/api/auth/login">Sign in with GitHub</a>
           </Button>
         </div>
       </div>
@@ -67,12 +67,9 @@ export default function Layout() {
     window.location.reload();
   };
 
-  const initials = user.email
-    .split('@')[0]
-    .split('.')
-    .map((p) => p[0]?.toUpperCase())
-    .join('')
-    .slice(0, 2);
+  const initials = user.login
+    .slice(0, 2)
+    .toUpperCase();
 
   const isActive = (path: string) => {
     if (path === '/') return location.pathname === '/';
@@ -121,11 +118,11 @@ export default function Layout() {
         <SidebarFooter>
           <SidebarMenu>
             <SidebarMenuItem>
-              <SidebarMenuButton tooltip={user.email} className="cursor-default">
+              <SidebarMenuButton tooltip={user.login} className="cursor-default">
                 <Avatar className="size-5">
                   <AvatarFallback className="text-[10px]">{initials}</AvatarFallback>
                 </Avatar>
-                <span className="truncate text-xs">{user.email}</span>
+                <span className="truncate text-xs">{user.login}</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>

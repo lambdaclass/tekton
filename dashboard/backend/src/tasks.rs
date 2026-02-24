@@ -15,6 +15,48 @@ use crate::models::{
 };
 use crate::shell;
 
+#[derive(Clone)]
+struct GitIdentity {
+    token: String,
+    name: String,
+    email: String,
+}
+
+async fn get_git_identity(db: &SqlitePool, github_login: &str) -> Result<GitIdentity, AppError> {
+    let row = sqlx::query_as::<_, (String, String, Option<String>)>(
+        "SELECT github_token, name, email FROM users WHERE github_login = ?"
+    )
+    .bind(github_login)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(|| AppError::Auth(format!("User '{github_login}' not found in database")))?;
+
+    let email = row.2.unwrap_or_else(|| format!("{github_login}@users.noreply.github.com"));
+
+    Ok(GitIdentity {
+        token: row.0,
+        name: row.1,
+        email,
+    })
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct FileAddition {
+    path: String,
+    contents: String, // base64-encoded
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct FileDeletion {
+    path: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct FileChanges {
+    additions: Vec<FileAddition>,
+    deletions: Vec<FileDeletion>,
+}
+
 pub type TaskChannels = Arc<DashMap<String, broadcast::Sender<String>>>;
 
 pub fn new_task_channels() -> TaskChannels {
@@ -189,6 +231,9 @@ pub async fn create_task(
         .fetch_one(&state.db)
         .await?;
 
+    // Get the user's git identity (GitHub token, name, email)
+    let git_id = get_git_identity(&state.db, created_by).await?;
+
     // Create broadcast channel for this task
     let (tx, _) = broadcast::channel(1024);
     state.task_channels.insert(id.clone(), tx.clone());
@@ -207,7 +252,7 @@ pub async fn create_task(
     tokio::spawn(async move {
         let agent_name = format!("a-{short}");
         let result = run_task_pipeline(
-            &config, &db, &task_id, &short, &prompt, &repo, &base, image_url_json2.as_deref(), tx.clone(),
+            &config, &db, &task_id, &short, &prompt, &repo, &base, image_url_json2.as_deref(), &git_id, tx.clone(),
         )
         .await;
 
@@ -239,6 +284,7 @@ async fn run_task_pipeline(
     repo: &str,
     base_branch: &str,
     image_url_json: Option<&str>,
+    git_id: &GitIdentity,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
     let agent_name = format!("a-{short_id}");
@@ -254,12 +300,14 @@ async fn run_task_pipeline(
     update_task_status(db, task_id, "cloning", None).await?;
     log_and_send(db, task_id, &tx, &format!("[STEP] Cloning {repo} and creating branch {branch_name}..."));
 
-    let token = get_github_token().await?;
-    let clone_url = format!("https://x-access-token:{token}@github.com/{repo}.git");
+    let clone_url = format!("https://x-access-token:{}@github.com/{repo}.git", git_id.token);
 
+    let escaped_name = git_id.name.replace('\'', "'\\''");
+    let escaped_email = git_id.email.replace('\'', "'\\''");
     let clone_cmd = format!(
         "cd /home/agent && git clone --branch {base_branch} --single-branch '{clone_url}' repo && \
-         cd repo && git checkout -b '{branch_name}'"
+         cd repo && git checkout -b '{branch_name}' && \
+         git config user.name '{escaped_name}' && git config user.email '{escaped_email}'"
     );
     shell::agent_exec(&agent_name, &clone_cmd, tx.clone()).await?;
     update_task_field(db, task_id, "branch_name", &branch_name).await?;
@@ -288,10 +336,11 @@ async fn run_task_pipeline(
 
     // Step 3c: Push and create preview
     let mut preview_created = false;
-    push_and_preview(config, db, task_id, short_id, &agent_name, repo, &branch_name, &mut preview_created, &tx).await?;
+    let mut branch_pushed = false;
+    push_and_preview(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, &tx).await?;
 
     // Step 4: Follow-up loop
-    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, &branch_name, &mut preview_created, &tx).await?;
+    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, &tx).await?;
 
     // Step 5: Destroy agent
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
@@ -450,7 +499,10 @@ async fn follow_up_loop(
     agent_name: &str,
     repo: &str,
     branch_name: &str,
+    base_branch: &str,
+    branch_pushed: &mut bool,
     preview_created: &mut bool,
+    git_id: &GitIdentity,
     tx: &broadcast::Sender<String>,
 ) -> Result<FollowUpOutcome, AppError> {
     let mut last_seen_id: i64 = 0;
@@ -512,7 +564,7 @@ async fn follow_up_loop(
             let _ = commit_changes_in_agent(agent_name, &msg.content, tx.clone()).await?;
 
             // Push and update preview
-            push_and_preview(config, db, task_id, short_id, agent_name, repo, branch_name, preview_created, tx).await?;
+            push_and_preview(config, db, task_id, short_id, agent_name, repo, branch_name, base_branch, branch_pushed, preview_created, git_id, tx).await?;
 
             update_task_status(db, task_id, "awaiting_followup", None).await?;
             let _ = tx.send("[STATUS] Waiting for more follow-up messages...".to_string());
@@ -536,6 +588,197 @@ fn build_followup_prompt(original_prompt: &str, history: &[String], new_message:
     prompt
 }
 
+/// Collect all file changes in the agent repo relative to a base ref.
+/// Runs a Python script inside the container that stages everything,
+/// diffs against base_ref, and outputs JSON with additions (base64) and deletions.
+async fn collect_file_changes(agent_name: &str, base_ref: &str) -> Result<FileChanges, AppError> {
+    // Sanitize base_ref (should be like "origin/main" — never contains quotes)
+    let safe_base_ref = base_ref.replace('\'', "").replace('"', "");
+    let python_script = r#"
+import subprocess, json, base64, os
+base_ref = "__BASE_REF__"
+os.chdir("/home/agent/repo")
+subprocess.run(["git", "add", "-A"], check=True)
+if subprocess.run(["git", "diff", "--cached", "--quiet"]).returncode != 0:
+    subprocess.run(["git", "commit", "-m", "temp"], check=True)
+result = subprocess.run(
+    ["git", "diff", "--name-status", base_ref + "..HEAD"],
+    capture_output=True, text=True, check=True)
+changes = {"additions": [], "deletions": []}
+for line in result.stdout.strip().split("\n"):
+    if not line: continue
+    parts = line.split("\t")
+    status = parts[0][0]
+    if status == "D":
+        changes["deletions"].append({"path": parts[1]})
+    elif status == "R":
+        changes["deletions"].append({"path": parts[1]})
+        with open(parts[2], "rb") as f:
+            changes["additions"].append({"path": parts[2], "contents": base64.b64encode(f.read()).decode()})
+    else:
+        with open(parts[-1], "rb") as f:
+            changes["additions"].append({"path": parts[-1], "contents": base64.b64encode(f.read()).decode()})
+print(json.dumps(changes))
+"#
+    .replace("__BASE_REF__", &safe_base_ref);
+
+    let cmd = ["python3 -c '", python_script.trim(), "'"].concat();
+    let output = shell::agent_exec_capture(agent_name, &cmd).await?;
+
+    // The output may contain SSH warnings before the JSON; find the JSON line
+    let json_line = output
+        .lines()
+        .rev()
+        .find(|l| l.starts_with('{'))
+        .unwrap_or(output.trim());
+
+    let changes: FileChanges = serde_json::from_str(json_line).map_err(|e| {
+        AppError::Internal(format!(
+            "Failed to parse file changes JSON: {e}\nRaw output: {output}"
+        ))
+    })?;
+    Ok(changes)
+}
+
+/// Create a branch on GitHub via REST API.
+async fn create_github_branch(
+    token: &str,
+    repo: &str,
+    branch_name: &str,
+    sha: &str,
+) -> Result<(), AppError> {
+    let client = reqwest::Client::new();
+    let url = format!("https://api.github.com/repos/{repo}/git/refs");
+    let body = serde_json::json!({
+        "ref": format!("refs/heads/{branch_name}"),
+        "sha": sha,
+    });
+
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("User-Agent", "dashboard")
+        .header("Accept", "application/vnd.github+json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("GitHub create branch request failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!(
+            "GitHub create branch failed ({status}): {body}"
+        )));
+    }
+    Ok(())
+}
+
+/// Create a verified commit on a GitHub branch via the GraphQL API.
+/// Returns the new commit OID.
+async fn github_create_commit(
+    token: &str,
+    repo: &str,
+    branch_name: &str,
+    expected_head_oid: &str,
+    file_changes: &FileChanges,
+    message: &str,
+) -> Result<String, AppError> {
+    let client = reqwest::Client::new();
+
+    let additions: Vec<serde_json::Value> = file_changes
+        .additions
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "path": a.path,
+                "contents": a.contents,
+            })
+        })
+        .collect();
+
+    let deletions: Vec<serde_json::Value> = file_changes
+        .deletions
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "path": d.path,
+            })
+        })
+        .collect();
+
+    let query = "mutation($input: CreateCommitOnBranchInput!) { \
+        createCommitOnBranch(input: $input) { \
+            commit { oid url } \
+        } \
+    }";
+
+    let variables = serde_json::json!({
+        "input": {
+            "branch": {
+                "repositoryNameWithOwner": repo,
+                "branchName": branch_name,
+            },
+            "message": { "headline": message },
+            "fileChanges": {
+                "additions": additions,
+                "deletions": deletions,
+            },
+            "expectedHeadOid": expected_head_oid,
+        }
+    });
+
+    let body = serde_json::json!({
+        "query": query,
+        "variables": variables,
+    });
+
+    let resp = client
+        .post("https://api.github.com/graphql")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("User-Agent", "dashboard")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("GitHub GraphQL request failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!(
+            "GitHub GraphQL failed ({status}): {text}"
+        )));
+    }
+
+    let resp_json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to parse GraphQL response: {e}")))?;
+
+    if let Some(errors) = resp_json.get("errors") {
+        return Err(AppError::Internal(format!("GraphQL errors: {errors}")));
+    }
+
+    let oid = resp_json
+        .pointer("/data/createCommitOnBranch/commit/oid")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::Internal("Missing commit OID in GraphQL response".into()))?
+        .to_string();
+
+    Ok(oid)
+}
+
+/// Sync the agent's local repo to match the remote branch after an API push.
+/// Uses explicit refspec because the repo is cloned with --single-branch.
+async fn sync_agent_to_remote(agent_name: &str, branch_name: &str) -> Result<(), AppError> {
+    let escaped = branch_name.replace('\'', "'\\''");
+    let cmd = format!(
+        "cd /home/agent/repo && git fetch origin '{escaped}:refs/remotes/origin/{escaped}' && git reset --hard 'origin/{escaped}'"
+    );
+    shell::agent_exec_capture(agent_name, &cmd).await?;
+    Ok(())
+}
+
 async fn push_and_preview(
     config: &Config,
     db: &SqlitePool,
@@ -544,20 +787,82 @@ async fn push_and_preview(
     agent_name: &str,
     repo: &str,
     branch_name: &str,
+    base_branch: &str,
+    branch_pushed: &mut bool,
     preview_created: &mut bool,
+    git_id: &GitIdentity,
     tx: &broadcast::Sender<String>,
 ) -> Result<(), AppError> {
-    // Push
-    update_task_status(db, task_id, "pushing", None).await?;
-    log_and_send(db, task_id, tx, "[STEP] Pushing branch to GitHub...");
+    // Determine base_ref for diff
+    let base_ref = if *branch_pushed {
+        format!("origin/{branch_name}")
+    } else {
+        format!("origin/{base_branch}")
+    };
 
-    let token = get_github_token().await?;
-    let push_cmd = format!(
-        "cd /home/agent/repo && \
-         git remote set-url origin 'https://x-access-token:{token}@github.com/{repo}.git' && \
-         git push -u origin '{branch_name}'"
+    // Collect file changes via Python script in the agent container
+    update_task_status(db, task_id, "pushing", None).await?;
+    log_and_send(db, task_id, tx, "[STEP] Collecting file changes...");
+    let file_changes = collect_file_changes(agent_name, &base_ref).await?;
+
+    if file_changes.additions.is_empty() && file_changes.deletions.is_empty() {
+        log_and_send(db, task_id, tx, "[WARN] No file changes to push.");
+        return Ok(());
+    }
+
+    log_and_send(
+        db, task_id, tx,
+        &format!(
+            "[STEP] Pushing {} addition(s) and {} deletion(s) via GitHub API...",
+            file_changes.additions.len(),
+            file_changes.deletions.len()
+        ),
     );
-    shell::agent_exec(agent_name, &push_cmd, tx.clone()).await?;
+
+    // On first push: get base SHA and create the branch on GitHub
+    let expected_oid = if !*branch_pushed {
+        let base_sha = shell::agent_exec_capture(
+            agent_name,
+            &format!("cd /home/agent/repo && git rev-parse '{base_ref}'"),
+        )
+        .await?
+        .trim()
+        .to_string();
+
+        create_github_branch(&git_id.token, repo, branch_name, &base_sha).await?;
+        log_and_send(db, task_id, tx, &format!("[STEP] Created branch {branch_name} on GitHub."));
+        base_sha
+    } else {
+        shell::agent_exec_capture(
+            agent_name,
+            &format!("cd /home/agent/repo && git rev-parse 'origin/{branch_name}'"),
+        )
+        .await?
+        .trim()
+        .to_string()
+    };
+
+    // Build commit message from the task prompt
+    let commit_msg = sqlx::query_scalar::<_, String>("SELECT prompt FROM tasks WHERE id = ?")
+        .bind(task_id)
+        .fetch_one(db)
+        .await
+        .map(|p| {
+            let truncated: String = p.chars().take(72).collect();
+            format!("Claude: {truncated}")
+        })
+        .unwrap_or_else(|_| format!("Claude: {}", &task_id[..6]));
+
+    // Create verified commit via GitHub GraphQL API
+    let oid = github_create_commit(
+        &git_id.token, repo, branch_name, &expected_oid, &file_changes, &commit_msg,
+    )
+    .await?;
+    log_and_send(db, task_id, tx, &format!("[STEP] Created verified commit {oid}"));
+
+    // Sync local repo to match the API-created commit
+    sync_agent_to_remote(agent_name, branch_name).await?;
+    *branch_pushed = true;
 
     // Preview
     let preview_slug = format!("t-{short_id}");
@@ -776,21 +1081,6 @@ pub async fn send_message(
 
 // ── Helpers ──
 
-async fn get_github_token() -> Result<String, AppError> {
-    let resp = reqwest::Client::new()
-        .get("http://127.0.0.1:3100/internal/token")
-        .send()
-        .await?
-        .error_for_status()
-        .map_err(|e| AppError::Internal(format!("Failed to get GitHub token: {e}")))?;
-
-    let body: serde_json::Value = resp.json().await?;
-    body["token"]
-        .as_str()
-        .map(String::from)
-        .ok_or_else(|| AppError::Internal("Token response missing 'token' field".into()))
-}
-
 fn log_and_send(
     db: &SqlitePool,
     task_id: &str,
@@ -847,7 +1137,7 @@ async fn update_task_field(
 }
 
 pub async fn reopen_task(
-    _user: AuthUser,
+    user: AuthUser,
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Task>, AppError> {
@@ -870,6 +1160,9 @@ pub async fn reopen_task(
 
     let short_id = &id[..6];
 
+    // Get the reopening user's git identity
+    let git_id = get_git_identity(&state.db, &user.0.sub).await?;
+
     // Reset status and error
     update_task_status(&state.db, &id, "creating_agent", None).await?;
 
@@ -884,13 +1177,14 @@ pub async fn reopen_task(
     let short = short_id.to_string();
     let repo = task.repo.clone();
     let branch = branch_name.to_string();
+    let base = task.base_branch.clone();
     let has_preview = task.preview_url.is_some();
     let channels = state.task_channels.clone();
 
     tokio::spawn(async move {
         let agent_name = format!("a-{short}");
         let result = run_reopen_pipeline(
-            &config, &db, &task_id, &short, &repo, &branch, has_preview, tx.clone(),
+            &config, &db, &task_id, &short, &repo, &branch, &base, has_preview, &git_id, tx.clone(),
         )
         .await;
 
@@ -922,7 +1216,9 @@ async fn run_reopen_pipeline(
     short_id: &str,
     repo: &str,
     branch_name: &str,
+    base_branch: &str,
     had_preview: bool,
+    git_id: &GitIdentity,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
     let agent_name = format!("a-{short_id}");
@@ -936,18 +1232,22 @@ async fn run_reopen_pipeline(
     update_task_status(db, task_id, "cloning", None).await?;
     log_and_send(db, task_id, &tx, &format!("[STEP] Cloning {repo} and checking out existing branch {branch_name}..."));
 
-    let token = get_github_token().await?;
-    let clone_url = format!("https://x-access-token:{token}@github.com/{repo}.git");
+    let clone_url = format!("https://x-access-token:{}@github.com/{repo}.git", git_id.token);
 
+    let escaped_name = git_id.name.replace('\'', "'\\''");
+    let escaped_email = git_id.email.replace('\'', "'\\''");
     let clone_cmd = format!(
         "cd /home/agent && git clone '{clone_url}' repo && \
-         cd repo && git checkout '{branch_name}'"
+         cd repo && git checkout '{branch_name}' && \
+         git config user.name '{escaped_name}' && git config user.email '{escaped_email}'"
     );
     shell::agent_exec(&agent_name, &clone_cmd, tx.clone()).await?;
 
     // Step 3: Go straight into follow-up loop
+    // branch_pushed starts as true since the branch already exists on GitHub
+    let mut branch_pushed = true;
     let mut preview_created = had_preview;
-    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, branch_name, &mut preview_created, &tx).await?;
+    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, &tx).await?;
 
     // Step 4: Destroy agent
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");

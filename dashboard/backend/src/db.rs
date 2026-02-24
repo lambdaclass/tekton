@@ -82,5 +82,18 @@ async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
         let _ = sqlx::query(col_sql).execute(pool).await;
     }
 
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS users (
+            github_login TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            email TEXT,
+            github_token TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }

@@ -39,27 +39,6 @@ export CLAUDE_CODE_OAUTH_TOKEN=$TOKEN
 EOF
         chmod 644 /etc/profile.d/claude-token.sh
       fi
-
-      # Copy SSH signing key for signed git commits
-      mkdir -p /home/agent/.ssh
-      cp /mnt/claude-creds/signing_key /home/agent/.ssh/signing_key 2>/dev/null || true
-      chown -R agent:users /home/agent/.ssh
-      chmod 700 /home/agent/.ssh
-      chmod 600 /home/agent/.ssh/signing_key 2>/dev/null || true
-
-      # Configure git to sign commits with SSH key
-      cat > /home/agent/.gitconfig << 'GITEOF'
-[user]
-	name = Claude (Dashboard)
-	email = YOUR_GIT_EMAIL
-[gpg]
-	format = ssh
-[user]
-	signingkey = /home/agent/.ssh/signing_key
-[commit]
-	gpgsign = true
-GITEOF
-      chown agent:users /home/agent/.gitconfig
     '';
   };
 

@@ -224,6 +224,21 @@ pub async fn scp_to_agent(
     Ok(())
 }
 
+/// Run a command inside an agent container via SSH and capture stdout.
+pub async fn agent_exec_capture(name: &str, cmd_line: &str) -> Result<String, AppError> {
+    let ip = agent_ip(name)?;
+    run_cmd(
+        "ssh",
+        &[
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            &format!("agent@{ip}"),
+            cmd_line,
+        ],
+    )
+    .await
+}
+
 /// Run a command inside an agent container via SSH.
 pub async fn agent_exec(
     name: &str,

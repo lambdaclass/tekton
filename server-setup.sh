@@ -128,15 +128,16 @@ header "Step 1: Configuration"
 
 echo -e "${BOLD}--- Domain ---${NC}"
 prompt DOMAIN "Preview domain (e.g., yourdomain.com)"
-prompt ALLOWED_DOMAIN "Allowed email domain for login (e.g., yourdomain.com)" "$DOMAIN"
 echo ""
 
-echo -e "${BOLD}--- Google OAuth ---${NC}"
-echo "Create at: https://console.cloud.google.com/ > APIs & Services > Credentials"
-echo "Redirect URI must be: https://dashboard.${DOMAIN}/api/auth/callback"
+echo -e "${BOLD}--- GitHub OAuth App ---${NC}"
+echo "Create at: GitHub > Settings > Developer settings > OAuth Apps > New OAuth App"
+echo "Homepage URL:          https://dashboard.${DOMAIN}"
+echo "Authorization callback URL: https://dashboard.${DOMAIN}/api/auth/callback"
 echo ""
-prompt GOOGLE_CLIENT_ID "Google OAuth Client ID"
-prompt_secret GOOGLE_CLIENT_SECRET "Google OAuth Client Secret"
+prompt GITHUB_CLIENT_ID "GitHub OAuth App Client ID"
+prompt_secret GITHUB_CLIENT_SECRET "GitHub OAuth App Client Secret"
+prompt GITHUB_ORG "GitHub organization (users must be members to login)"
 echo ""
 
 echo -e "${BOLD}--- GitHub Personal Access Token ---${NC}"
@@ -204,13 +205,6 @@ fi
 if [[ -n "${VERTEX_REPOS:-}" ]]; then
     success "Vertex repos: $VERTEX_REPOS"
 fi
-echo ""
-
-echo -e "${BOLD}--- Git Commit Signing ---${NC}"
-echo "Agent containers sign commits with an SSH key."
-echo "The commit email must match the GitHub account where the signing key is added."
-echo ""
-prompt GIT_EMAIL "Git commit email (must match your GitHub account)"
 echo ""
 
 # =============================================================================
@@ -319,12 +313,11 @@ echo "  Prefix:         /$PREFIX_LENGTH"
 echo "  Disk 0:         $DISK_DEVICE_0"
 echo "  Disk 1:         $DISK_DEVICE_1"
 echo "  Domain:         $DOMAIN"
-echo "  Login domain:   $ALLOWED_DOMAIN"
-echo "  Google Client:  ${GOOGLE_CLIENT_ID:0:20}..."
+echo "  GitHub Org:     $GITHUB_ORG"
+echo "  GitHub Client:  ${GITHUB_CLIENT_ID:0:20}..."
 echo "  GitHub PAT:     ****${GITHUB_PAT: -4}"
 echo "  Allowed repos:  ${ALLOWED_REPOS:-<all>}"
 echo "  Vertex repos:   ${VERTEX_REPOS:-<none>}"
-echo "  Git email:      $GIT_EMAIL"
 echo ""
 
 if ! confirm "Proceed with setup?"; then
@@ -341,30 +334,7 @@ info "Generating JWT secret..."
 JWT_SECRET=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
 success "JWT secret generated."
 
-info "Generating SSH signing key for git commits..."
-mkdir -p /var/secrets/claude-signing /var/secrets/claude
-if [[ ! -f /var/secrets/claude-signing/signing_key ]]; then
-    ssh-keygen -t ed25519 -f /var/secrets/claude-signing/signing_key -N '' -C 'claude-dashboard-signing' 2>/dev/null
-    success "SSH signing key generated."
-else
-    success "SSH signing key already exists."
-fi
-cp /var/secrets/claude-signing/signing_key /var/secrets/claude/signing_key
-cp /var/secrets/claude-signing/signing_key.pub /var/secrets/claude/signing_key.pub
-
-SIGNING_PUBKEY=$(cat /var/secrets/claude-signing/signing_key.pub)
-echo ""
-echo -e "${YELLOW}=== ACTION REQUIRED ===${NC}"
-echo -e "Add this SSH key to GitHub as a ${BOLD}Signing Key${NC}:"
-echo "  1. Go to https://github.com/settings/keys"
-echo "  2. Click 'New SSH key'"
-echo "  3. Key type: Signing Key"
-echo "  4. Paste:"
-echo ""
-echo "  $SIGNING_PUBKEY"
-echo ""
-echo -ne "Press Enter when done..."
-read -r
+mkdir -p /var/secrets/claude
 
 info "Ensuring root has an SSH key..."
 if [[ ! -f /root/.ssh/id_ed25519 ]]; then
@@ -408,7 +378,6 @@ agent_cfg="$TMPDIR/agent-config.nix"
 
 sed -i "s|ssh-ed25519 AAAA\.\.\. your-key-here|$SSH_KEY|g" "$agent_cfg"
 sed -i "s|ssh-ed25519 AAAA\.\.\. root-key-here|$ROOT_PUBKEY|g" "$agent_cfg"
-sed -i "s|email = YOUR_GIT_EMAIL|email = $GIT_EMAIL|g" "$agent_cfg"
 success "agent-config.nix prepared."
 
 # --- preview-config.nix ---
@@ -442,7 +411,7 @@ success "All NixOS configs installed."
 header "Step 5: Write Environment Files"
 
 info "Creating directories..."
-mkdir -p /var/secrets/claude /var/secrets/claude-signing \
+mkdir -p /var/secrets/claude \
     /opt/dashboard/static /opt/preview-webhook \
     /etc/caddy/previews /var/lib/dashboard /var/lib/preview-deploys \
     /var/lib/claude-agents
@@ -453,10 +422,10 @@ cat > /var/secrets/dashboard.env << ENVEOF
 LISTEN_ADDR=0.0.0.0:3200
 DATABASE_URL=sqlite:///var/lib/dashboard/dashboard.db
 JWT_SECRET=${JWT_SECRET}
-GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
-GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
-GOOGLE_REDIRECT_URI=https://dashboard.${DOMAIN}/api/auth/callback
-ALLOWED_DOMAIN=${ALLOWED_DOMAIN}
+GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
+GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
+GITHUB_REDIRECT_URI=https://dashboard.${DOMAIN}/api/auth/callback
+GITHUB_ORG=${GITHUB_ORG}
 PREVIEW_DOMAIN=${DOMAIN}
 ALLOWED_REPOS=${ALLOWED_REPOS}
 VERTEX_REPOS=${VERTEX_REPOS}
