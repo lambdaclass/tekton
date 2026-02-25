@@ -143,6 +143,10 @@ export const classifyPrompt = (prompt: string) =>
     body: JSON.stringify({ prompt }),
   });
 
+// Repos
+export const fetchBranches = (owner: string, repo: string) =>
+  apiFetch<string[]>(`/api/repos/${owner}/${repo}/branches`);
+
 // WebSocket helpers
 export function connectPreviewLogs(slug: string): WebSocket {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
