@@ -234,8 +234,12 @@ NIXEOF
     fi
 
     local toplevel_rc=0 meta_rc=0
-    [[ $toplevel_pid -ne -1 ]] && wait "$toplevel_pid" || toplevel_rc=$?
-    [[ $meta_pid    -ne -1 ]] && wait "$meta_pid"    || meta_rc=$?
+    if [[ $toplevel_pid -ne -1 ]]; then
+        wait "$toplevel_pid"; toplevel_rc=$?
+    fi
+    if [[ $meta_pid -ne -1 ]]; then
+        wait "$meta_pid"; meta_rc=$?
+    fi
 
     if [[ $need_toplevel -eq 1 ]] && [[ $toplevel_rc -ne 0 || ! -s "$toplevel_tmp" ]]; then
         cat "$toplevel_err" >&2
@@ -513,6 +517,11 @@ cmd_create() {
         db_pass=$(create_db "$slug")
     fi
 
+    # Guard against concurrent creates that raced past the earlier file-existence check
+    if nixos-container status "$slug" &>/dev/null; then
+        fatal "Preview '$slug' was already created by a concurrent request. Aborting."
+    fi
+
     # Create the container
     nixos-container create "$slug" \
         --system-path "$system_path" \
@@ -671,14 +680,8 @@ cmd_update() {
     info "Updating preview '$slug' (pulling latest code and rebuilding)..."
 
     # Refresh the GitHub token so git can pull latest changes
-    local github_token=""
-    local webhook_port="${WEBHOOK_PORT:-3100}"
-    local token_response
-    if token_response=$(curl -sf "http://127.0.0.1:${webhook_port}/internal/token" 2>/dev/null); then
-        github_token=$(echo "$token_response" | jq -r '.token')
-    else
-        github_token="${GITHUB_TOKEN:-}"
-    fi
+    local github_token
+    github_token=$(get_github_token)
 
     if [[ -n "$github_token" ]]; then
         local container_root="/var/lib/nixos-containers/${slug}"

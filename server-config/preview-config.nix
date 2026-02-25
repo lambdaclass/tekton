@@ -39,7 +39,7 @@ in
     after = [ "systemd-resolved.service" ];
     wants = [ "systemd-resolved.service" ];
     before = [ "preview-app.service" ];
-    path = [ pkgs.bash pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.gnused pkgs.nodejs_22 ];
+    path = [ pkgs.bash pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.gnused pkgs.git pkgs.nodejs_22 ];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;

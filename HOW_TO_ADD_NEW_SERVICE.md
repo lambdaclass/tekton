@@ -155,7 +155,7 @@ Set to `[]` if you don't need extra subdomains.
 
 Tekton writes two files into the container before it boots.
 
-### `/etc/preview-token` (mode 600, root-only)
+### `/etc/preview-token` (mode 604, root-owned but world-readable)
 
 Contains the GitHub App installation token. Your setup script reads this to
 authenticate `git clone` / `git fetch` without exposing the token to other
@@ -326,13 +326,10 @@ systemd.services.myapp-frontend = {
 
 ## 7. Add the repo to the webhook allowlist
 
-In the tekton repo, add the repo to `ALLOWED_REPOS` in
-`/var/secrets/preview-webhook.env` (or `WEBHOOK_ALLOWED_REPOS` — check
-`server-config/preview-webhook/src/config.ts` for the exact env var name) on
-the server:
+On the server, add the repo to `ALLOWED_REPOS` in `/var/secrets/preview-webhook.env`:
 
 ```
-WEBHOOK_ALLOWED_REPOS=myorg/existing-repo,myorg/myapp
+ALLOWED_REPOS=myorg/existing-repo,myorg/myapp
 ```
 
 Then install a GitHub webhook on the new repo pointing to
@@ -352,8 +349,8 @@ and post the URL as a comment on the PR.
 | Repo type | Config file |
 |---|---|
 | Elixir/Phoenix + multiple React SPAs | `server-config/vertex-preview-config.nix` |
-| Elixir/Phoenix API + single React SPA | `server-config/stablecoin-preview-config.nix` |
 | Node.js / generic | `server-config/preview-config.nix` |
+| Simple Python / Flask (demo) | `example_service/preview-config.nix` |
 
 Copy the closest example as your starting point and adapt the service names,
 build commands, and ports to your app.

@@ -1,4 +1,4 @@
-import { execaCommand } from "execa";
+import { execa } from "execa";
 import { promises as fs } from "fs";
 import type { TokenProvider } from "./auth.js";
 
@@ -22,23 +22,23 @@ export function prToSlug(repoName: string, prNumber: number): string {
   return `${name}-${prNumber}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
 }
 
-async function runPreview(args: string): Promise<void> {
-  console.log(`[preview] Running: ${PREVIEW_BIN} ${args}`);
+async function runPreview(args: string[]): Promise<void> {
+  console.log(`[preview] Running: ${PREVIEW_BIN} ${args.join(" ")}`);
   try {
-    const { stdout, stderr } = await execaCommand(`${PREVIEW_BIN} ${args}`, {
+    const { stdout, stderr } = await execa(PREVIEW_BIN, args, {
       timeout: 1_200_000, // 20 minute timeout for builds (vertex/Elixir can be slow)
     });
     if (stdout) console.log(`[preview] stdout: ${stdout}`);
     if (stderr) console.log(`[preview] stderr: ${stderr}`);
   } catch (error) {
-    console.error(`[preview] Command failed: preview ${args}`, error);
+    console.error(`[preview] Command failed: preview ${args.join(" ")}`, error);
     throw error;
   }
 }
 
 export async function listActiveSlugs(): Promise<string[]> {
   try {
-    const { stdout } = await execaCommand(`${PREVIEW_BIN} list`, { timeout: 10_000 });
+    const { stdout } = await execa(PREVIEW_BIN, ["list"], { timeout: 10_000 });
     // Parse slugs from the first column of each line (skip header)
     return stdout
       .split("\n")
@@ -56,15 +56,15 @@ export async function createPreview(
   branch: string,
   slug: string
 ): Promise<void> {
-  await runPreview(`create ${repo} ${branch} --slug ${slug}`);
+  await runPreview(["create", repo, branch, "--slug", slug]);
 }
 
 export async function updatePreview(slug: string): Promise<void> {
-  await runPreview(`update ${slug}`);
+  await runPreview(["update", slug]);
 }
 
 export async function destroyPreview(slug: string): Promise<void> {
-  await runPreview(`destroy ${slug}`);
+  await runPreview(["destroy", slug]);
 }
 
 const PREVIEW_LINK_MARKER = "<!-- preview-link -->";
