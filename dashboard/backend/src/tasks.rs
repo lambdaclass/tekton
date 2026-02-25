@@ -1568,7 +1568,7 @@ pub async fn link_pr(
     _user: AuthUser,
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
-    Json(req): Json<crate::models::LinkPrRequest>,
+    Json(req): Json<LinkPrRequest>,
 ) -> Result<Json<Task>, AppError> {
     let _ = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
         .bind(&id)
