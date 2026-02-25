@@ -526,12 +526,13 @@ cmd_create() {
     local preview_host="${slug}.${domain}"
     local preview_url="https://${preview_host}"
 
-    # /etc/preview-token — root-only (600); contains the GitHub token for git operations.
-    # Setup scripts read this to authenticate clones/fetches without exposing the token
-    # to the wider container environment.
+    # /etc/preview-token — readable by preview user (604); contains the GitHub token
+    # for git operations inside the container.  The setup service runs as the 'preview'
+    # user so it needs read access.  644 is also acceptable; the container is isolated
+    # and the token expires with the GitHub App session anyway.
     local token_file="${container_root}/etc/preview-token"
     echo "$github_token" > "$token_file"
-    chmod 600 "$token_file"
+    chmod 604 "$token_file"
 
     # /etc/preview.env — readable by preview user (644); safe values only (no token).
     local env_file="${container_root}/etc/preview.env"
