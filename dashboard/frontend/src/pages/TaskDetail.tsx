@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ChevronLeft, RefreshCw, ExternalLink, RotateCcw } from 'lucide-react';
+import { ChevronLeft, RotateCcw } from 'lucide-react';
 import LogViewer from '@/components/LogViewer';
 import TaskChat from '@/components/TaskChat';
 import { getTask, listSubtasks, getMe, parseImageUrls, reopenTask } from '@/lib/api';
@@ -17,9 +17,6 @@ export default function TaskDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [connected, setConnected] = useState(false);
-  const [iframeKey, setIframeKey] = useState(0);
-  const refreshIframe = () => setIframeKey(k => k + 1);
-
   const { data: task } = useQuery({
     queryKey: ['task', id],
     queryFn: () => getTask(id!),
@@ -37,20 +34,6 @@ export default function TaskDetail() {
     queryKey: ['me'],
     queryFn: getMe,
   });
-
-  // Auto-refresh iframe when a push completes (status goes back to awaiting_followup)
-  const prevStatus = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    const status = task?.status;
-    if (
-      prevStatus.current &&
-      prevStatus.current !== status &&
-      (status === 'awaiting_followup' || status === 'completed')
-    ) {
-      setIframeKey(k => k + 1);
-    }
-    prevStatus.current = status;
-  }, [task?.status]);
 
   const onConnectionChange = useCallback((c: boolean) => setConnected(c), []);
 
@@ -196,34 +179,6 @@ export default function TaskDetail() {
         </Card>
       )}
 
-      {task?.preview_url && (
-        <Card className="mb-6">
-          <CardHeader className="py-3">
-            <CardTitle className="text-base flex items-center justify-between">
-              <span>Live Preview</span>
-              <div className="flex gap-2">
-                <Button size="sm" variant="outline" onClick={refreshIframe}>
-                  <RefreshCw className="size-4" />
-                </Button>
-                <Button size="sm" variant="outline" asChild>
-                  <a href={task.preview_url} target="_blank" rel="noopener noreferrer">
-                    <ExternalLink className="size-4" />
-                  </a>
-                </Button>
-              </div>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            <iframe
-              src={task.preview_url}
-              key={iframeKey}
-              className="w-full h-[500px] rounded-b-lg border-0"
-              title="Live Preview"
-            />
-          </CardContent>
-        </Card>
-      )}
-
       {showChat && me && (
         <TaskChat taskId={id!} currentUserEmail={me.login} previewUrl={task.preview_url ?? undefined} />
       )}
@@ -263,6 +218,15 @@ export default function TaskDetail() {
         </CardHeader>
         <CardContent className="p-0">
           <LogViewer taskId={id!} onConnectionChange={onConnectionChange} />
+        </CardContent>
+      </Card>
+
+      <Card className="mt-6">
+        <CardHeader className="py-3">
+          <CardTitle className="text-base">Preview Logs</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          <LogViewer previewSlug={`t-${id!.slice(0, 6)}`} />
         </CardContent>
       </Card>
     </div>

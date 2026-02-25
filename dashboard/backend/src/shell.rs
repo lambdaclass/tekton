@@ -1,4 +1,5 @@
 use std::process::Stdio;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::broadcast;
@@ -260,11 +261,12 @@ pub async fn agent_exec(
 }
 
 /// Run Claude in an agent container with stream-json output, parsing events into readable log lines.
+/// Returns Claude's accumulated text output (from assistant messages) for saving as chat messages.
 pub async fn agent_exec_claude_streaming(
     name: &str,
     cmd_line: &str,
     tx: broadcast::Sender<String>,
-) -> Result<(), AppError> {
+) -> Result<String, AppError> {
     let ip = agent_ip(name)?;
 
     tracing::info!("Streaming Claude JSON: ssh agent@{ip}");
@@ -283,11 +285,22 @@ pub async fn agent_exec_claude_streaming(
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
 
+    let claude_text = Arc::new(tokio::sync::Mutex::new(String::new()));
+    let claude_text_clone = claude_text.clone();
+
     let tx2 = tx.clone();
     let stdout_handle = tokio::spawn(async move {
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
+            // Capture Claude's text responses
+            if let Some(text) = extract_claude_text(&line) {
+                let mut buf = claude_text_clone.lock().await;
+                if !buf.is_empty() {
+                    buf.push('\n');
+                }
+                buf.push_str(&text);
+            }
             if let Some(formatted) = format_claude_event(&line) {
                 let _ = tx.send(formatted);
             }
@@ -319,7 +332,34 @@ pub async fn agent_exec_claude_streaming(
             "Claude streaming exited with status {status}"
         )));
     }
-    Ok(())
+    let result = claude_text.lock().await.clone();
+    Ok(result)
+}
+
+/// Extract raw text from a Claude stream-json "assistant" message.
+/// Returns the concatenated text blocks (if any) for saving as a chat message.
+fn extract_claude_text(line: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("type")?.as_str()? != "assistant" {
+        return None;
+    }
+    let content = v.pointer("/message/content")?.as_array()?;
+    let mut texts = Vec::new();
+    for block in content {
+        if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+            if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    texts.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+    if texts.is_empty() {
+        None
+    } else {
+        Some(texts.join("\n"))
+    }
 }
 
 /// Parse a stream-json line from Claude and format it as a human-readable log line.

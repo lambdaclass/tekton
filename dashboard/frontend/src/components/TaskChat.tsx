@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Send, CheckCircle, ExternalLink, ImagePlus, X } from 'lucide-react';
+import { Send, CheckCircle, ExternalLink, ImagePlus, X, Loader2 } from 'lucide-react';
 import { listTaskMessages, sendTaskMessage, uploadImage, parseImageUrls } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -137,35 +137,44 @@ export default function TaskChat({ taskId, currentUserEmail, previewUrl }: TaskC
                 : 'No messages yet. Send a follow-up to Claude.'}
             </p>
           )}
-          {messages?.map((msg) => (
-            <div
-              key={msg.id}
-              className={`rounded-lg border p-3 text-sm ${senderColor(msg.sender)}`}
-            >
-              <div className="flex items-center justify-between mb-1">
-                <span className="font-medium text-xs text-muted-foreground">
-                  {msg.sender === currentUserEmail ? 'You' : msg.sender}
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  {new Date(msg.created_at).toLocaleTimeString()}
-                </span>
+          {messages?.map((msg, idx) =>
+            msg.sender === 'system' ? (
+              <div key={msg.id} className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground py-1">
+                {msg.content.endsWith('...') && messages && idx === messages.length - 1 && (
+                  <Loader2 className="size-3 animate-spin" />
+                )}
+                {msg.content}
               </div>
-              <p className="whitespace-pre-wrap">{msg.content}</p>
-              {parseImageUrls(msg.image_url).length > 0 && (
-                <div className="flex flex-wrap gap-2 mt-2">
-                  {parseImageUrls(msg.image_url).map((url, i) => (
-                    <a key={i} href={url} target="_blank" rel="noopener noreferrer">
-                      <img
-                        src={url}
-                        alt={`Attached image ${i + 1}`}
-                        className="max-h-48 rounded-md border border-border hover:opacity-90 transition-opacity"
-                      />
-                    </a>
-                  ))}
+            ) : (
+              <div
+                key={msg.id}
+                className={`rounded-lg border p-3 text-sm ${senderColor(msg.sender)}`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-medium text-xs text-muted-foreground">
+                    {msg.sender === currentUserEmail ? 'You' : msg.sender}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {new Date(msg.created_at).toLocaleTimeString()}
+                  </span>
                 </div>
-              )}
-            </div>
-          ))}
+                <p className="whitespace-pre-wrap">{msg.content}</p>
+                {parseImageUrls(msg.image_url).length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {parseImageUrls(msg.image_url).map((url, i) => (
+                      <a key={i} href={url} target="_blank" rel="noopener noreferrer">
+                        <img
+                          src={url}
+                          alt={`Attached image ${i + 1}`}
+                          className="max-h-48 rounded-md border border-border hover:opacity-90 transition-opacity"
+                        />
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          )}
         </div>
         {chatImagePreviews.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">

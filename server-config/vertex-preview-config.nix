@@ -200,7 +200,7 @@ in
       Type = "simple";
       User = "preview";
       WorkingDirectory = "/home/preview/app/frontend/apps/platform";
-      ExecStart = "${pkgs.static-web-server}/bin/static-web-server --port 3000 --root dist-admin --page-fallback dist-admin/index.html";
+      ExecStart = "${pkgs.static-web-server}/bin/static-web-server --port 3000 --root dist-admin --page-fallback dist-admin/index.html --log-level info --log-remote-address";
       Restart = "on-failure";
       RestartSec = 5;
     };
@@ -215,7 +215,7 @@ in
       Type = "simple";
       User = "preview";
       WorkingDirectory = "/home/preview/app/frontend/apps/platform";
-      ExecStart = "${pkgs.static-web-server}/bin/static-web-server --port 3001 --root dist-foods --page-fallback dist-foods/index.html";
+      ExecStart = "${pkgs.static-web-server}/bin/static-web-server --port 3001 --root dist-foods --page-fallback dist-foods/index.html --log-level info --log-remote-address";
       Restart = "on-failure";
       RestartSec = 5;
     };
