@@ -64,6 +64,8 @@ pub struct Task {
     pub created_by: Option<String>,
     pub screenshot_url: Option<String>,
     pub image_url: Option<String>,
+    pub pr_url: Option<String>,
+    pub pr_number: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +111,21 @@ pub struct ClassifyRequest {
 }
 
 #[derive(Debug, Serialize)]
+pub struct ClassifyCandidate {
+    pub repo: String,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Serialize)]
 pub struct ClassifyResponse {
     pub repo: String,
+    pub status: String,
+    pub confidence: f64,
+    pub candidates: Vec<ClassifyCandidate>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LinkPrRequest {
+    pub pr_url: String,
+    pub pr_number: i64,
 }

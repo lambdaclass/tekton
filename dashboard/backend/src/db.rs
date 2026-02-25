@@ -46,6 +46,7 @@ async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
         "ALTER TABLE tasks ADD COLUMN created_by TEXT",
         "ALTER TABLE tasks ADD COLUMN screenshot_url TEXT",
         "ALTER TABLE tasks ADD COLUMN image_url TEXT",
+        "ALTER TABLE tasks ADD COLUMN pr_url TEXT",
     ] {
         // Ignore errors — column likely already exists
         let _ = sqlx::query(col_sql).execute(pool).await;

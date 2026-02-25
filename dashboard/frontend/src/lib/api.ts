@@ -27,7 +27,7 @@ export interface Task {
   created_by: string | null;
   screenshot_url: string | null;
   image_url: string | null;
-  name?: string | null;
+  pr_url?: string | null;
 }
 
 export interface TaskMessage {
@@ -111,15 +111,10 @@ export const uploadImage = async (file: File): Promise<{ url: string }> => {
 // Tasks
 export const listTasks = () => apiFetch<Task[]>('/api/tasks');
 export const getTask = (id: string) => apiFetch<Task>(`/api/tasks/${id}`);
-export const createTask = (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[]; name?: string }) =>
+export const createTask = (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[] }) =>
   apiFetch<Task>('/api/tasks', {
     method: 'POST',
     body: JSON.stringify(data),
-  });
-export const updateTaskName = (id: string, name: string) =>
-  apiFetch<Task>(`/api/tasks/${id}/name`, {
-    method: 'PATCH',
-    body: JSON.stringify({ name }),
   });
 export const getTaskLogs = (id: string) => apiFetch<TaskLog[]>(`/api/tasks/${id}/logs`);
 export const listSubtasks = (id: string) => apiFetch<Task[]>(`/api/tasks/${id}/subtasks`);
@@ -129,10 +124,10 @@ export const sendTaskMessage = (id: string, content: string, image_urls?: string
     method: 'POST',
     body: JSON.stringify({ content, image_urls }),
   });
+export const createPR = (id: string) =>
+  apiFetch<{ pr_url: string }>(`/api/tasks/${id}/create-pr`, { method: 'POST' });
 export const reopenTask = (id: string) =>
   apiFetch<Task>(`/api/tasks/${id}/reopen`, { method: 'POST' });
-export const markTaskFailed = (id: string) =>
-  apiFetch<Task>(`/api/tasks/${id}/fail`, { method: 'POST' });
 
 /** Parse image_url JSON column (stored as JSON array string) into an array of URLs. */
 export function parseImageUrls(raw: string | null | undefined): string[] {

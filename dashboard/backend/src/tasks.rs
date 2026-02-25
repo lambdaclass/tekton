@@ -10,9 +10,8 @@ use crate::auth::AuthUser;
 use crate::config::Config;
 use crate::error::AppError;
 use crate::models::{
-    ClassifyCandidate, ClassifyRequest, ClassifyResponse, CreateTaskRequest, SendMessageRequest,
-    Task, TaskLog,
-    TaskMessage,
+    ClassifyCandidate, ClassifyRequest, ClassifyResponse, CreateTaskRequest, LinkPrRequest,
+    SendMessageRequest, Task, TaskLog, TaskMessage,
 };
 use crate::shell;
 
@@ -1451,4 +1450,33 @@ pub async fn get_task_logs(
     .fetch_all(&state.db)
     .await?;
     Ok(Json(logs))
+}
+
+pub async fn link_pr(
+    _user: AuthUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<LinkPrRequest>,
+) -> Result<Json<Task>, AppError> {
+    let _ = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Task not found".into()))?;
+
+    sqlx::query(
+        "UPDATE tasks SET pr_url = ?, pr_number = ?, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(&req.pr_url)
+    .bind(req.pr_number)
+    .bind(&id)
+    .execute(&state.db)
+    .await?;
+
+    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
+        .bind(&id)
+        .fetch_one(&state.db)
+        .await?;
+
+    Ok(Json(task))
 }
