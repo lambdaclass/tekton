@@ -34,7 +34,6 @@ pub async fn create_preview(
         &req.repo,
         &req.branch,
         req.slug.as_deref(),
-        &req.preview_type,
     )
     .await?;
 
