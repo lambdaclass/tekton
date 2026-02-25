@@ -136,16 +136,10 @@ fn parse_preview_list(output: &str, _domain: &str) -> Result<Vec<Preview>, AppEr
                 })
                 .unwrap_or_default();
 
-            let preview_type = std::fs::read_to_string(format!("{preview_dir}/{slug}.type"))
-                .unwrap_or_else(|_| "node".into())
-                .trim()
-                .to_string();
-
             previews.push(Preview {
                 slug,
                 repo,
                 branch,
-                preview_type,
                 url,
             });
         }
@@ -159,9 +153,8 @@ pub async fn create_preview(
     repo: &str,
     branch: &str,
     slug: Option<&str>,
-    preview_type: &str,
 ) -> Result<String, AppError> {
-    let mut args = vec!["create", repo, branch, "--type", preview_type];
+    let mut args = vec!["create", repo, branch];
     if let Some(s) = slug {
         args.push("--slug");
         args.push(s);

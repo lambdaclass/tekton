@@ -1,12 +1,22 @@
-# NixOS configuration for imperative nspawn preview containers
-# Built via: nix build /etc/nixos#nixosConfigurations.preview.config.system.build.toplevel
-# Used by: nixos-container create <name> --system-path <closure>
+# NixOS configuration template for Node.js preview containers
+# Copy this file to your repo root as preview-config.nix and customise.
+# This file is fetched by tekton at preview-create time.
+# Built by: tekton's preview.sh using nix build --impure --expr
 #
-# Environment flow:
-# 1. `preview create` writes /etc/preview.env into the container filesystem
-# 2. setup-preview reads it to clone repo, install deps, build
-# 3. preview-app reads it to run the app with correct DATABASE_URL, PORT, etc.
+# system.build.previewMeta  — read by tekton before container start (routing, services, DB)
+# environment.etc."preview-meta.json"  — same JSON available inside the running container
 { config, lib, pkgs, ... }:
+
+let
+  meta = {
+    setupService = "setup-preview";
+    appServices  = [ "preview-app" ];
+    database     = "host";
+    routes       = [ { path = "/"; port = 3000; } ];
+    hostSecrets  = [];
+    extraHosts   = [];
+  };
+in
 {
   boot.isContainer = true;
 
@@ -29,7 +39,7 @@
     after = [ "systemd-resolved.service" ];
     wants = [ "systemd-resolved.service" ];
     before = [ "preview-app.service" ];
-    path = [ pkgs.bash pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.gnused pkgs.nodejs_22 ];
+    path = [ pkgs.bash pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.gnused pkgs.git pkgs.nodejs_22 ];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
@@ -59,18 +69,22 @@
       fi
       rm -f /tmp/force-rebuild
 
+      # Build authenticated URL from the root-only token file
+      PREVIEW_TOKEN=$(cat /etc/preview-token 2>/dev/null || echo "")
+      AUTHED_URL=$(echo "$PREVIEW_REPO_URL" | sed "s|https://|https://x-access-token:$PREVIEW_TOKEN@|")
+
       if [ -d "$APP_DIR/.git" ]; then
-        # Update: fetch and reset to latest
+        # Update: refresh remote URL with current token, then fetch latest
         echo "Updating existing repo..."
-        cd "$APP_DIR"
-        ${pkgs.git}/bin/git fetch origin
-        ${pkgs.git}/bin/git reset --hard "origin/$PREVIEW_BRANCH"
+        ${pkgs.git}/bin/git -C "$APP_DIR" remote set-url origin "$AUTHED_URL"
+        ${pkgs.git}/bin/git -C "$APP_DIR" fetch origin
+        ${pkgs.git}/bin/git -C "$APP_DIR" reset --hard "origin/$PREVIEW_BRANCH"
       else
         # Fresh clone
         echo "Cloning $PREVIEW_REPO_URL (branch: $PREVIEW_BRANCH)..."
-        ${pkgs.git}/bin/git clone --branch "$PREVIEW_BRANCH" --single-branch "$PREVIEW_REPO_URL" "$APP_DIR"
-        cd "$APP_DIR"
+        ${pkgs.git}/bin/git clone --branch "$PREVIEW_BRANCH" --single-branch "$AUTHED_URL" "$APP_DIR"
       fi
+      cd "$APP_DIR"
 
       # Install dependencies
       if [ -f package-lock.json ]; then
@@ -124,10 +138,10 @@
 
   users.users.root = {
     password = "changeme";
-    openssh.authorizedKeys.keys = [
-      "ssh-ed25519 AAAA... your-key-here"
-    ];
   };
+
+  system.build.previewMeta = pkgs.writeText "preview-meta.json" (builtins.toJSON meta);
+  environment.etc."preview-meta.json".text = builtins.toJSON meta;
 
   # Packages available in preview containers
   environment.systemPackages = with pkgs; [

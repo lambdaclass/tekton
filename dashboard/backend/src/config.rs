@@ -11,7 +11,6 @@ pub struct Config {
     pub github_org: String,
     pub preview_domain: String,
     pub allowed_repos: Vec<String>,
-    pub vertex_repos: Vec<String>,
     pub preview_bin: String,
     pub agent_bin: String,
     pub static_dir: String,
@@ -34,12 +33,6 @@ impl Config {
             preview_domain: env::var("PREVIEW_DOMAIN")
                 .unwrap_or_else(|_| "example.com".into()),
             allowed_repos: env::var("ALLOWED_REPOS")
-                .unwrap_or_default()
-                .split(',')
-                .filter(|s| !s.is_empty())
-                .map(String::from)
-                .collect(),
-            vertex_repos: env::var("VERTEX_REPOS")
                 .unwrap_or_default()
                 .split(',')
                 .filter(|s| !s.is_empty())

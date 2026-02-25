@@ -9,10 +9,16 @@ import {
   addPreviewLinkToPR,
   ensurePreviewLinkOnPR,
   listActiveSlugs,
+  readPreviewMeta,
 } from "./preview.js";
 
 // Track active preview slugs so we can re-add links on PR body edits
 const activePreviews = new Set<string>();
+
+// Keyed on the raw IncomingMessage so the route handler can retrieve the original bytes
+// without a JSON round-trip that could normalise unicode escapes and break HMAC.
+import type { IncomingMessage } from "http";
+const rawBodyStore = new WeakMap<IncomingMessage, string>();
 
 async function main(): Promise<void> {
   console.log("Starting preview webhook server...");
@@ -22,13 +28,17 @@ async function main(): Promise<void> {
     bodyLimit: 1_048_576, // 1MB
   });
 
-  // Need raw body for signature verification
+  // Parse JSON but keep the original byte string for signature verification.
+  // GitHub HMAC-SHA256 is computed over the exact bytes it sends; re-serialising
+  // with JSON.stringify can differ (e.g. unicode escapes: \u003c vs <).
   fastify.addContentTypeParser(
     "application/json",
     { parseAs: "string" },
-    (_req, body, done) => {
+    (req, body, done) => {
       try {
-        done(null, JSON.parse(body as string));
+        const raw = body as string;
+        rawBodyStore.set(req.raw, raw);
+        done(null, JSON.parse(raw));
       } catch (err) {
         done(err as Error, undefined);
       }
@@ -66,8 +76,8 @@ async function main(): Promise<void> {
       | string
       | undefined;
 
-    // Verify webhook signature
-    const rawBody = JSON.stringify(request.body);
+    // Verify webhook signature using the original bytes (not re-serialised JSON)
+    const rawBody = rawBodyStore.get(request.raw) ?? JSON.stringify(request.body);
     if (!verifySignature(rawBody, signature, config.githubWebhookSecret)) {
       console.warn("[webhook] Invalid signature");
       return reply.code(401).send({ error: "Invalid signature" });
@@ -98,14 +108,12 @@ async function main(): Promise<void> {
       return reply.code(200).send({ status: "ignored", reason: "not_allowed" });
     }
 
-    const type = config.vertexRepos.includes(repo) ? "vertex" : "node";
-
     console.log(
-      `[webhook] PR #${prNumber} ${event.action} on ${repo} (branch: ${branch}, type: ${type})`
+      `[webhook] PR #${prNumber} ${event.action} on ${repo} (branch: ${branch})`
     );
 
     // Respond 202 immediately, process in background
-    void reply.code(202).send({ status: "accepted", slug, type });
+    void reply.code(202).send({ status: "accepted", slug });
 
     // Process asynchronously
     setImmediate(async () => {
@@ -113,15 +121,14 @@ async function main(): Promise<void> {
         switch (event.action) {
           case "opened":
           case "reopened": {
-            await createPreview(repo, branch, slug, type);
+            await createPreview(repo, branch, slug);
             activePreviews.add(slug);
             const url = `https://${slug}.${config.previewDomain}`;
-            if (type === "vertex") {
-              const landingUrl = `https://landing-${slug}.${config.previewDomain}`;
-              await addPreviewLinkToPR(repo, prNumber, url, tokenProvider, landingUrl);
-            } else {
-              await addPreviewLinkToPR(repo, prNumber, url, tokenProvider);
-            }
+            const meta = await readPreviewMeta(slug);
+            const extraUrls = (meta?.extraHosts ?? []).map(
+              (h) => `https://${h.prefix}-${slug}.${config.previewDomain}`
+            );
+            await addPreviewLinkToPR(repo, prNumber, url, tokenProvider, extraUrls);
             break;
           }
           case "synchronize": {
@@ -130,7 +137,7 @@ async function main(): Promise<void> {
           }
           case "edited": {
             if (activePreviews.has(slug)) {
-              await ensurePreviewLinkOnPR(repo, prNumber, slug, config.previewDomain, tokenProvider, type);
+              await ensurePreviewLinkOnPR(repo, prNumber, slug, config.previewDomain, tokenProvider);
             }
             break;
           }

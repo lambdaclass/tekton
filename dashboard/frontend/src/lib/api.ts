@@ -7,7 +7,6 @@ export interface Preview {
   slug: string;
   repo: string;
   branch: string;
-  preview_type: string;
   url: string;
 }
 
@@ -86,7 +85,7 @@ export const logout = () => fetch('/api/auth/logout', { method: 'POST', credenti
 
 // Previews
 export const listPreviews = () => apiFetch<Preview[]>('/api/previews');
-export const createPreview = (data: { repo: string; branch: string; slug?: string; type?: string }) =>
+export const createPreview = (data: { repo: string; branch: string; slug?: string }) =>
   apiFetch<{ message: string; output: string }>('/api/previews', {
     method: 'POST',
     body: JSON.stringify(data),
