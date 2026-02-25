@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { listPreviews, createPreview, destroyPreview, updatePreview } from '@/lib/api';
+import { listPreviews, createPreview, destroyPreview } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -34,11 +34,6 @@ export default function Previews() {
 
   const destroyMutation = useMutation({
     mutationFn: destroyPreview,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['previews'] }),
-  });
-
-  const updateMutation = useMutation({
-    mutationFn: updatePreview,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['previews'] }),
   });
 
@@ -140,14 +135,6 @@ export default function Previews() {
                   </Button>
                   <Button variant="secondary" size="sm" asChild>
                     <Link to={`/previews/${p.slug}`}>Logs</Link>
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => updateMutation.mutate(p.slug)}
-                    disabled={updateMutation.isPending}
-                  >
-                    Update
                   </Button>
                   <Button
                     variant="destructive"
