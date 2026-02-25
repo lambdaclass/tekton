@@ -564,12 +564,12 @@ cmd_create() {
         if [[ $n_secrets -gt 0 ]]; then
             while IFS= read -r secret_key; do
                 local secret_val
-                # grep -F treats secret_key as a literal string (no regex metacharacters)
-                secret_val=$(grep -F "^${secret_key}=" "$SECRETS_FILE" | head -1 | cut -d= -f2-)
+                secret_val=$(grep "^${secret_key}=" "$SECRETS_FILE" | head -1 | cut -d= -f2- || true)
                 if [[ -n "$secret_val" ]]; then
                     echo "${secret_key}=${secret_val}"
                 else
-                    warn "hostSecret ${secret_key} not found in $SECRETS_FILE"
+                    warn "hostSecret ${secret_key} not found in $SECRETS_FILE — writing empty value" >&2
+                    echo "${secret_key}="
                 fi
             done < <(jq -r '.hostSecrets[]' "$meta_file")
         fi

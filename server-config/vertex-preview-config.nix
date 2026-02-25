@@ -120,6 +120,7 @@ in
           echo "PORT=4000"
           echo "DEPLOY_ENV=testing"
           echo "PHX_HOST=''${PREVIEW_HOST}"
+          echo "API_URL=''${PREVIEW_URL}"
           echo "FRONTEND_URL=''${PREVIEW_URL}"
           echo "CORS_ALLOWED_ORIGINS=''${PREVIEW_URL},https://app.landing-''${PREVIEW_HOST}"
         } > "$SECRETS_FILE"
