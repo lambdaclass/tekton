@@ -315,7 +315,7 @@ write_caddy_config() {
         generate_caddy_route_blocks "$container_ip" "$meta_file" ".routes"
         echo "}"
 
-        # Extra host blocks (e.g. vertex landing subdomains)
+        # Extra host blocks (e.g. landing subdomains)
         local n_extra
         n_extra=$(jq '.extraHosts | length' "$meta_file")
         for ((i=0; i<n_extra; i++)); do
@@ -366,16 +366,10 @@ read_service_names() {
         SETUP_SERVICE=$(jq -r '.setupService' "$meta_file")
         readarray -t APP_SERVICES < <(jq -r '.appServices[]' "$meta_file")
     else
-        # Legacy fallback for previews created before the meta-based architecture
-        local type
-        type=$(cat "$PREVIEW_DIR/${slug}.type" 2>/dev/null || echo "node")
-        if [[ "$type" == "vertex" ]]; then
-            SETUP_SERVICE="setup-vertex"
-            APP_SERVICES=("vertex-backend" "vertex-frontend-admin" "vertex-frontend-foods" "vertex-frontend-landing")
-        else
-            SETUP_SERVICE="setup-preview"
-            APP_SERVICES=("preview-app")
-        fi
+        # Legacy fallback for previews created before the meta-based architecture.
+        # All new previews use preview-config.nix and produce a .meta file.
+        SETUP_SERVICE="setup-preview"
+        APP_SERVICES=("preview-app")
     fi
 }
 
@@ -642,10 +636,8 @@ cmd_destroy() {
     if [[ -f "$meta_file" ]]; then
         db_mode=$(jq -r '.database' "$meta_file")
     else
-        # Legacy fallback: node type used host DB
-        local type
-        type=$(cat "$PREVIEW_DIR/${slug}.type" 2>/dev/null || echo "node")
-        [[ "$type" != "vertex" ]] && db_mode="host"
+        # Legacy fallback: previews before meta-based architecture used host DB
+        db_mode="host"
     fi
     if [[ "$db_mode" == "host" ]]; then
         drop_db "$slug"

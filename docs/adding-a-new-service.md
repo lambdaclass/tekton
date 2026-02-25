@@ -20,9 +20,9 @@ Start from the annotated example at
 It is a complete, working configuration for a simple Python/Flask app and
 covers every pattern described below. Copy it and adapt for your stack.
 
-For an Elixir/Phoenix + React SPA monorepo, see
-[`server-config/vertex-preview-config.nix`](../server-config/vertex-preview-config.nix)
-as a more complex reference.
+For more complex setups (e.g. Elixir/Phoenix + React SPA monorepos with
+multiple frontends, container-local databases, and extra subdomains), use
+the minimal skeleton below as a starting point and expand from there.
 
 ### Minimal skeleton
 

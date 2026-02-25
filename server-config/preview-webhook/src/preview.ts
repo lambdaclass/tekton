@@ -26,7 +26,7 @@ async function runPreview(args: string[]): Promise<void> {
   console.log(`[preview] Running: ${PREVIEW_BIN} ${args.join(" ")}`);
   try {
     const { stdout, stderr } = await execa(PREVIEW_BIN, args, {
-      timeout: 1_200_000, // 20 minute timeout for builds (vertex/Elixir can be slow)
+      timeout: 1_200_000, // 20 minute timeout for builds (Elixir builds can be slow)
     });
     if (stdout) console.log(`[preview] stdout: ${stdout}`);
     if (stderr) console.log(`[preview] stderr: ${stderr}`);
