@@ -10,7 +10,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { statusVariant } from '@/lib/status';
 import VoiceInput from '@/components/VoiceInput';
-import { ImagePlus, X } from 'lucide-react';
+import { GitPullRequest, ImagePlus, X } from 'lucide-react';
 
 export default function Tasks() {
   const queryClient = useQueryClient();
@@ -278,6 +278,18 @@ export default function Tasks() {
                     <span>{t.base_branch}</span>
                     {t.preview_url && (
                       <span className="text-green-400">{t.preview_url}</span>
+                    )}
+                    {t.pr_url && (
+                      <a
+                        href={t.pr_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="flex items-center gap-1 text-purple-400 hover:text-purple-300"
+                      >
+                        <GitPullRequest className="size-3" />
+                        <span>PR #{t.pr_number}</span>
+                      </a>
                     )}
                     <span className="ml-auto">
                       {new Date(t.created_at).toLocaleString()}
