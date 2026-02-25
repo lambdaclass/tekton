@@ -13,7 +13,7 @@ use axum::extract::Request;
 use axum::http::{header, HeaderValue};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::Router;
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -72,6 +72,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/tasks/{id}/messages", get(tasks::list_messages))
         .route("/tasks/{id}/messages", post(tasks::send_message))
         .route("/tasks/{id}/reopen", post(tasks::reopen_task))
+        .route("/tasks/{id}/name", patch(tasks::update_task_name))
         .route("/tasks/{id}/link-pr", post(tasks::link_pr))
         .route("/tasks/{id}/fail", post(tasks::fail_task))
         // Repos

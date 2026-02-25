@@ -10,9 +10,8 @@ use crate::auth::AuthUser;
 use crate::config::Config;
 use crate::error::AppError;
 use crate::models::{
-    ClassifyCandidate, ClassifyRequest, ClassifyResponse, CreateTaskRequest, SendMessageRequest,
-    Task, TaskLog,
-    TaskMessage,
+    ClassifyCandidate, ClassifyRequest, ClassifyResponse, CreateTaskRequest, LinkPrRequest,
+    SendMessageRequest, Task, TaskLog, TaskMessage, UpdateTaskNameRequest,
 };
 use crate::shell;
 
@@ -257,7 +256,7 @@ pub async fn create_task(
         .map(|v| serde_json::to_string(v).unwrap());
 
     sqlx::query(
-        "INSERT INTO tasks (id, prompt, repo, base_branch, status, parent_task_id, created_by, image_url) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)",
+        "INSERT INTO tasks (id, prompt, repo, base_branch, status, parent_task_id, created_by, image_url, name) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&req.prompt)
@@ -266,6 +265,7 @@ pub async fn create_task(
     .bind(&req.parent_task_id)
     .bind(created_by)
     .bind(&image_url_json)
+    .bind(&req.name)
     .execute(&state.db)
     .await?;
 
@@ -1218,6 +1218,7 @@ pub async fn send_message(
     .bind(sender)
     .bind(&req.content)
     .bind(&image_url_json)
+    .bind(&req.name)
     .execute(&state.db)
     .await?;
 
@@ -1437,6 +1438,34 @@ async fn run_reopen_pipeline(
     log_and_send(db, task_id, &tx, "[DONE] Task completed.");
 
     Ok(())
+}
+
+pub async fn update_task_name(
+    _user: AuthUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateTaskNameRequest>,
+) -> Result<Json<Task>, AppError> {
+    let _ = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Task not found".into()))?;
+
+    sqlx::query(
+        "UPDATE tasks SET name = ?, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(&req.name)
+    .bind(&id)
+    .execute(&state.db)
+    .await?;
+
+    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
+        .bind(&id)
+        .fetch_one(&state.db)
+        .await?;
+
+    Ok(Json(task))
 }
 
 pub async fn get_task_logs(

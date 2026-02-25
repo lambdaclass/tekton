@@ -64,7 +64,7 @@ export default function TaskDetail() {
           <ChevronLeft className="size-4" />
           Tasks
         </Button>
-        <h1 className="text-2xl font-bold font-mono">{id?.slice(0, 8)}</h1>
+        <h1 className="text-2xl font-bold">{task?.name ?? <span className="font-mono">{id?.slice(0, 8)}</span>}</h1>
         {task && <Badge variant={statusVariant(task.status).variant} className={statusVariant(task.status).className}>{task.status}</Badge>}
         <Badge variant={connected ? 'default' : 'outline'}>
           {connected ? 'Live' : 'Disconnected'}
