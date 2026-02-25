@@ -30,6 +30,7 @@ export interface Task {
   name?: string | null;
   pr_url: string | null;
   pr_number: number | null;
+  name: string | null;
 }
 
 export interface TaskMessage {
@@ -133,6 +134,11 @@ export const sendTaskMessage = (id: string, content: string, image_urls?: string
   });
 export const reopenTask = (id: string) =>
   apiFetch<Task>(`/api/tasks/${id}/reopen`, { method: 'POST' });
+export const updateTaskName = (id: string, name: string) =>
+  apiFetch<Task>(`/api/tasks/${id}/name`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name }),
+  });
 export const linkPR = (id: string, pr_url: string, pr_number: number) =>
   apiFetch<Task>(`/api/tasks/${id}/link-pr`, {
     method: 'POST',

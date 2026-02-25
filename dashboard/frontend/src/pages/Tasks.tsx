@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { listTasks, createTask, classifyPrompt, uploadImage } from '@/lib/api';
+import { listTasks, createTask, classifyPrompt, uploadImage, fetchBranches } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,6 +10,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { statusVariant } from '@/lib/status';
 import VoiceInput from '@/components/VoiceInput';
+import BranchCombobox from '@/components/BranchCombobox';
 import { GitPullRequest, ImagePlus, X } from 'lucide-react';
 
 export default function Tasks() {
@@ -24,13 +25,39 @@ export default function Tasks() {
   const [prompt, setPrompt] = useState('');
   const [repo, setRepo] = useState('');
   const [baseBranch, setBaseBranch] = useState('main');
+  const [taskName, setTaskName] = useState('');
   const [repoAutoDetected, setRepoAutoDetected] = useState(false);
+  const [branches, setBranches] = useState<string[]>([]);
+  const [branchesLoading, setBranchesLoading] = useState(false);
   const [imageFiles, setImageFiles] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
   const classifyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const loadBranches = async (repoValue: string) => {
+    const parts = repoValue.trim().split('/');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      setBranches([]);
+      return;
+    }
+    const [owner, repoName] = parts;
+    setBranchesLoading(true);
+    try {
+      const result = await fetchBranches(owner, repoName);
+      setBranches(result);
+      if (result.includes('main')) {
+        setBaseBranch('main');
+      } else if (result.length > 0) {
+        setBaseBranch(result[0]);
+      }
+    } catch {
+      setBranches([]);
+    } finally {
+      setBranchesLoading(false);
+    }
+  };
 
   const scheduleClassify = useCallback((text: string) => {
     if (classifyTimerRef.current) clearTimeout(classifyTimerRef.current);
@@ -41,6 +68,7 @@ export default function Tasks() {
         if (result.repo) {
           setRepo(result.repo);
           setRepoAutoDetected(true);
+          loadBranches(result.repo);
         }
       } catch {
         // silently ignore classify errors
@@ -62,8 +90,10 @@ export default function Tasks() {
   };
 
   const handleRepoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setRepo(e.target.value);
+    const value = e.target.value;
+    setRepo(value);
     setRepoAutoDetected(false);
+    loadBranches(value);
   };
 
   const addImageFiles = (files: FileList | File[]) => {
@@ -89,7 +119,7 @@ export default function Tasks() {
   };
 
   const createMutation = useMutation({
-    mutationFn: async (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[] }) => {
+    mutationFn: async (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[]; name?: string }) => {
       return createTask(data);
     },
     onSuccess: () => {
@@ -99,8 +129,10 @@ export default function Tasks() {
       setRepo('');
       setBaseBranch('main');
       setRepoAutoDetected(false);
+      setBranches([]);
       setImageFiles([]);
       setImagePreviews([]);
+      setTaskName('');
     },
   });
 
@@ -125,6 +157,7 @@ export default function Tasks() {
       repo,
       base_branch: baseBranch || undefined,
       image_urls,
+      name: taskName || undefined,
     });
   };
 
@@ -234,13 +267,23 @@ export default function Tasks() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="base-branch">Base Branch</Label>
-                    <Input
-                      id="base-branch"
+                    <BranchCombobox
                       value={baseBranch}
-                      onChange={(e) => setBaseBranch(e.target.value)}
+                      onChange={setBaseBranch}
+                      branches={branches}
+                      loading={branchesLoading}
                       placeholder="main"
                     />
                   </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="task-name">Task Name <span className="text-muted-foreground">(optional)</span></Label>
+                  <Input
+                    id="task-name"
+                    value={taskName}
+                    onChange={(e) => setTaskName(e.target.value)}
+                    placeholder="Short descriptive name..."
+                  />
                 </div>
               </div>
               <Button type="submit" disabled={createMutation.isPending || uploading}>
@@ -272,7 +315,10 @@ export default function Tasks() {
                     </span>
                     <Badge variant={statusVariant(t.status).variant} className={statusVariant(t.status).className}>{t.status}</Badge>
                   </div>
-                  <p className="text-sm line-clamp-2 mb-2">{t.prompt}</p>
+                  {t.name && (
+                    <p className="text-sm font-medium mb-1">{t.name}</p>
+                  )}
+                  <p className="text-sm line-clamp-2 mb-2 text-muted-foreground">{t.prompt}</p>
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
                     <span>{t.repo}</span>
                     <span>{t.base_branch}</span>
