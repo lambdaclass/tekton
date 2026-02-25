@@ -2,6 +2,29 @@
 
 This document tracks the recommended implementation order for the Tekton roadmap. Use it to pick up where you left off across sessions.
 
+## Recent progress
+
+### `add_stablecoin_nix_config` branch (merged)
+
+Major architectural change: **decoupled Tekton from specific repos**. Previews are now fully driven by a per-repo `preview-config.nix` rather than hardcoded configurations.
+
+Key changes:
+- Each repo ships `preview-config.nix` at its root describing how to build and run the app
+- Tekton fetches the config from GitHub, builds a NixOS closure (cached by commit SHA), and runs the container
+- Removed hardcoded `vertex-preview-config.nix` and `--type node|vertex` flag from all layers (preview.sh, webhook, dashboard backend/frontend, deploy scripts, setup scripts)
+- Added structured `meta` block: `setupService`, `appServices`, `database`, `routes`, `hostSecrets`, `extraHosts`
+- Dynamic Caddy route generation based on `meta.routes`
+- Nix closure caching by commit SHA (config cache + closure cache)
+- GitHub token acquisition from webhook for authenticated repo access
+- Added `docs/adding-a-new-service.md` and `example_service/` (Python/Flask) as reference
+- Preview slugs now include repo name (e.g. `myapp-42` instead of just `42`)
+- Fixed HMAC signature verification (use raw body, not re-serialized JSON)
+
+**Roadmap impact:**
+- [#30](https://github.com/lambdaclass/tekton/issues/30) Portable agent configuration — **partially addressed** (preview config pattern established; agent config still needed)
+- [#53](https://github.com/lambdaclass/tekton/issues/53) Custom agent runtimes — **partially addressed** (pluggable preview runtimes done; agent runtimes still needed)
+- [#85](https://github.com/lambdaclass/tekton/issues/85) Run real-world apps in preview environments — **partially addressed** (container-local DBs, multi-service routing, secret forwarding now supported)
+
 ## Implementation order (P0 — start here)
 
 The dependency chain is: **persistence → identity/RBAC → policy engine → everything else**.
@@ -16,7 +39,7 @@ The dependency chain is: **persistence → identity/RBAC → policy engine → e
 | 6 | [#28](https://github.com/lambdaclass/tekton/issues/28) | Multi-model support | Not started | #23 |
 | 7 | [#29](https://github.com/lambdaclass/tekton/issues/29) | Repo intelligence and draft/plan mode | Not started | #22, #23, #28 |
 | 8 | [#27](https://github.com/lambdaclass/tekton/issues/27) | Identity-safe PR authorship | Not started | #23 |
-| 9 | [#30](https://github.com/lambdaclass/tekton/issues/30) | Portable agent configuration (AGENTS.md) | Not started | #24 |
+| 9 | [#30](https://github.com/lambdaclass/tekton/issues/30) | Portable agent configuration (AGENTS.md) | In progress (preview config done, agent config remaining) | #24 |
 
 ## Quick wins (interleave anytime)
 
@@ -64,7 +87,7 @@ These are independent of the P0 dependency chain and can be done as palette clea
 | [#50](https://github.com/lambdaclass/tekton/issues/50) | In-sandbox collaborative editor and verification surface | Not started |
 | [#51](https://github.com/lambdaclass/tekton/issues/51) | Private workspaces | Not started |
 | [#52](https://github.com/lambdaclass/tekton/issues/52) | API and SDK | Not started |
-| [#53](https://github.com/lambdaclass/tekton/issues/53) | Custom agent runtimes | Not started |
+| [#53](https://github.com/lambdaclass/tekton/issues/53) | Custom agent runtimes | In progress (preview runtimes pluggable, agent runtimes remaining) |
 | [#54](https://github.com/lambdaclass/tekton/issues/54) | Skills and prompt configuration | Not started |
 | [#55](https://github.com/lambdaclass/tekton/issues/55) | Duplicate work detection | Not started |
 | [#43](https://github.com/lambdaclass/tekton/issues/43) | Real-time collaboration (multi-user) | Not started |
@@ -106,4 +129,4 @@ These are independent of the P0 dependency chain and can be done as palette clea
 |-------|-------|--------|
 | [#77](https://github.com/lambdaclass/tekton/issues/77) | In-preview console | Not started |
 | [#78](https://github.com/lambdaclass/tekton/issues/78) | Per-project environment variables | Not started |
-| [#85](https://github.com/lambdaclass/tekton/issues/85) | Run real-world apps in preview environments | Not started |
+| [#85](https://github.com/lambdaclass/tekton/issues/85) | Run real-world apps in preview environments | In progress (DB, multi-service, secrets supported; needs more testing) |
