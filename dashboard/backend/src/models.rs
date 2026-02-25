@@ -65,6 +65,7 @@ pub struct Task {
     pub screenshot_url: Option<String>,
     pub image_url: Option<String>,
     pub pr_url: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +75,7 @@ pub struct CreateTaskRequest {
     pub base_branch: Option<String>,
     pub parent_task_id: Option<String>,
     pub image_urls: Option<Vec<String>>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -129,4 +131,9 @@ pub struct ClassifyResponse {
 #[derive(Debug, Deserialize)]
 pub struct LinkPrRequest {
     pub pr_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateTaskNameRequest {
+    pub name: String,
 }

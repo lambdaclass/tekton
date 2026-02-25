@@ -11,8 +11,7 @@ use crate::config::Config;
 use crate::error::AppError;
 use crate::models::{
     ClassifyCandidate, ClassifyRequest, ClassifyResponse, CreateTaskRequest, SendMessageRequest, Task, TaskLog,
-    TaskMessage, UpdateTaskNameRequest,
-};
+    TaskMessage, UpdateTaskNameRequest, LinkPrRequest};
 use crate::shell;
 
 #[derive(Debug, serde::Deserialize)]
