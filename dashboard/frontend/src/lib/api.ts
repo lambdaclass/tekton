@@ -27,6 +27,7 @@ export interface Task {
   created_by: string | null;
   screenshot_url: string | null;
   image_url: string | null;
+  pr_url?: string | null;
 }
 
 export interface TaskMessage {
@@ -123,6 +124,8 @@ export const sendTaskMessage = (id: string, content: string, image_urls?: string
     method: 'POST',
     body: JSON.stringify({ content, image_urls }),
   });
+export const createPR = (id: string) =>
+  apiFetch<{ pr_url: string }>(`/api/tasks/${id}/create-pr`, { method: 'POST' });
 export const reopenTask = (id: string) =>
   apiFetch<Task>(`/api/tasks/${id}/reopen`, { method: 'POST' });
 
@@ -137,8 +140,20 @@ export function parseImageUrls(raw: string | null | undefined): string[] {
     return [raw];
   }
 }
+export interface ClassifyCandidate {
+  repo: string;
+  confidence: number;
+}
+
+export interface ClassifyResponse {
+  repo: string;
+  status: 'confident' | 'unknown';
+  confidence: number;
+  candidates: ClassifyCandidate[];
+}
+
 export const classifyPrompt = (prompt: string) =>
-  apiFetch<{ repo: string }>('/api/classify', {
+  apiFetch<ClassifyResponse>('/api/classify', {
     method: 'POST',
     body: JSON.stringify({ prompt }),
   });

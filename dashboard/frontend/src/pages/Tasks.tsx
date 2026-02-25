@@ -78,6 +78,7 @@ export default function Tasks() {
   const handlePromptChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setPrompt(e.target.value);
     setRepoAutoDetected(false);
+    setClassifyCandidates([]);
     scheduleClassify(e.target.value);
   };
 
@@ -85,6 +86,7 @@ export default function Tasks() {
     const next = prompt ? `${prompt} ${text}` : text;
     setPrompt(next);
     setRepoAutoDetected(false);
+    setClassifyCandidates([]);
     scheduleClassify(next);
   };
 
@@ -253,6 +255,9 @@ export default function Tasks() {
                       {repoAutoDetected && (
                         <span className="text-xs text-muted-foreground">auto-detected</span>
                       )}
+                      {classifyCandidates.length > 0 && !repoAutoDetected && (
+                        <span className="text-xs text-yellow-500">low confidence &mdash; pick or type a repo</span>
+                      )}
                     </div>
                     <Input
                       id="task-repo"
@@ -261,6 +266,26 @@ export default function Tasks() {
                       placeholder="owner/repo"
                       required
                     />
+                    {classifyCandidates.length > 0 && !repoAutoDetected && (
+                      <div className="flex flex-wrap gap-2 mt-1">
+                        {classifyCandidates.map((c) => (
+                          <button
+                            key={c.repo}
+                            type="button"
+                            onClick={() => {
+                              setRepo(c.repo);
+                              setClassifyCandidates([]);
+                            }}
+                            className="text-xs px-2 py-1 rounded border border-border bg-muted hover:bg-muted/80 transition-colors text-foreground"
+                          >
+                            {c.repo}
+                            <span className="ml-1 text-muted-foreground">
+                              {Math.round(c.confidence * 100)}%
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="base-branch">Base Branch</Label>
