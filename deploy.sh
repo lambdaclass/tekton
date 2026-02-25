@@ -116,10 +116,11 @@ deploy_webhook() {
 
 deploy_nix() {
     info "Deploying NixOS configs..."
-    # Copy everything EXCEPT configuration.nix and agent-config.nix (have placeholders)
+    # Copy everything EXCEPT configuration.nix and agent-config.nix (have host-specific placeholders)
+    # preview-config.nix and *-preview-config.nix are repo-side templates, not deployed to the server
     $SSH "
         cd ${REMOTE_SRC}/server-config && \
-        for f in agent.sh preview-config.nix vertex-preview-config.nix preview.sh flake.nix; do
+        for f in agent.sh preview.sh flake.nix; do
             if [ -f \"\$f\" ]; then
                 cp \"\$f\" /etc/nixos/\"\$f\"
             fi
@@ -138,9 +139,8 @@ deploy_nix_agents() {
 
 deploy_nix_previews() {
     deploy_nix
-    info "Rebuilding preview closures..."
-    $SSH "preview build && preview build --type vertex"
-    success "Preview closures rebuilt."
+    info "Preview closures are built on demand per-repo — nothing to pre-build."
+    info "Run 'preview build <owner/repo> <branch>' on the server to pre-warm a specific closure."
 }
 
 # ── Main ────────────────────────────────────────────────────────────────────

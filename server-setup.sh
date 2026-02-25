@@ -192,18 +192,10 @@ if [[ -z "${ALLOWED_REPOS+x}" ]]; then
     read -r ALLOWED_REPOS
     ALLOWED_REPOS="${ALLOWED_REPOS:-}"
 fi
-if [[ -z "${VERTEX_REPOS+x}" ]]; then
-    echo -en "${BOLD}Vertex/Elixir repos (comma-separated owner/repo, leave blank for none):${NC} "
-    read -r VERTEX_REPOS
-    VERTEX_REPOS="${VERTEX_REPOS:-}"
-fi
 if [[ -n "${ALLOWED_REPOS:-}" ]]; then
     success "Allowed repos: $ALLOWED_REPOS"
 else
     success "All repos allowed."
-fi
-if [[ -n "${VERTEX_REPOS:-}" ]]; then
-    success "Vertex repos: $VERTEX_REPOS"
 fi
 echo ""
 
@@ -317,7 +309,6 @@ echo "  GitHub Org:     $GITHUB_ORG"
 echo "  GitHub Client:  ${GITHUB_CLIENT_ID:0:20}..."
 echo "  GitHub PAT:     ****${GITHUB_PAT: -4}"
 echo "  Allowed repos:  ${ALLOWED_REPOS:-<all>}"
-echo "  Vertex repos:   ${VERTEX_REPOS:-<none>}"
 echo ""
 
 if ! confirm "Proceed with setup?"; then
@@ -380,24 +371,10 @@ sed -i "s|ssh-ed25519 AAAA\.\.\. your-key-here|$SSH_KEY|g" "$agent_cfg"
 sed -i "s|ssh-ed25519 AAAA\.\.\. root-key-here|$ROOT_PUBKEY|g" "$agent_cfg"
 success "agent-config.nix prepared."
 
-# --- preview-config.nix ---
-cp "$SERVER_CONFIG/preview-config.nix" "$TMPDIR/preview-config.nix"
-preview_cfg="$TMPDIR/preview-config.nix"
-sed -i "s|ssh-ed25519 AAAA\.\.\. your-key-here|$SSH_KEY|g" "$preview_cfg"
-success "preview-config.nix prepared."
-
-# --- vertex-preview-config.nix ---
-cp "$SERVER_CONFIG/vertex-preview-config.nix" "$TMPDIR/vertex-preview-config.nix"
-vertex_cfg="$TMPDIR/vertex-preview-config.nix"
-sed -i "s|ssh-ed25519 AAAA\.\.\. your-key-here|$SSH_KEY|g" "$vertex_cfg"
-success "vertex-preview-config.nix prepared."
-
 # Install all configs to /etc/nixos/
 info "Installing configuration to /etc/nixos/..."
 cp "$TMPDIR/configuration.nix" /etc/nixos/configuration.nix
 cp "$TMPDIR/agent-config.nix" /etc/nixos/agent-config.nix
-cp "$TMPDIR/preview-config.nix" /etc/nixos/preview-config.nix
-cp "$TMPDIR/vertex-preview-config.nix" /etc/nixos/vertex-preview-config.nix
 
 # Copy safe files directly (no placeholders)
 cp "$SERVER_CONFIG/preview.sh" /etc/nixos/preview.sh
@@ -428,7 +405,6 @@ GITHUB_REDIRECT_URI=https://dashboard.${DOMAIN}/api/auth/callback
 GITHUB_ORG=${GITHUB_ORG}
 PREVIEW_DOMAIN=${DOMAIN}
 ALLOWED_REPOS=${ALLOWED_REPOS}
-VERTEX_REPOS=${VERTEX_REPOS}
 PREVIEW_BIN=/run/current-system/sw/bin/preview
 AGENT_BIN=/run/current-system/sw/bin/agent
 STATIC_DIR=/opt/dashboard/static
@@ -443,7 +419,12 @@ GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
 PREVIEW_DOMAIN=${DOMAIN}
 WEBHOOK_PORT=3100
 ALLOWED_REPOS=${ALLOWED_REPOS}
-VERTEX_REPOS=${VERTEX_REPOS}
+# SSH public key injected into preview containers (tekton uses this to grant SSH access)
+ADMIN_SSH_KEY=${SSH_KEY}
+# Add any repo-specific hostSecrets here, e.g.:
+# POSTMARK_API_KEY=...
+# GOOGLE_CLIENT_ID=...
+# GOOGLE_CLIENT_SECRET=...
 ENVEOF
 chmod 600 /var/secrets/preview.env
 success "preview.env written."
@@ -544,15 +525,8 @@ agent build || {
     warn "Agent pre-build failed. The first 'agent create' will build it automatically."
 }
 
-info "Building preview container closure..."
-preview build || {
-    warn "Preview pre-build failed. The first 'preview create' will build it automatically."
-}
-
-info "Building vertex preview container closure..."
-preview build --type vertex || {
-    warn "Vertex pre-build failed. The first 'preview create --type vertex' will build it automatically."
-}
+info "Skipping preview closures — they are built on demand per-repo."
+info "Run 'preview build <owner/repo> <branch>' to pre-warm a closure."
 
 # =============================================================================
 # Step 10: Start and verify services

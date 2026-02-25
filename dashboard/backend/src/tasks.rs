@@ -926,8 +926,7 @@ async fn push_and_preview(
         update_task_status(db, task_id, "creating_preview", None).await?;
         log_and_send(db, task_id, tx, &format!("[STEP] Creating preview '{preview_slug}'..."));
 
-        let preview_type = if config.vertex_repos.contains(&repo.to_string()) { "vertex" } else { "node" };
-        shell::create_preview(config, repo, branch_name, Some(&preview_slug), preview_type).await?;
+        shell::create_preview(config, repo, branch_name, Some(&preview_slug)).await?;
 
         let preview_url = format!("https://{preview_slug}.{}", config.preview_domain);
         update_task_field(db, task_id, "preview_slug", &preview_slug).await?;

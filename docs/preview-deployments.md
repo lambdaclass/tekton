@@ -4,17 +4,14 @@ The preview system deploys GitHub PR branches as running web apps in isolated ns
 
 ## Overview
 
-There are two preview types:
-
-| Type | Stack | Ports | Database |
-|------|-------|-------|----------|
-| **node** | Node.js (`npm ci`, `npm build`, `npm start`) | 3000 | Host PostgreSQL (shared, per-container DB) |
-| **vertex** | Elixir/Phoenix backend + React SPA frontends | 4000, 3000, 3001 | Container-local PostgreSQL + Redis |
+Each repo self-describes its deployment via a `preview-config.nix` file at the repo root. Tekton fetches that file at preview-create time, builds a NixOS container closure from it, and runs the container. No repo-specific knowledge lives in tekton itself.
 
 Each preview gets:
-- A subdomain: `<slug>.preview.example.com`
+- A subdomain: `<slug>.<PREVIEW_DOMAIN>`
 - TLS via Cloudflare Origin CA wildcard certificate (proxied through Cloudflare)
 - Its own nspawn container with a unique IP on the `10.100.0.0/24` subnet
+
+To add support for a new repo, see [docs/adding-a-new-service.md](adding-a-new-service.md).
 
 ## Commands Reference
 
@@ -22,22 +19,18 @@ All commands run on the host as root.
 
 ### `preview create <owner/repo> <branch> [options]`
 
-Creates a new preview container, clones the repo, builds, and starts the app.
+Creates a new preview container, fetches `preview-config.nix` from the repo, builds the NixOS closure, and starts the container.
 
 ```bash
-# Node.js app
+# Create a preview for any repo (type is determined by the repo's preview-config.nix)
 preview create myorg/myapp feature-branch
 
 # With a custom slug
 preview create myorg/myapp feature-branch --slug myapp-pr-42
-
-# Vertex (Elixir/Phoenix) app
-preview create myorg/myapp feature-branch --type vertex --slug vtx-pr-42
 ```
 
 Options:
 - `--slug <slug>` — Custom slug for the URL (default: auto-generated from repo name + branch)
-- `--type <node|vertex>` — Preview type (default: `node`)
 
 ### `preview destroy <slug>`
 
@@ -49,7 +42,7 @@ preview destroy myapp-pr-42
 
 ### `preview update <slug>`
 
-Pulls latest code from the branch and rebuilds.
+Pulls latest code from the branch and rebuilds inside the container.
 
 ```bash
 preview update myapp-pr-42
@@ -72,14 +65,24 @@ preview logs myapp-pr-42
 preview logs myapp-pr-42 --follow
 ```
 
-### `preview build [--type <node|vertex>]`
+### `preview build <owner/repo> <branch>`
 
-Pre-builds the container system closure. This is done automatically on first `preview create`, but you can run it ahead of time to speed up the first deployment.
+Pre-builds the NixOS container closure for a repo without creating a preview. Useful for warming the cache before the first deployment.
 
 ```bash
-preview build                 # node closure
-preview build --type vertex   # vertex closure
+preview build myorg/myapp feature-branch
 ```
+
+## How It Works
+
+1. `preview create` fetches `preview-config.nix` from the repo at the given branch (via GitHub API, cached by commit SHA)
+2. Tekton runs `nix build --impure --expr` to build the NixOS container closure and extract `system.build.previewMeta` (routing, service names, DB mode, host secrets)
+3. The container is created with `nixos-container create`, given a static IP on `10.100.0.0/24`
+4. Tekton writes two files into the container filesystem before it boots:
+   - `/etc/preview-token` — GitHub token for authenticated `git clone`/`git fetch`
+   - `/etc/preview.env` — preview metadata (`PREVIEW_REPO_URL`, `PREVIEW_BRANCH`, `PREVIEW_HOST`, `PREVIEW_URL`, forwarded host secrets)
+5. The container starts; the repo's `setupService` clones/builds the app, then `appServices` run the live process(es)
+6. Caddy is configured with routes from `previewMeta.routes` to proxy the subdomain to the container
 
 ## GitHub Webhook Integration
 
@@ -101,7 +104,7 @@ The webhook server automatically creates, updates, and destroys previews in resp
    | `synchronize` (new push) | Pulls latest code and rebuilds |
    | `closed` | Destroys the preview |
 
-3. **PR slug format**: The webhook uses the PR number as the slug (e.g., PR #42 becomes slug `42`, URL `https://42.preview.example.com`).
+3. **PR slug format**: The webhook generates a slug from the repo name + PR number (e.g., `myapp-42`).
 
 ### Webhook Architecture
 
@@ -116,71 +119,19 @@ GitHub --HTTPS--> Caddy (webhook.preview.example.com)
 The webhook:
 - Verifies the GitHub HMAC-SHA256 signature
 - Returns 202 immediately, processes in the background
-- Checks the repo against the allowlist (if configured)
-- Determines preview type based on `VERTEX_REPOS` env var
+- Checks the repo against the allowlist (if `ALLOWED_REPOS` is set)
 - Adds a preview link to the PR description via the GitHub API
 
 ### Webhook Configuration
 
-Environment variables in `/var/secrets/preview.env`:
+Environment variables in `/var/secrets/preview-webhook.env`:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `GITHUB_TOKEN` | Yes | GitHub token for cloning repos and updating PR descriptions |
-| `GITHUB_WEBHOOK_SECRET` | Yes | Secret for verifying webhook signatures |
+| `WEBHOOK_SECRET` | Yes | Secret for verifying webhook signatures |
 | `PREVIEW_DOMAIN` | Yes | Domain for preview URLs (e.g., `preview.example.com`) |
 | `WEBHOOK_PORT` | No | Port for webhook server (default: `3100`) |
 | `ALLOWED_REPOS` | No | Comma-separated `owner/repo` allowlist (empty = allow all) |
-| `VERTEX_REPOS` | No | Comma-separated repos that should use vertex preview type |
-
-## How Node Previews Work
-
-1. `preview create` allocates an IP, creates a PostgreSQL database on the host, and spins up a container
-2. `/etc/preview.env` is written into the container with `DATABASE_URL`, `PREVIEW_REPO_URL`, etc.
-3. The `setup-preview` systemd service clones the repo, runs `npm ci`, and `npm run build`
-4. The `preview-app` service runs `npm start` on port 3000
-5. Caddy routes `<slug>.PREVIEW_DOMAIN` to the container's port 3000
-
-## How Vertex Previews Work
-
-Vertex previews are more complex due to the Elixir/Phoenix + React SPA monorepo:
-
-1. `preview create --type vertex` spins up a container with **its own PostgreSQL and Redis** (no shared host DB)
-2. `/etc/preview.env` includes generated secrets (`SECRET_KEY_BASE`, `JWT_SECRET`, `DATABASE_ENCRYPTION_KEY`)
-3. The `setup-vertex` service:
-   - Clones the repo
-   - Builds the Elixir backend (`mix deps.get`, `mix compile`, `mix release`)
-   - Builds two React frontends (admin on port 3000, foods on port 3001)
-   - Runs database migrations and seeds
-4. Three services start: `vertex-backend` (port 4000), `vertex-frontend-admin` (port 3000), `vertex-frontend-foods` (port 3001)
-5. Caddy routes traffic based on path:
-   - `/api/*` -> container:4000 (Phoenix backend)
-   - `/admin/*` -> container:3000 (admin SPA)
-   - Everything else -> container:3001 (foods SPA)
-
-### Vertex Container Stack
-
-Each vertex container includes:
-- Erlang 27, Elixir 1.18, Node.js 22, pnpm
-- PostgreSQL (local, trust auth)
-- Redis
-- Chromium (for ChromicPDF)
-
-### Vertex Environment Variables
-
-These are auto-generated per container:
-
-| Variable | Value |
-|----------|-------|
-| `DATABASE_URL` | `postgresql://vertex@localhost:5432/vertex` |
-| `SECRET_KEY_BASE` | Random 64-char hex |
-| `JWT_SECRET` | Random 64-char hex |
-| `DATABASE_ENCRYPTION_KEY` | Random 32-byte base64 |
-| `PHX_HOST` | `<slug>.PREVIEW_DOMAIN` |
-| `REDIS_URL` | `redis://localhost:6379` |
-| `DEPLOY_ENV` | `testing` |
-
-Optional overrides from host secrets: `VERTEX_POSTMARK_API_KEY`, `VERTEX_GOOGLE_CLIENT_ID`, `VERTEX_GOOGLE_CLIENT_SECRET`.
 
 ## Troubleshooting
 
@@ -201,7 +152,7 @@ The app is still building. Check build progress:
 preview logs <slug> --follow
 ```
 
-Vertex builds can take 10-15 minutes (Elixir compilation is slow).
+Elixir/Phoenix builds can take 10-15 minutes on first run.
 
 ### Container won't start
 
@@ -212,23 +163,6 @@ nixos-container status <slug>
 machinectl status <slug>
 journalctl -u container@<slug>
 ```
-
-### Database connection issues (node type)
-
-Node previews connect to the host PostgreSQL. Verify:
-
-```bash
-# Check PostgreSQL is running
-systemctl status postgresql
-
-# Check the container can reach the host
-nixos-container run <slug> -- ping -c1 <host-ip>
-
-# Check the database exists
-sudo -u postgres psql -l | grep preview_
-```
-
-Make sure `networking.firewall.trustedInterfaces = [ "ve-+" ]` is set in `configuration.nix` — without this, container-to-host traffic is blocked.
 
 ### Webhook not receiving events
 
@@ -244,9 +178,8 @@ curl https://webhook.PREVIEW_DOMAIN/health
 ### Manually re-running a build
 
 ```bash
-# Re-trigger the setup service inside the container
-nixos-container run <slug> -- systemctl restart setup-preview  # node
-nixos-container run <slug> -- systemctl restart setup-vertex   # vertex
+# Re-trigger the setup service inside the container (service name comes from preview-config.nix)
+nixos-container run <slug> -- systemctl restart <setupService>
 ```
 
 ### Cleaning up a stuck preview
@@ -256,10 +189,10 @@ If `preview destroy` fails:
 ```bash
 nixos-container stop <slug> 2>/dev/null
 nixos-container destroy <slug>
-rm -f /var/lib/preview-deploys/<slug> /var/lib/preview-deploys/<slug>.type
+rm -f /var/lib/preview-deploys/<slug> /var/lib/preview-deploys/<slug>.meta /var/lib/preview-deploys/<slug>.sha
 rm -f /etc/caddy/previews/<slug>.caddy
 systemctl reload caddy
-# For node type only:
+# If the preview used a host database:
 sudo -u postgres psql -c "DROP DATABASE IF EXISTS preview_<slug_underscored>;"
 sudo -u postgres psql -c "DROP USER IF EXISTS preview_<slug_underscored>;"
 ```

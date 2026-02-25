@@ -19,18 +19,16 @@ Overview of the system architecture, networking, and key design decisions.
 │  ┌──────┴───────────────────────────────────────────────────────┐   │
 │  │  10.100.0.0/24 veth network (NAT to external interface)      │   │
 │  │                                                               │   │
-│  │  ┌─────────────────┐  ┌─────────────────┐  ┌────────────┐   │   │
-│  │  │ Agent Container  │  │ Node Preview    │  │ Vertex     │   │   │
-│  │  │ 10.100.0.3      │  │ 10.100.0.5      │  │ Preview    │   │   │
-│  │  │                  │  │                  │  │ 10.100.0.7 │   │   │
-│  │  │ - Claude Code    │  │ - Node.js app   │  │            │   │   │
-│  │  │ - Dev tools      │  │   (:3000)       │  │ - Phoenix  │   │   │
-│  │  │ - SSH            │  │                  │  │   (:4000)  │   │   │
-│  │  │                  │  │                  │  │ - React    │   │   │
-│  │  │                  │  │                  │  │   (:3000,  │   │   │
-│  │  │                  │  │                  │  │    :3001)  │   │   │
-│  │  │                  │  │                  │  │ - PG+Redis │   │   │
-│  │  └─────────────────┘  └─────────────────┘  └────────────┘   │   │
+│  │  ┌─────────────────┐  ┌─────────────────┐                    │   │
+│  │  │ Agent Container  │  │ Preview         │                    │   │
+│  │  │ 10.100.0.3      │  │ Container       │                    │   │
+│  │  │                  │  │ 10.100.0.5      │                    │   │
+│  │  │ - Claude Code    │  │                  │                    │   │
+│  │  │ - Dev tools      │  │ - App services   │                    │   │
+│  │  │ - SSH            │  │   (per repo's    │                    │   │
+│  │  │                  │  │    preview-       │                    │   │
+│  │  │                  │  │    config.nix)    │                    │   │
+│  │  └─────────────────┘  └─────────────────┘                    │   │
 │  └───────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -105,11 +103,11 @@ GitHub PR event
 ```
 Browser: https://42.preview.example.com
   → Caddy (TLS termination, reads /etc/caddy/previews/42.caddy)
-    → reverse_proxy → 10.100.0.5:3000 (node preview)
+    → reverse_proxy → 10.100.0.5:3000 (preview app)
 
 Browser: https://42.preview.example.com/api/users
-  → Caddy (vertex routing)
-    → reverse_proxy → 10.100.0.7:4000 (Phoenix backend)
+  → Caddy (path-based routing from preview-config.nix routes)
+    → reverse_proxy → 10.100.0.5:4000 (backend API)
 ```
 
 ## Key Files
@@ -128,8 +126,7 @@ Browser: https://42.preview.example.com/api/users
 | File | Flake output | Purpose |
 |------|-------------|---------|
 | `server-config/agent-config.nix` | `nixosConfigurations.agent` | Agent container (Claude Code + dev tools). Has placeholders: `YOUR_GIT_EMAIL`, SSH key placeholders |
-| `server-config/preview-config.nix` | `nixosConfigurations.preview` | Node.js preview container |
-| `server-config/vertex-preview-config.nix` | `nixosConfigurations.vertex-preview` | Vertex preview container (Elixir + React) |
+| `server-config/preview-config.nix` | `nixosConfigurations.preview` | Default preview container (Node.js). Each repo can ship its own `preview-config.nix` at the repo root. |
 
 ### Webhook
 
@@ -190,12 +187,11 @@ The project uses NixOS imperative containers (`nixos-container create/destroy`) 
 
 Preview containers receive their configuration through `/etc/preview.env`, written into the container's filesystem before it starts. This avoids needing to pass environment variables through `nixos-container` or modify the container config per-instance.
 
-### Vertex: Container-Local PostgreSQL
+### Database Modes (`database` in preview-config.nix)
 
-Vertex previews run their own PostgreSQL inside the container, unlike node previews which use the host's shared PostgreSQL. This was chosen because:
-- Vertex uses `trust` authentication locally (simpler than managing per-container passwords)
-- Full isolation — destroying the container cleans up everything
-- No cross-container database access concerns
+Each repo's `preview-config.nix` declares a `database` mode:
+- **`"host"`** — Tekton creates a PostgreSQL database on the host and injects `DATABASE_URL` into the container. Used for apps that don't manage their own database.
+- **`"container"`** — The app manages its own database inside the container (or has none). Tekton doesn't touch the database. This gives full isolation — destroying the container cleans up everything.
 
 ### IP Allocation: Monotonic Counter
 

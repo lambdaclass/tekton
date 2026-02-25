@@ -31,7 +31,7 @@ The dashboard streams agent logs in real time and lets you send follow-up prompt
 
 ## What it does today
 
-- **PR preview deployments.** Automatic preview environments for Node.js and Elixir/Phoenix apps via GitHub webhooks.
+- **PR preview deployments.** Automatic preview environments via GitHub webhooks. Each repo ships a `preview-config.nix` describing its deployment; tekton builds and runs the container.
 - **Web dashboard.** Create tasks, watch live logs over WebSocket, send follow-up prompts, view preview screenshots.
 - **Voice input and repo auto-detection.** Speak your task, the repo is classified automatically.
 - **Subtask spawning.** Agents can split work into parallel child tasks.
@@ -297,8 +297,7 @@ tekton/
     ├── configuration.nix             # Host server config
     ├── agent-config.nix              # Agent container config
     ├── agent.sh                      # Agent lifecycle helper
-    ├── preview-config.nix            # Node.js preview container config
-    ├── vertex-preview-config.nix     # Vertex preview container config
+    ├── preview-config.nix            # Default preview container config (Node.js)
     ├── preview.sh                    # Preview lifecycle helper
     └── preview-webhook/              # GitHub webhook service (Fastify/TypeScript)
         ├── src/

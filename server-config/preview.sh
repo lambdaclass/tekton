@@ -1,6 +1,10 @@
 # =============================================================================
 # Preview deployment lifecycle manager
-# Deploys GitHub PR branches into nspawn containers as running web apps
+# Deploys GitHub PR branches into nspawn containers as running web apps.
+#
+# Each repo self-describes its deployment via a preview-config.nix at its root.
+# tekton fetches that file, builds a NixOS container closure from it, and runs
+# the container.  No repo-specific knowledge lives in this script.
 # =============================================================================
 
 AGENT_DIR="/var/lib/claude-agents"
@@ -9,8 +13,8 @@ CADDY_DIR="/etc/caddy/previews"
 FLAKE_DIR="/etc/nixos"
 SECRETS_FILE="/var/secrets/preview.env"
 SUBNET="10.100.0"
-SYSTEM_PATH_CACHE="$PREVIEW_DIR/.system-path"
-VERTEX_SYSTEM_PATH_CACHE="$PREVIEW_DIR/.vertex-system-path"
+CONFIG_CACHE_DIR="$PREVIEW_DIR/.config-cache"
+CLOSURE_CACHE_DIR="$PREVIEW_DIR/.closure-cache"
 
 # -- Load secrets -------------------------------------------------------------
 load_secrets() {
@@ -32,6 +36,7 @@ NC='\033[0m'
 
 info()    { echo -e "${CYAN}[INFO]${NC} $*"; }
 success() { echo -e "${GREEN}[OK]${NC} $*"; }
+warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 fatal()   { error "$@"; exit 1; }
 
@@ -42,54 +47,18 @@ ensure_root() {
 }
 
 ensure_dirs() {
-    mkdir -p "$PREVIEW_DIR" "$CADDY_DIR" "$AGENT_DIR"
-}
-
-# -- System path cache --------------------------------------------------------
-
-get_system_path() {
-    if [[ -f "$SYSTEM_PATH_CACHE" ]]; then
-        local cached
-        cached=$(cat "$SYSTEM_PATH_CACHE")
-        if [[ -d "$cached" ]]; then
-            echo "$cached"
-            return
-        fi
-    fi
-    info "Building preview system closure (first time only)..." >&2
-    local path
-    path=$(nix build "${FLAKE_DIR}#nixosConfigurations.preview.config.system.build.toplevel" --no-link --print-out-paths)
-    echo "$path" > "$SYSTEM_PATH_CACHE"
-    echo "$path"
-}
-
-get_vertex_system_path() {
-    if [[ -f "$VERTEX_SYSTEM_PATH_CACHE" ]]; then
-        local cached
-        cached=$(cat "$VERTEX_SYSTEM_PATH_CACHE")
-        if [[ -d "$cached" ]]; then
-            echo "$cached"
-            return
-        fi
-    fi
-    info "Building vertex preview system closure (first time only)..." >&2
-    local path
-    path=$(nix build "${FLAKE_DIR}#nixosConfigurations.vertex-preview.config.system.build.toplevel" --no-link --print-out-paths)
-    echo "$path" > "$VERTEX_SYSTEM_PATH_CACHE"
-    echo "$path"
+    mkdir -p "$PREVIEW_DIR" "$CADDY_DIR" "$AGENT_DIR" "$CONFIG_CACHE_DIR" "$CLOSURE_CACHE_DIR"
 }
 
 # -- IP allocation (shared with agents) --------------------------------------
 
 next_slot() {
     local slot_file="$AGENT_DIR/.next_slot"
-    local slot
     if [[ -f "$slot_file" ]]; then
-        slot=$(cat "$slot_file")
+        cat "$slot_file"
     else
-        slot=1
+        echo 1
     fi
-    echo "$slot"
 }
 
 bump_slot() {
@@ -121,7 +90,6 @@ create_db() {
 
     info "Creating PostgreSQL database '$db_name'..." >&2
 
-    # Create user and database (suppress stdout to avoid polluting the password return)
     sudo -u postgres psql -c "CREATE USER ${db_user} WITH PASSWORD '${db_pass}';" &>/dev/null || \
         sudo -u postgres psql -c "ALTER USER ${db_user} WITH PASSWORD '${db_pass}';" &>/dev/null
     sudo -u postgres psql -c "CREATE DATABASE ${db_name} OWNER ${db_user};" &>/dev/null || true
@@ -139,75 +107,234 @@ drop_db() {
     sudo -u postgres psql -c "DROP USER IF EXISTS ${db_user};"
 }
 
+# -- GitHub helpers -----------------------------------------------------------
+
+get_github_token() {
+    local webhook_port="${WEBHOOK_PORT:-3100}"
+    local token_response
+    if token_response=$(curl -sf "http://127.0.0.1:${webhook_port}/internal/token" 2>/dev/null); then
+        local auth_mode
+        auth_mode=$(echo "$token_response" | jq -r '.mode')
+        info "Using token from webhook (auth mode: $auth_mode)" >&2
+        echo "$token_response" | jq -r '.token'
+        return
+    fi
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        echo "$GITHUB_TOKEN"
+        return
+    fi
+    fatal "No GitHub token available. Check $SECRETS_FILE or ensure the webhook is running."
+}
+
+get_commit_sha() {
+    local repo="$1" branch="$2" token="$3"
+    local sha
+    sha=$(curl -sf \
+        -H "Authorization: Bearer ${token}" \
+        -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/${repo}/commits/${branch}" | jq -r '.sha')
+    if [[ -z "$sha" ]] || [[ "$sha" == "null" ]]; then
+        fatal "Could not get commit SHA for ${repo}@${branch}"
+    fi
+    echo "$sha"
+}
+
+# Fetches preview-config.nix from GitHub, cached by commit SHA.
+get_or_fetch_config() {
+    local repo="$1" branch="$2" commit_sha="$3" token="$4"
+    local cached_config="$CONFIG_CACHE_DIR/${commit_sha}.nix"
+
+    if [[ -f "$cached_config" ]]; then
+        info "Using cached config (${commit_sha:0:8})" >&2
+        echo "$cached_config"
+        return
+    fi
+
+    info "Fetching preview-config.nix from ${repo}@${branch} (${commit_sha:0:8})..." >&2
+    if ! curl -sf \
+        -H "Authorization: Bearer ${token}" \
+        "https://raw.githubusercontent.com/${repo}/${commit_sha}/preview-config.nix" \
+        -o "$cached_config"; then
+        rm -f "$cached_config"
+        fatal "preview-config.nix not found in ${repo}@${branch}. Add it to your repo root."
+    fi
+
+    echo "$cached_config"
+}
+
+# -- Nix closure building -----------------------------------------------------
+
+# Builds toplevel + previewMeta for a repo's preview-config.nix.
+# Results are cached by commit SHA.  Both builds run in parallel.
+build_preview_closure() {
+    local config_file="$1" commit_sha="$2" admin_ssh_key="$3"
+
+    # Validate SSH key doesn't contain characters that would break the Nix string literal
+    if [[ "$admin_ssh_key" =~ [\$\`\\] ]]; then
+        fatal "ADMIN_SSH_KEY contains unsafe characters (\$, \`, \\). Check $SECRETS_FILE."
+    fi
+
+    local toplevel_cache="$CLOSURE_CACHE_DIR/${commit_sha}.toplevel"
+    local meta_cache="$CLOSURE_CACHE_DIR/${commit_sha}.meta-path"
+
+    local need_toplevel=1 need_meta=1
+    if [[ -f "$toplevel_cache" ]] && [[ -d "$(cat "$toplevel_cache" 2>/dev/null)" ]]; then
+        info "Using cached closure (${commit_sha:0:8})" >&2
+        need_toplevel=0
+    fi
+    if [[ -f "$meta_cache" ]] && [[ -f "$(cat "$meta_cache" 2>/dev/null)" ]]; then
+        need_meta=0
+    fi
+    if [[ $need_toplevel -eq 0 ]] && [[ $need_meta -eq 0 ]]; then
+        return
+    fi
+
+    # Both builds share the same nix expression structure; only the last `in` clause differs.
+    # Use a heredoc so variable expansion is clean and the nix strings are unambiguous.
+    local nix_modules
+    nix_modules=$(cat <<NIXEOF
+let
+  flake    = builtins.getFlake "path:${FLAKE_DIR}";
+  nixpkgs  = flake.inputs.nixpkgs;
+  pkgs     = import nixpkgs { system = "x86_64-linux"; config.allowUnfree = true; };
+  nixosCfg = nixpkgs.lib.nixosSystem {
+    system  = "x86_64-linux";
+    modules = [
+      { nixpkgs.pkgs = pkgs; }
+      (import ${config_file})
+      { users.users.root.openssh.authorizedKeys.keys = [ "${admin_ssh_key}" ]; }
+    ];
+  };
+in
+NIXEOF
+)
+
+    # Run both nix builds in parallel; track PIDs so we can check individual exit codes
+    local toplevel_out meta_out
+    local toplevel_tmp meta_tmp toplevel_err meta_err
+    toplevel_tmp=$(mktemp)
+    meta_tmp=$(mktemp)
+    toplevel_err=$(mktemp)
+    meta_err=$(mktemp)
+    local toplevel_pid=-1 meta_pid=-1
+
+    if [[ $need_toplevel -eq 1 ]]; then
+        info "Building container closure (${commit_sha:0:8})..." >&2
+        nix build --impure --no-link --print-out-paths --expr \
+            "${nix_modules} nixosCfg.config.system.build.toplevel" \
+            > "$toplevel_tmp" 2>"$toplevel_err" &
+        toplevel_pid=$!
+    fi
+
+    if [[ $need_meta -eq 1 ]]; then
+        nix build --impure --no-link --print-out-paths --expr \
+            "${nix_modules} nixosCfg.config.system.build.previewMeta" \
+            > "$meta_tmp" 2>"$meta_err" &
+        meta_pid=$!
+    fi
+
+    local toplevel_rc=0 meta_rc=0
+    if [[ $toplevel_pid -ne -1 ]]; then
+        wait "$toplevel_pid"; toplevel_rc=$?
+    fi
+    if [[ $meta_pid -ne -1 ]]; then
+        wait "$meta_pid"; meta_rc=$?
+    fi
+
+    if [[ $need_toplevel -eq 1 ]] && [[ $toplevel_rc -ne 0 || ! -s "$toplevel_tmp" ]]; then
+        cat "$toplevel_err" >&2
+        rm -f "$toplevel_tmp" "$meta_tmp" "$toplevel_err" "$meta_err"
+        fatal "nix build failed for toplevel (${commit_sha:0:8})"
+    fi
+
+    if [[ $need_meta -eq 1 ]] && [[ $meta_rc -ne 0 || ! -s "$meta_tmp" ]]; then
+        cat "$meta_err" >&2
+        rm -f "$toplevel_tmp" "$meta_tmp" "$toplevel_err" "$meta_err"
+        fatal "nix build failed for previewMeta (${commit_sha:0:8})"
+    fi
+
+    if [[ $need_toplevel -eq 1 ]]; then
+        toplevel_out=$(cat "$toplevel_tmp")
+        echo "$toplevel_out" > "$toplevel_cache"
+        success "Container closure built: ${toplevel_out}" >&2
+    fi
+
+    if [[ $need_meta -eq 1 ]]; then
+        meta_out=$(cat "$meta_tmp")
+        echo "$meta_out" > "$meta_cache"
+    fi
+
+    rm -f "$toplevel_tmp" "$meta_tmp" "$toplevel_err" "$meta_err"
+}
+
 # -- Caddy route management ---------------------------------------------------
 
-write_caddy_route() {
+# Writes Caddy config blocks for a route array from the meta JSON.
+# Routes are sorted by path length descending (most specific first, "/" last).
+generate_caddy_route_blocks() {
+    local container_ip="$1"
+    local meta_file="$2"
+    local routes_sel="$3"
+
+    while IFS= read -r route; do
+        local path port strip_prefix
+        path=$(echo "$route" | jq -r '.path')
+        port=$(echo "$route" | jq -r '.port')
+        strip_prefix=$(echo "$route" | jq -r '.stripPrefix // false')
+
+        if [[ "$path" == "/" ]]; then
+            # Catch-all: wrapped in handle { } so it participates in Caddy's
+            # mutual-exclusivity group with the other handle blocks above it.
+            echo "    handle {"
+            echo "        reverse_proxy ${container_ip}:${port}"
+            echo "    }"
+        elif [[ "$strip_prefix" == "true" ]]; then
+            # Strip-prefix routing (e.g. /admin/*): redir bare path + handle_path
+            local base_path="${path%/\*}"
+            echo "    redir ${base_path} ${base_path}/"
+            echo "    handle_path ${path} {"
+            echo "        reverse_proxy ${container_ip}:${port}"
+            echo "    }"
+        else
+            echo "    handle ${path} {"
+            echo "        reverse_proxy ${container_ip}:${port}"
+            echo "    }"
+        fi
+    done < <(jq -c "${routes_sel} | sort_by([(.path | length), .path]) | reverse | .[]" "$meta_file")
+}
+
+write_caddy_config() {
     local slug="$1"
     local container_ip="$2"
-    local domain="${PREVIEW_DOMAIN:-preview.example.com}"
+    local domain="$3"
+    local meta_file="$4"
 
-    cat > "${CADDY_DIR}/${slug}.caddy" <<EOF
-${slug}.${domain} {
-    import cloudflare_tls
-    reverse_proxy ${container_ip}:3000
-}
-EOF
+    {
+        echo "${slug}.${domain} {"
+        echo "    import cloudflare_tls"
+        generate_caddy_route_blocks "$container_ip" "$meta_file" ".routes"
+        echo "}"
+
+        # Extra host blocks (e.g. landing subdomains)
+        local n_extra
+        n_extra=$(jq '.extraHosts | length' "$meta_file")
+        for ((i=0; i<n_extra; i++)); do
+            local prefix
+            prefix=$(jq -r ".extraHosts[${i}].prefix" "$meta_file")
+            echo ""
+            echo "${prefix}-${slug}.${domain} {"
+            echo "    import cloudflare_tls"
+            generate_caddy_route_blocks "$container_ip" "$meta_file" ".extraHosts[${i}].routes"
+            echo "}"
+        done
+    } > "${CADDY_DIR}/${slug}.caddy"
 
     systemctl reload caddy
 }
 
-remove_caddy_route() {
+remove_caddy_config() {
     local slug="$1"
-    rm -f "${CADDY_DIR}/${slug}.caddy" "${CADDY_DIR}/${slug}-landing.caddy"
-    systemctl reload caddy
-}
-
-write_vertex_caddy_route() {
-    local slug="$1"
-    local container_ip="$2"
-    local domain="${PREVIEW_DOMAIN:-preview.example.com}"
-
-    cat > "${CADDY_DIR}/${slug}.caddy" <<EOF
-${slug}.${domain} {
-    import cloudflare_tls
-    handle /api/* {
-        reverse_proxy ${container_ip}:4000
-    }
-    handle /websocket {
-        reverse_proxy ${container_ip}:4000
-    }
-    handle /longpoll/* {
-        reverse_proxy ${container_ip}:4000
-    }
-    redir /admin /admin/
-    handle_path /admin/* {
-        reverse_proxy ${container_ip}:3000
-    }
-    reverse_proxy ${container_ip}:3001
-}
-EOF
-
-    cat > "${CADDY_DIR}/${slug}-landing.caddy" <<EOF
-landing-${slug}.${domain} {
-    import cloudflare_tls
-    reverse_proxy ${container_ip}:3002
-}
-
-app.landing-${slug}.${domain} {
-    import cloudflare_tls
-    handle /api/* {
-        reverse_proxy ${container_ip}:4000
-    }
-    handle /websocket {
-        reverse_proxy ${container_ip}:4000
-    }
-    handle /longpoll/* {
-        reverse_proxy ${container_ip}:4000
-    }
-    reverse_proxy ${container_ip}:3001
-}
-EOF
-
+    rm -f "${CADDY_DIR}/${slug}.caddy"
     systemctl reload caddy
 }
 
@@ -223,78 +350,40 @@ generate_secret_base64() {
     head -c "$bytes" /dev/urandom | base64 | tr -d '\n'
 }
 
-# -- Preview type detection ---------------------------------------------------
+# -- Meta helpers -------------------------------------------------------------
 
-get_preview_type() {
+get_meta_file() {
     local slug="$1"
-    local type_file="$PREVIEW_DIR/${slug}.type"
-    if [[ -f "$type_file" ]]; then
-        cat "$type_file"
+    echo "$PREVIEW_DIR/${slug}.meta"
+}
+
+# Reads setup/app service names from .meta file, with legacy .type fallback.
+read_service_names() {
+    local slug="$1"
+    local meta_file="$PREVIEW_DIR/${slug}.meta"
+
+    if [[ -f "$meta_file" ]]; then
+        SETUP_SERVICE=$(jq -r '.setupService' "$meta_file")
+        readarray -t APP_SERVICES < <(jq -r '.appServices[]' "$meta_file")
     else
-        echo "node"
+        # Legacy fallback for previews created before the meta-based architecture.
+        # All new previews use preview-config.nix and produce a .meta file.
+        SETUP_SERVICE="setup-preview"
+        APP_SERVICES=("preview-app")
     fi
 }
 
 # -- Commands -----------------------------------------------------------------
 
 cmd_build() {
-    local type="node"
+    local repo="" branch=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --type) type="$2"; shift 2 ;;
-            *) fatal "Unknown argument: $1" ;;
-        esac
-    done
-
-    ensure_root
-    ensure_dirs
-
-    case "$type" in
-        node)
-            info "Building preview system closure..."
-            local path
-            path=$(nix build "${FLAKE_DIR}#nixosConfigurations.preview.config.system.build.toplevel" --no-link --print-out-paths)
-            echo "$path" > "$SYSTEM_PATH_CACHE"
-            success "System closure built and cached: $path"
-            ;;
-        vertex)
-            info "Building vertex preview system closure..."
-            local path
-            path=$(nix build "${FLAKE_DIR}#nixosConfigurations.vertex-preview.config.system.build.toplevel" --no-link --print-out-paths)
-            echo "$path" > "$VERTEX_SYSTEM_PATH_CACHE"
-            success "Vertex system closure built and cached: $path"
-            ;;
-        *)
-            fatal "Unknown preview type: $type. Supported: node, vertex"
-            ;;
-    esac
-}
-
-cmd_create() {
-    local repo=""
-    local branch=""
-    local slug=""
-    local type="node"
-
-    # Parse arguments
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --slug)
-                slug="$2"
-                shift 2
-                ;;
-            --type)
-                type="$2"
-                shift 2
-                ;;
             *)
-                if [[ -z "$repo" ]]; then
-                    repo="$1"
-                elif [[ -z "$branch" ]]; then
-                    branch="$1"
-                else
-                    fatal "Unknown argument: $1"
+                if [[ -z "$repo" ]]; then repo="$1"
+                elif [[ -z "$branch" ]]; then branch="$1"
+                else fatal "Unknown argument: $1"
                 fi
                 shift
                 ;;
@@ -302,11 +391,50 @@ cmd_create() {
     done
 
     if [[ -z "$repo" ]] || [[ -z "$branch" ]]; then
-        fatal "Usage: preview create <owner/repo> <branch> [--slug <slug>] [--type <node|vertex>]"
+        fatal "Usage: preview build <owner/repo> <branch>"
     fi
 
-    if [[ "$type" != "node" ]] && [[ "$type" != "vertex" ]]; then
-        fatal "Unknown preview type: $type. Supported: node, vertex"
+    ensure_root
+    ensure_dirs
+    load_secrets
+
+    local github_token
+    github_token=$(get_github_token)
+
+    local commit_sha
+    commit_sha=$(get_commit_sha "$repo" "$branch" "$github_token")
+    info "Building from commit ${commit_sha:0:8}"
+
+    local config_file
+    config_file=$(get_or_fetch_config "$repo" "$branch" "$commit_sha" "$github_token")
+
+    local admin_ssh_key="${ADMIN_SSH_KEY:-}"
+    if [[ -z "$admin_ssh_key" ]]; then
+        fatal "ADMIN_SSH_KEY not set in $SECRETS_FILE"
+    fi
+
+    build_preview_closure "$config_file" "$commit_sha" "$admin_ssh_key"
+    success "Preview closure for ${repo}@${branch} (${commit_sha:0:8}) built and cached."
+}
+
+cmd_create() {
+    local repo="" branch="" slug=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --slug) slug="$2"; shift 2 ;;
+            *)
+                if [[ -z "$repo" ]]; then repo="$1"
+                elif [[ -z "$branch" ]]; then branch="$1"
+                else fatal "Unknown argument: $1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$repo" ]] || [[ -z "$branch" ]]; then
+        fatal "Usage: preview create <owner/repo> <branch> [--slug <slug>]"
     fi
 
     ensure_root
@@ -328,46 +456,64 @@ cmd_create() {
     fi
 
     local domain="${PREVIEW_DOMAIN:-preview.example.com}"
-
-    # Get GitHub token: prefer webhook's /internal/token endpoint (supports
-    # PAT auth), fall back to GITHUB_TOKEN env var.
-    local github_token=""
-    local webhook_port="${WEBHOOK_PORT:-3100}"
-    local token_response
-    if token_response=$(curl -sf "http://127.0.0.1:${webhook_port}/internal/token" 2>/dev/null); then
-        github_token=$(echo "$token_response" | jq -r '.token')
-        local auth_mode
-        auth_mode=$(echo "$token_response" | jq -r '.mode')
-        info "Using token from webhook (auth mode: $auth_mode)"
-    else
-        github_token="${GITHUB_TOKEN:-}"
+    local admin_ssh_key="${ADMIN_SSH_KEY:-}"
+    if [[ -z "$admin_ssh_key" ]]; then
+        fatal "ADMIN_SSH_KEY not set in $SECRETS_FILE"
     fi
 
-    if [[ -z "$github_token" ]]; then
-        fatal "No GitHub token available. Check $SECRETS_FILE or ensure the webhook is running."
-    fi
+    # Get GitHub token
+    local github_token
+    github_token=$(get_github_token)
 
-    # Get pre-built system path (type-specific)
+    # Get commit SHA (cache key for this deploy)
+    local commit_sha
+    commit_sha=$(get_commit_sha "$repo" "$branch" "$github_token")
+    info "Deploying commit ${commit_sha:0:8} of ${repo}@${branch}"
+
+    # Fetch config (cached by commit SHA)
+    local config_file
+    config_file=$(get_or_fetch_config "$repo" "$branch" "$commit_sha" "$github_token")
+
+    # Build closure (two parallel nix builds: toplevel + previewMeta)
+    build_preview_closure "$config_file" "$commit_sha" "$admin_ssh_key"
+
+    # Read meta from nix store and copy to preview dir
+    local meta_store_path
+    meta_store_path=$(cat "$CLOSURE_CACHE_DIR/${commit_sha}.meta-path")
+    local meta_file="$PREVIEW_DIR/${slug}.meta"
+    cp "$meta_store_path" "$meta_file"
+
+    # Validate required meta fields
+    for field in setupService appServices database routes; do
+        if ! jq -e ".${field}" "$meta_file" >/dev/null 2>&1; then
+            fatal "preview-config.nix is missing required meta field: ${field}"
+        fi
+    done
+
+    # Get the built system path
     local system_path
-    if [[ "$type" == "vertex" ]]; then
-        system_path=$(get_vertex_system_path)
-    else
-        system_path=$(get_system_path)
-    fi
+    system_path=$(cat "$CLOSURE_CACHE_DIR/${commit_sha}.toplevel")
 
     # Allocate IP
     local slot
     slot=$(next_slot)
     read -r host_ip local_ip <<< "$(slot_to_ips "$slot")"
 
-    info "Creating preview '$slug' (type=$type, host=$host_ip, container=$local_ip)..."
+    info "Creating preview '$slug' (host=$host_ip, container=$local_ip)..."
 
-    # Create PostgreSQL database (only for node type — vertex runs its own PostgreSQL)
-    local db_pass=""
-    local db_name="preview_${slug//-/_}"
-    local db_user="preview_${slug//-/_}"
-    if [[ "$type" != "vertex" ]]; then
+    # Create PostgreSQL database on the host if requested by meta
+    local db_pass="" db_name="" db_user=""
+    local db_mode
+    db_mode=$(jq -r '.database' "$meta_file")
+    if [[ "$db_mode" == "host" ]]; then
+        db_name="preview_${slug//-/_}"
+        db_user="preview_${slug//-/_}"
         db_pass=$(create_db "$slug")
+    fi
+
+    # Guard against concurrent creates that raced past the earlier file-existence check
+    if nixos-container status "$slug" &>/dev/null; then
+        fatal "Preview '$slug' was already created by a concurrent request. Aborting."
     fi
 
     # Create the container
@@ -376,86 +522,88 @@ cmd_create() {
         --host-address "$host_ip" \
         --local-address "$local_ip"
 
-    # Write /etc/preview.env into the container filesystem
+    # Claim the IP slot immediately so no concurrent create can reuse it
+    bump_slot
+
+    # Write container environment files
     local container_root="/var/lib/nixos-containers/${slug}"
+    mkdir -p "${container_root}/etc"
+
+    local preview_host="${slug}.${domain}"
+    local preview_url="https://${preview_host}"
+
+    # /etc/preview-token — readable by preview user (604); contains the GitHub token
+    # for git operations inside the container.  The setup service runs as the 'preview'
+    # user so it needs read access.  644 is also acceptable; the container is isolated
+    # and the token expires with the GitHub App session anyway.
+    local token_file="${container_root}/etc/preview-token"
+    echo "$github_token" > "$token_file"
+    chmod 604 "$token_file"
+
+    # /etc/preview.env — readable by preview user (644); safe values only (no token).
     local env_file="${container_root}/etc/preview.env"
-    mkdir -p "$(dirname "$env_file")"
+    {
+        echo "PREVIEW_REPO_URL='https://github.com/${repo}.git'"
+        echo "PREVIEW_BRANCH='${branch}'"
+        echo "PREVIEW_HOST='${preview_host}'"
+        echo "PREVIEW_URL='${preview_url}'"
 
-    local clone_url="https://x-access-token:${github_token}@github.com/${repo}.git"
-    local preview_url="https://${slug}.${domain}"
+        if [[ "$db_mode" == "host" ]]; then
+            echo "DATABASE_URL='postgresql://${db_user}:${db_pass}@${host_ip}:5432/${db_name}'"
+        fi
 
-    if [[ "$type" == "vertex" ]]; then
-        # Generate secrets for vertex
-        local secret_key_base
-        secret_key_base=$(generate_secret_hex 64)
-        local jwt_secret
-        jwt_secret=$(generate_secret_hex 64)
-        local db_encryption_key
-        db_encryption_key=$(generate_secret_base64 32)
-
-        # Check for optional credential overrides from host secrets
-        local postmark_key="${VERTEX_POSTMARK_API_KEY:-dummy-not-configured}"
-        local google_client_id="${VERTEX_GOOGLE_CLIENT_ID:-dummy-not-configured}"
-        local google_client_secret="${VERTEX_GOOGLE_CLIENT_SECRET:-dummy-not-configured}"
-
-        cat > "$env_file" <<EOF
-PREVIEW_REPO_URL='${clone_url}'
-PREVIEW_BRANCH='${branch}'
-DATABASE_URL='postgresql://vertex@localhost:5432/vertex'
-SECRET_KEY_BASE='${secret_key_base}'
-JWT_SECRET='${jwt_secret}'
-DATABASE_ENCRYPTION_KEY='${db_encryption_key}'
-PHX_HOST='${slug}.${domain}'
-PORT=4000
-API_URL='${preview_url}'
-FRONTEND_URL='${preview_url}'
-POSTMARK_API_KEY='${postmark_key}'
-GOOGLE_CLIENT_ID='${google_client_id}'
-GOOGLE_CLIENT_SECRET='${google_client_secret}'
-REDIS_URL='redis://localhost:6379'
-DEPLOY_ENV='testing'
-CORS_ALLOWED_ORIGINS='${preview_url},https://app.landing-${slug}.${domain}'
-EOF
-    else
-        cat > "$env_file" <<EOF
-PREVIEW_REPO_URL='${clone_url}'
-PREVIEW_BRANCH='${branch}'
-DATABASE_URL='postgresql://${db_user}:${db_pass}@${host_ip}:5432/${db_name}'
-PORT=3000
-NODE_ENV=production
-APP_URL='${preview_url}'
-NEXT_PUBLIC_APP_URL='${preview_url}'
-EOF
-    fi
+        # Forward host secrets declared by the repo's preview-config.nix
+        local n_secrets
+        n_secrets=$(jq '.hostSecrets | length' "$meta_file")
+        if [[ $n_secrets -gt 0 ]]; then
+            while IFS= read -r secret_key; do
+                local secret_val
+                secret_val=$(grep "^${secret_key}=" "$SECRETS_FILE" | head -1 | cut -d= -f2- || true)
+                if [[ -n "$secret_val" ]]; then
+                    echo "${secret_key}=${secret_val}"
+                else
+                    warn "hostSecret ${secret_key} not found in $SECRETS_FILE — writing empty value" >&2
+                    echo "${secret_key}="
+                fi
+            done < <(jq -r '.hostSecrets[]' "$meta_file")
+        fi
+    } > "$env_file"
     chmod 644 "$env_file"
 
-    # Track the preview (include type in tracking file)
+    # Track the preview
     echo "${slot} ${host_ip} ${local_ip} ${repo} ${branch}" > "$PREVIEW_DIR/$slug"
-    echo "$type" > "$PREVIEW_DIR/${slug}.type"
-    bump_slot
+    echo "$commit_sha" > "$PREVIEW_DIR/${slug}.sha"
 
     # Start the container
     nixos-container start "$slug"
 
-    # Kick off setup and services (type-specific)
-    if [[ "$type" == "vertex" ]]; then
-        nixos-container run "$slug" -- systemctl start setup-vertex vertex-backend vertex-frontend-admin vertex-frontend-foods vertex-frontend-landing &
-        write_vertex_caddy_route "$slug" "$local_ip"
-    else
-        nixos-container run "$slug" -- systemctl start setup-preview preview-app &
-        write_caddy_route "$slug" "$local_ip"
-    fi
+    # Kick off setup and app services in background
+    local setup_service
+    setup_service=$(jq -r '.setupService' "$meta_file")
+    local -a app_services
+    readarray -t app_services < <(jq -r '.appServices[]' "$meta_file")
+    nixos-container run "$slug" -- systemctl start "$setup_service" "${app_services[@]}" &
+
+    # Write Caddy config from meta routes
+    write_caddy_config "$slug" "$local_ip" "$domain" "$meta_file"
 
     success "Preview '$slug' created and starting."
     echo ""
     echo -e "  ${BOLD}URL:${NC}           ${preview_url}"
-    if [[ "$type" == "vertex" ]]; then
-        echo -e "  ${BOLD}Landing:${NC}       https://landing-${slug}.${domain}"
-    fi
-    echo -e "  ${BOLD}Type:${NC}          $type"
+
+    # Print extra host URLs
+    local n_extra
+    n_extra=$(jq '.extraHosts | length' "$meta_file")
+    for ((i=0; i<n_extra; i++)); do
+        local prefix
+        prefix=$(jq -r ".extraHosts[${i}].prefix" "$meta_file")
+        echo -e "  ${BOLD}URL:${NC}           https://${prefix}-${slug}.${domain}"
+    done
+
     echo -e "  ${BOLD}Container IP:${NC}  $local_ip"
     echo -e "  ${BOLD}Repo:${NC}          $repo"
     echo -e "  ${BOLD}Branch:${NC}        $branch"
+    echo -e "  ${BOLD}Commit:${NC}        ${commit_sha:0:8}"
     echo ""
     echo -e "  ${CYAN}The app is building. Check progress with: preview logs $slug --follow${NC}"
     echo ""
@@ -475,23 +623,31 @@ cmd_destroy() {
 
     info "Destroying preview '$slug'..."
 
-    # Remove Caddy route
-    remove_caddy_route "$slug"
+    # Remove Caddy config
+    remove_caddy_config "$slug"
 
     # Stop and destroy container
     nixos-container stop "$slug" 2>/dev/null || true
     nixos-container destroy "$slug"
 
-    # Drop PostgreSQL database (only for node type — vertex DB is destroyed with the container)
-    local type
-    type=$(get_preview_type "$slug")
-    if [[ "$type" != "vertex" ]]; then
+    # Drop PostgreSQL database if it was on the host
+    local meta_file="$PREVIEW_DIR/${slug}.meta"
+    local db_mode="container"
+    if [[ -f "$meta_file" ]]; then
+        db_mode=$(jq -r '.database' "$meta_file")
+    else
+        # Legacy fallback: previews before meta-based architecture used host DB
+        db_mode="host"
+    fi
+    if [[ "$db_mode" == "host" ]]; then
         drop_db "$slug"
     fi
 
-    # Remove tracking files
-    rm -f "$PREVIEW_DIR/$slug"
-    rm -f "$PREVIEW_DIR/${slug}.type"
+    # Remove tracking files (including legacy .type)
+    rm -f "$PREVIEW_DIR/$slug" \
+          "$PREVIEW_DIR/${slug}.meta" \
+          "$PREVIEW_DIR/${slug}.sha" \
+          "$PREVIEW_DIR/${slug}.type"
 
     success "Preview '$slug' destroyed."
 }
@@ -503,51 +659,43 @@ cmd_update() {
     fi
 
     ensure_root
+    load_secrets
 
     if [[ ! -f "$PREVIEW_DIR/$slug" ]]; then
         fatal "Preview '$slug' not found."
     fi
 
-    read -r _slot _host_ip local_ip _repo _branch < "$PREVIEW_DIR/$slug"
-    local type
-    type=$(get_preview_type "$slug")
+    read -r _slot _host_ip _local_ip _repo _branch < "$PREVIEW_DIR/$slug"
 
-    info "Updating preview '$slug' (type=$type, pulling latest code and rebuilding)..."
+    # Resolve service names from meta (or legacy .type file)
+    local SETUP_SERVICE
+    local -a APP_SERVICES
+    read_service_names "$slug"
 
-    # Refresh the GitHub token in the container's git config (GitHub tokens may expire)
-    local github_token=""
-    local webhook_port="${WEBHOOK_PORT:-3100}"
-    local token_response
-    if token_response=$(curl -sf "http://127.0.0.1:${webhook_port}/internal/token" 2>/dev/null); then
-        github_token=$(echo "$token_response" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
-    else
-        github_token="${GITHUB_TOKEN:-}"
-    fi
+    info "Updating preview '$slug' (pulling latest code and rebuilding)..."
+
+    # Refresh the GitHub token so git can pull latest changes
+    local github_token
+    github_token=$(get_github_token)
 
     if [[ -n "$github_token" ]]; then
         local container_root="/var/lib/nixos-containers/${slug}"
-        # Update git remote URL with fresh token
+        # Overwrite /etc/preview-token with the fresh token (setup scripts read this for git auth)
+        local token_file="${container_root}/etc/preview-token"
+        if [[ -f "$token_file" ]]; then
+            echo "$github_token" > "$token_file"
+        fi
+        # Also refresh any already-cloned git remote URL so ongoing fetches work immediately
         local git_config="${container_root}/home/preview/app/.git/config"
         if [[ -f "$git_config" ]]; then
             sed -i "s|x-access-token:[^@]*|x-access-token:${github_token}|" "$git_config"
         fi
-        # Update PREVIEW_REPO_URL in container env file
-        local env_file="${container_root}/etc/preview.env"
-        if [[ -f "$env_file" ]]; then
-            sed -i "s|x-access-token:[^@]*|x-access-token:${github_token}|" "$env_file"
-        fi
     fi
 
-    # Signal the setup service to do a full rebuild (not skip due to existing build)
+    # Signal the setup service to do a full rebuild
     nixos-container run "$slug" -- su -s /bin/sh preview -c "touch /tmp/force-rebuild"
 
-    if [[ "$type" == "vertex" ]]; then
-        nixos-container run "$slug" -- bash -c \
-            "systemctl restart setup-vertex && systemctl restart vertex-backend vertex-frontend-admin vertex-frontend-foods vertex-frontend-landing"
-    else
-        nixos-container run "$slug" -- bash -c \
-            "systemctl restart setup-preview && systemctl restart preview-app"
-    fi
+    nixos-container run "$slug" -- systemctl restart "$SETUP_SERVICE" "${APP_SERVICES[@]}"
 
     success "Preview '$slug' is rebuilding. Check progress with: preview logs $slug --follow"
 }
@@ -564,11 +712,14 @@ cmd_list() {
         [[ -f "$f" ]] || continue
         local name
         name=$(basename "$f")
-        [[ "$name" == .* ]] && continue
+        # Skip hidden files and metadata files
+        [[ "$name" == .* ]]    && continue
         [[ "$name" == *.type ]] && continue
+        [[ "$name" == *.meta ]] && continue
+        [[ "$name" == *.sha ]]  && continue
 
         found=1
-        read -r _slot _host_ip _local_ip repo branch < "$f"
+        read -r _slot _host_ip _local_ip _repo branch < "$f"
 
         local status
         if nixos-container status "$name" 2>/dev/null | grep -q "up"; then
@@ -604,17 +755,14 @@ cmd_logs() {
         fatal "Preview '$slug' not found."
     fi
 
-    read -r _slot _host_ip local_ip _repo _branch < "$PREVIEW_DIR/$slug"
+    local SETUP_SERVICE
+    local -a APP_SERVICES
+    read_service_names "$slug"
 
-    local type
-    type=$(get_preview_type "$slug")
-
-    local -a units
-    if [[ "$type" == "vertex" ]]; then
-        units=(-u setup-vertex -u vertex-backend -u vertex-frontend-admin -u vertex-frontend-foods -u vertex-frontend-landing)
-    else
-        units=(-u setup-preview -u preview-app)
-    fi
+    local -a units=("-u" "$SETUP_SERVICE")
+    for svc in "${APP_SERVICES[@]}"; do
+        units+=("-u" "$svc")
+    done
 
     nixos-container run "$slug" -- journalctl "${units[@]}" --no-pager "${follow_args[@]}"
 }
@@ -623,26 +771,23 @@ cmd_help() {
     echo -e "${BOLD}Usage:${NC} preview <command> [args]"
     echo ""
     echo -e "${BOLD}Commands:${NC}"
-    echo "  create <owner/repo> <branch> [options]          Deploy a branch as a preview"
-    echo "    --slug <slug>                                 Custom slug for the preview URL"
-    echo "    --type <node|vertex>                          Preview type (default: node)"
-    echo "  destroy <slug>                                  Remove a preview deployment"
-    echo "  update <slug>                                   Pull latest code and rebuild"
-    echo "  list                                            List all preview deployments"
-    echo "  logs <slug> [--follow]                          View preview build/app logs"
-    echo "  build [--type <node|vertex>]                    Pre-build the preview system closure"
-    echo "  help                                            Show this help"
+    echo "  create <owner/repo> <branch> [--slug <slug>]    Deploy a branch as a preview"
+    echo "  destroy <slug>                                   Remove a preview deployment"
+    echo "  update <slug>                                    Pull latest code and rebuild"
+    echo "  list                                             List all preview deployments"
+    echo "  logs <slug> [--follow]                           View preview build/app logs"
+    echo "  build <owner/repo> <branch>                      Pre-build the preview closure"
+    echo "  help                                             Show this help"
     echo ""
-    echo -e "${BOLD}Preview types:${NC}"
-    echo "  node     Node.js app (npm ci, npm build, npm start on port 3000)"
-    echo "  vertex   Elixir/Phoenix + React SPA monorepo (backend:4000, frontends:3000/3001, landing:3002)"
+    echo -e "${BOLD}How it works:${NC}"
+    echo "  Each repo ships a preview-config.nix at its root. tekton fetches it from"
+    echo "  GitHub, builds a NixOS container closure from it (cached by commit SHA),"
+    echo "  and runs the container. No repo-specific knowledge lives in tekton."
     echo ""
     echo -e "${BOLD}Examples:${NC}"
-    echo "  preview build"
-    echo "  preview build --type vertex"
+    echo "  preview build myorg/myapp feature-branch"
     echo "  preview create myorg/myapp feature-branch"
     echo "  preview create myorg/myapp feature-branch --slug myapp-pr-42"
-    echo "  preview create myorg/myapp feature-branch --type vertex --slug vtx-pr-42"
     echo "  preview logs myapp-pr-42 --follow"
     echo "  preview update myapp-pr-42"
     echo "  preview destroy myapp-pr-42"

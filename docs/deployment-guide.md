@@ -152,7 +152,7 @@ Skipped with `--skip-install`.
 
 The `server-setup.sh` script is the main server-side configuration tool. It prompts for all configuration values and handles the full build:
 
-1. **Configuration prompts**: domain, GitHub OAuth App credentials, GitHub organization, GitHub PAT, webhook secret, allowed repos, vertex repos, SSH public key
+1. **Configuration prompts**: domain, GitHub OAuth App credentials, GitHub organization, GitHub PAT, webhook secret, allowed repos, SSH public key
 2. **Hardware detection**: auto-detects server IP, gateway, interface, disks, and kernel modules from the running system
 3. **Secret generation**: JWT secret, root SSH key
 4. **NixOS configuration**: substitutes all placeholders in `.nix` config files and installs to `/etc/nixos/`
@@ -161,7 +161,7 @@ The `server-setup.sh` script is the main server-side configuration tool. It prom
 7. **Cloudflare cert permissions**: fixes cert ownership for Caddy
 8. **Dashboard build**: builds frontend (React) and backend (Rust) from the repo
 9. **Webhook build**: builds the preview webhook service (TypeScript)
-10. **Container closures**: pre-builds agent, preview, and vertex container closures
+10. **Container closures**: pre-builds agent and preview container closures
 11. **Service startup**: starts dashboard and webhook services, verifies they're running
 12. **Claude login**: interactive Claude Code authentication
 
@@ -208,7 +208,7 @@ After making changes to the codebase, use `deploy.sh` to update the server. It p
 - **`webhook`** — Copies webhook source to `/opt/preview-webhook/`, runs `npm ci && npm run build`, restarts the service
 - **`nix`** — Copies safe NixOS config files (not `configuration.nix` or `agent-config.nix`) to `/etc/nixos/`, runs `nixos-rebuild switch`
 - **`nix-agents`** — Same as `nix`, plus rebuilds the agent container closure (`agent build`)
-- **`nix-previews`** — Same as `nix`, plus rebuilds both preview closures (`preview build && preview build --type vertex`)
+- **`nix-previews`** — Same as `nix`, plus rebuilds the preview closure (`preview build`)
 
 ### Important notes
 
@@ -250,8 +250,8 @@ No service restart needed — the dashboard reads the file on each task.
             dashboard.yourdomain.com    *.yourdomain.com
                      |                          |
               Dashboard (port 3200)      Preview containers
-              - Rust/Axum backend        - Node.js or Vertex (Elixir)
-              - React SPA                - One per PR/branch
+              - Rust/Axum backend        - One per PR/branch
+              - React SPA                - Config from repo's preview-config.nix
               - SQLite DB
                      |
               Agent containers (a-XXXXXX)
@@ -315,17 +315,15 @@ Key points:
   a-XXXXXX                             # Tracking files for active agents
 
 /var/lib/preview-deploys/
-  .system-path                         # Cached node preview closure store path
-  .vertex-system-path                  # Cached vertex preview closure store path
   t-XXXXXX                             # Tracking files for active previews
-  t-XXXXXX.type                        # Preview type (node or vertex)
+  t-XXXXXX.meta                        # Preview meta JSON (from preview-config.nix)
+  t-XXXXXX.sha                         # Commit SHA of the deployed version
 
 /etc/nixos/
   configuration.nix                    # Main NixOS config (with real values)
   agent-config.nix                     # Agent container NixOS config
   agent.sh                             # Agent lifecycle script
-  preview-config.nix                   # Node.js preview container config
-  vertex-preview-config.nix            # Vertex preview container config
+  preview-config.nix                   # Default preview container config (Node.js)
   preview.sh                           # Preview lifecycle script
   flake.nix                            # Nix flake for building container closures
 
@@ -348,7 +346,6 @@ GITHUB_REDIRECT_URI=https://dashboard.yourdomain.com/api/auth/callback
 GITHUB_ORG=yourorg
 PREVIEW_DOMAIN=yourdomain.com
 ALLOWED_REPOS=yourorg/repo1,yourorg/repo2
-VERTEX_REPOS=yourorg/elixir-repo
 PREVIEW_BIN=/run/current-system/sw/bin/preview
 AGENT_BIN=/run/current-system/sw/bin/agent
 STATIC_DIR=/opt/dashboard/static
@@ -362,7 +359,6 @@ GITHUB_WEBHOOK_SECRET=<webhook-secret>
 PREVIEW_DOMAIN=yourdomain.com
 WEBHOOK_PORT=3100
 ALLOWED_REPOS=yourorg/repo1,yourorg/repo2
-VERTEX_REPOS=yourorg/elixir-repo
 ```
 
 **`/var/secrets/claude/oauth_token`:**
@@ -405,7 +401,7 @@ Template files in the repo have placeholder values that `server-setup.sh` substi
 |---------|----------|
 | Dashboard won't start | `journalctl -u dashboard -n 50`. Check `/var/secrets/dashboard.env` exists and has all variables. |
 | Webhook not receiving events | `systemctl status preview-webhook` and check GitHub webhook deliveries. |
-| Preview returns 502 | App is still building. Check `preview logs <slug> --follow`. Vertex builds take 10-15 minutes. |
+| Preview returns 502 | App is still building. Check `preview logs <slug> --follow`. Some builds (e.g. Elixir) take 10-15 minutes. |
 | Container fails to start | `journalctl -u container@<name>` on host. |
 
 ### Authentication issues
@@ -430,29 +426,27 @@ Template files in the repo have placeholder values that `server-setup.sh` substi
 ### Preview-specific issues
 
 ```bash
-# Re-trigger a build inside a container
-nixos-container run <slug> -- systemctl restart setup-preview  # node
-nixos-container run <slug> -- systemctl restart setup-vertex   # vertex
+# Re-trigger a build inside a container (service name comes from the repo's preview-config.nix)
+nixos-container run <slug> -- systemctl restart <setup-service-name>
 
 # Clean up a stuck preview manually
 nixos-container stop <slug> 2>/dev/null
 nixos-container destroy <slug>
-rm -f /var/lib/preview-deploys/<slug> /var/lib/preview-deploys/<slug>.type
+rm -f /var/lib/preview-deploys/<slug> /var/lib/preview-deploys/<slug>.meta /var/lib/preview-deploys/<slug>.sha
 rm -f /etc/caddy/previews/<slug>.caddy
 systemctl reload caddy
-# For node type only:
+# If the preview used database = "host":
 sudo -u postgres psql -c "DROP DATABASE IF EXISTS preview_<slug_underscored>;"
 sudo -u postgres psql -c "DROP USER IF EXISTS preview_<slug_underscored>;"
 ```
 
-### Vertex secrets (optional)
+### Host secrets for previews (optional)
 
-If using Vertex previews with apps that need additional credentials, add to `/var/secrets/preview.env`:
+If a repo's `preview-config.nix` declares `hostSecrets` (e.g. `hostSecrets = [ "POSTMARK_API_KEY" ];`), add those keys to `/var/secrets/preview.env`:
 
 ```bash
-VERTEX_POSTMARK_API_KEY=your-key
-VERTEX_GOOGLE_CLIENT_ID=your-client-id
-VERTEX_GOOGLE_CLIENT_SECRET=your-client-secret
+POSTMARK_API_KEY=your-key
+GOOGLE_CLIENT_ID=your-client-id
 ```
 
-Then restart the webhook: `systemctl restart preview-webhook`
+Tekton forwards any matching keys into the container's `/etc/preview.env` at create time. If a key is missing, tekton warns but does not abort.

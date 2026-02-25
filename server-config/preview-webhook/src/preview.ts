@@ -1,29 +1,44 @@
-import { execaCommand } from "execa";
+import { execa } from "execa";
+import { promises as fs } from "fs";
 import type { TokenProvider } from "./auth.js";
+
+export interface PreviewMeta {
+  extraHosts?: { prefix: string; routes: unknown[] }[];
+}
+
+export async function readPreviewMeta(slug: string): Promise<PreviewMeta | null> {
+  try {
+    const content = await fs.readFile(`/var/lib/preview-deploys/${slug}.meta`, "utf-8");
+    return JSON.parse(content) as PreviewMeta;
+  } catch {
+    return null;
+  }
+}
 
 const PREVIEW_BIN = "/run/current-system/sw/bin/preview";
 
-export function prToSlug(_repoName: string, prNumber: number): string {
-  return `${prNumber}`;
+export function prToSlug(repoName: string, prNumber: number): string {
+  const name = repoName.split("/").pop() ?? repoName;
+  return `${name}-${prNumber}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
 }
 
-async function runPreview(args: string): Promise<void> {
-  console.log(`[preview] Running: ${PREVIEW_BIN} ${args}`);
+async function runPreview(args: string[]): Promise<void> {
+  console.log(`[preview] Running: ${PREVIEW_BIN} ${args.join(" ")}`);
   try {
-    const { stdout, stderr } = await execaCommand(`${PREVIEW_BIN} ${args}`, {
-      timeout: 1_200_000, // 20 minute timeout for builds (vertex/Elixir can be slow)
+    const { stdout, stderr } = await execa(PREVIEW_BIN, args, {
+      timeout: 1_200_000, // 20 minute timeout for builds (Elixir builds can be slow)
     });
     if (stdout) console.log(`[preview] stdout: ${stdout}`);
     if (stderr) console.log(`[preview] stderr: ${stderr}`);
   } catch (error) {
-    console.error(`[preview] Command failed: preview ${args}`, error);
+    console.error(`[preview] Command failed: preview ${args.join(" ")}`, error);
     throw error;
   }
 }
 
 export async function listActiveSlugs(): Promise<string[]> {
   try {
-    const { stdout } = await execaCommand(`${PREVIEW_BIN} list`, { timeout: 10_000 });
+    const { stdout } = await execa(PREVIEW_BIN, ["list"], { timeout: 10_000 });
     // Parse slugs from the first column of each line (skip header)
     return stdout
       .split("\n")
@@ -39,19 +54,17 @@ export async function listActiveSlugs(): Promise<string[]> {
 export async function createPreview(
   repo: string,
   branch: string,
-  slug: string,
-  type: string = "node"
+  slug: string
 ): Promise<void> {
-  const typeFlag = type !== "node" ? ` --type ${type}` : "";
-  await runPreview(`create ${repo} ${branch} --slug ${slug}${typeFlag}`);
+  await runPreview(["create", repo, branch, "--slug", slug]);
 }
 
 export async function updatePreview(slug: string): Promise<void> {
-  await runPreview(`update ${slug}`);
+  await runPreview(["update", slug]);
 }
 
 export async function destroyPreview(slug: string): Promise<void> {
-  await runPreview(`destroy ${slug}`);
+  await runPreview(["destroy", slug]);
 }
 
 const PREVIEW_LINK_MARKER = "<!-- preview-link -->";
@@ -61,7 +74,7 @@ export async function addPreviewLinkToPR(
   prNumber: number,
   previewUrl: string,
   provider: TokenProvider,
-  landingUrl?: string
+  extraUrls: string[] = []
 ): Promise<void> {
   console.log(`[preview] Adding preview link to ${repo}#${prNumber}`);
   try {
@@ -69,7 +82,7 @@ export async function addPreviewLinkToPR(
     const body = await getPRBody(repo, prNumber, token);
     if (body === null) return;
 
-    const newBody = appendPreviewLink(body, previewUrl, landingUrl);
+    const newBody = appendPreviewLink(body, previewUrl, extraUrls);
     await patchPRBody(repo, prNumber, newBody, token);
     console.log(`[preview] Added preview link to ${repo}#${prNumber}`);
   } catch (error) {
@@ -82,8 +95,7 @@ export async function ensurePreviewLinkOnPR(
   prNumber: number,
   slug: string,
   previewDomain: string,
-  provider: TokenProvider,
-  type: string = "node"
+  provider: TokenProvider
 ): Promise<void> {
   try {
     const token = await provider.getToken();
@@ -94,9 +106,10 @@ export async function ensurePreviewLinkOnPR(
     if (body.includes(PREVIEW_LINK_MARKER)) return;
 
     const previewUrl = `https://${slug}.${previewDomain}`;
-    const landingUrl = type === "vertex" ? `https://landing-${slug}.${previewDomain}` : undefined;
+    const meta = await readPreviewMeta(slug);
+    const extraUrls = (meta?.extraHosts ?? []).map(h => `https://${h.prefix}-${slug}.${previewDomain}`);
     console.log(`[preview] Re-adding missing preview link to ${repo}#${prNumber}`);
-    const newBody = appendPreviewLink(body, previewUrl, landingUrl);
+    const newBody = appendPreviewLink(body, previewUrl, extraUrls);
     await patchPRBody(repo, prNumber, newBody, token);
     console.log(`[preview] Re-added preview link to ${repo}#${prNumber}`);
   } catch (error) {
@@ -119,15 +132,15 @@ async function getPRBody(repo: string, prNumber: number, token: string): Promise
   return pr.body ?? "";
 }
 
-function appendPreviewLink(body: string, previewUrl: string, landingUrl?: string): string {
+function appendPreviewLink(body: string, previewUrl: string, extraUrls: string[] = []): string {
   // Remove existing preview link if present
   const markerIdx = body.indexOf(PREVIEW_LINK_MARKER);
   if (markerIdx !== -1) {
     body = body.slice(0, markerIdx).trimEnd();
   }
   let link = `\n\n${PREVIEW_LINK_MARKER}\n---\n**Preview:** ${previewUrl}`;
-  if (landingUrl) {
-    link += `\n**Landing:** ${landingUrl}`;
+  for (const url of extraUrls) {
+    link += `\n**URL:** ${url}`;
   }
   return body + link;
 }

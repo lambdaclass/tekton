@@ -7,13 +7,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 
 export default function Previews() {
   const queryClient = useQueryClient();
@@ -27,7 +20,6 @@ export default function Previews() {
   const [repo, setRepo] = useState('');
   const [branch, setBranch] = useState('');
   const [slug, setSlug] = useState('');
-  const [previewType, setPreviewType] = useState('node');
 
   const createMutation = useMutation({
     mutationFn: createPreview,
@@ -56,7 +48,6 @@ export default function Previews() {
       repo,
       branch,
       slug: slug || undefined,
-      type: previewType,
     });
   };
 
@@ -109,18 +100,6 @@ export default function Previews() {
                     placeholder="auto-generated"
                   />
                 </div>
-                <div className="space-y-2">
-                  <Label>Type</Label>
-                  <Select value={previewType} onValueChange={setPreviewType}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="node">Node.js</SelectItem>
-                      <SelectItem value="vertex">Vertex (Elixir)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
               </div>
               <Button type="submit" disabled={createMutation.isPending}>
                 {createMutation.isPending ? 'Creating...' : 'Create'}
@@ -147,7 +126,7 @@ export default function Previews() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-3">
                     <span className="font-mono font-semibold">{p.slug}</span>
-                    <Badge variant="secondary">{p.preview_type}</Badge>
+                    <Badge variant="secondary">{p.repo}</Badge>
                   </div>
                   <p className="text-sm text-muted-foreground mt-1">
                     {p.repo} / {p.branch}

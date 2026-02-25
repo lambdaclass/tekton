@@ -34,7 +34,6 @@ pub struct Preview {
     pub slug: String,
     pub repo: String,
     pub branch: String,
-    pub preview_type: String,
     pub url: String,
 }
 
@@ -43,12 +42,6 @@ pub struct CreatePreviewRequest {
     pub repo: String,
     pub branch: String,
     pub slug: Option<String>,
-    #[serde(rename = "type", default = "default_preview_type")]
-    pub preview_type: String,
-}
-
-fn default_preview_type() -> String {
-    "node".into()
 }
 
 // ── Tasks ──

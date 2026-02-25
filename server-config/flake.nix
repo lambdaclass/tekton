@@ -8,7 +8,7 @@
     system = "x86_64-linux";
     pkgs = import nixpkgs {
       inherit system;
-      config.allowUnfree = true;  # Required for Claude Code
+      config.allowUnfree = true;
     };
   in {
     # Host server configuration
@@ -29,22 +29,5 @@
       ];
     };
 
-    # Preview container configuration (built by `preview build`, used by `preview create`)
-    nixosConfigurations.preview = nixpkgs.lib.nixosSystem {
-      inherit system;
-      modules = [
-        { nixpkgs.pkgs = pkgs; }
-        ./preview-config.nix
-      ];
-    };
-
-    # Vertex preview container configuration (Elixir/Phoenix + React SPA)
-    nixosConfigurations.vertex-preview = nixpkgs.lib.nixosSystem {
-      inherit system;
-      modules = [
-        { nixpkgs.pkgs = pkgs; }
-        ./vertex-preview-config.nix
-      ];
-    };
   };
 }
