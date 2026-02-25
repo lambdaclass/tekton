@@ -37,7 +37,7 @@ async function main(): Promise<void> {
     (req, body, done) => {
       try {
         const raw = body as string;
-        rawBodyStore.set(req, raw);
+        rawBodyStore.set(req.raw, raw);
         done(null, JSON.parse(raw));
       } catch (err) {
         done(err as Error, undefined);
