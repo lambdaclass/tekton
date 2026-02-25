@@ -747,7 +747,7 @@ async fn create_github_branch(
         "sha": sha,
     });
 
-    let resp = send_with_retries(3, "GitHub create branch", || {
+    let resp = send_with_retries(10, "GitHub create branch", || {
         client
             .post(&url)
             .header("Authorization", format!("Bearer {token}"))
@@ -826,7 +826,7 @@ async fn github_create_commit(
         "variables": variables,
     });
 
-    let resp = send_with_retries(3, "GitHub GraphQL request", || {
+    let resp = send_with_retries(10, "GitHub GraphQL request", || {
         client
             .post("https://api.github.com/graphql")
             .header("Authorization", format!("Bearer {token}"))
