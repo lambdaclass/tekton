@@ -976,6 +976,7 @@ async fn take_screenshot(
         .args([
             "--headless",
             "--disable-gpu",
+            "--no-sandbox",
             &format!("--screenshot={screenshot_path}"),
             "--window-size=1280,720",
             preview_url,
