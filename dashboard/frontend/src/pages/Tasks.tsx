@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { listTasks, createTask, classifyPrompt, uploadImage } from '@/lib/api';
+import { listTasks, createTask, classifyPrompt, uploadImage, type ClassifyCandidate } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -25,6 +25,7 @@ export default function Tasks() {
   const [repo, setRepo] = useState('');
   const [baseBranch, setBaseBranch] = useState('main');
   const [repoAutoDetected, setRepoAutoDetected] = useState(false);
+  const [classifyCandidates, setClassifyCandidates] = useState<ClassifyCandidate[]>([]);
   const [imageFiles, setImageFiles] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -38,9 +39,13 @@ export default function Tasks() {
     classifyTimerRef.current = setTimeout(async () => {
       try {
         const result = await classifyPrompt(text);
-        if (result.repo) {
+        if (result.status === 'confident' && result.repo) {
           setRepo(result.repo);
           setRepoAutoDetected(true);
+          setClassifyCandidates([]);
+        } else if (result.candidates && result.candidates.length > 0) {
+          setClassifyCandidates(result.candidates);
+          setRepoAutoDetected(false);
         }
       } catch {
         // silently ignore classify errors
@@ -51,6 +56,7 @@ export default function Tasks() {
   const handlePromptChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setPrompt(e.target.value);
     setRepoAutoDetected(false);
+    setClassifyCandidates([]);
     scheduleClassify(e.target.value);
   };
 
@@ -58,12 +64,14 @@ export default function Tasks() {
     const next = prompt ? `${prompt} ${text}` : text;
     setPrompt(next);
     setRepoAutoDetected(false);
+    setClassifyCandidates([]);
     scheduleClassify(next);
   };
 
   const handleRepoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setRepo(e.target.value);
     setRepoAutoDetected(false);
+    setClassifyCandidates([]);
   };
 
   const addImageFiles = (files: FileList | File[]) => {
@@ -99,6 +107,7 @@ export default function Tasks() {
       setRepo('');
       setBaseBranch('main');
       setRepoAutoDetected(false);
+      setClassifyCandidates([]);
       setImageFiles([]);
       setImagePreviews([]);
     },
@@ -223,6 +232,9 @@ export default function Tasks() {
                       {repoAutoDetected && (
                         <span className="text-xs text-muted-foreground">auto-detected</span>
                       )}
+                      {classifyCandidates.length > 0 && !repoAutoDetected && (
+                        <span className="text-xs text-yellow-500">low confidence &mdash; pick or type a repo</span>
+                      )}
                     </div>
                     <Input
                       id="task-repo"
@@ -231,6 +243,26 @@ export default function Tasks() {
                       placeholder="owner/repo"
                       required
                     />
+                    {classifyCandidates.length > 0 && !repoAutoDetected && (
+                      <div className="flex flex-wrap gap-2 mt-1">
+                        {classifyCandidates.map((c) => (
+                          <button
+                            key={c.repo}
+                            type="button"
+                            onClick={() => {
+                              setRepo(c.repo);
+                              setClassifyCandidates([]);
+                            }}
+                            className="text-xs px-2 py-1 rounded border border-border bg-muted hover:bg-muted/80 transition-colors text-foreground"
+                          >
+                            {c.repo}
+                            <span className="ml-1 text-muted-foreground">
+                              {Math.round(c.confidence * 100)}%
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="base-branch">Base Branch</Label>

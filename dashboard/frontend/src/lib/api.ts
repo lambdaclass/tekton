@@ -137,8 +137,20 @@ export function parseImageUrls(raw: string | null | undefined): string[] {
     return [raw];
   }
 }
+export interface ClassifyCandidate {
+  repo: string;
+  confidence: number;
+}
+
+export interface ClassifyResponse {
+  repo: string;
+  status: 'confident' | 'unknown';
+  confidence: number;
+  candidates: ClassifyCandidate[];
+}
+
 export const classifyPrompt = (prompt: string) =>
-  apiFetch<{ repo: string }>('/api/classify', {
+  apiFetch<ClassifyResponse>('/api/classify', {
     method: 'POST',
     body: JSON.stringify({ prompt }),
   });

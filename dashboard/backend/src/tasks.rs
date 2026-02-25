@@ -10,7 +10,7 @@ use crate::auth::AuthUser;
 use crate::config::Config;
 use crate::error::AppError;
 use crate::models::{
-    ClassifyRequest, ClassifyResponse, CreateTaskRequest, SendMessageRequest, Task, TaskLog,
+    ClassifyCandidate, ClassifyRequest, ClassifyResponse, CreateTaskRequest, SendMessageRequest, Task, TaskLog,
     TaskMessage,
 };
 use crate::shell;
@@ -1007,6 +1007,8 @@ async fn take_screenshot(
 
 // ── Classify ──
 
+const CONFIDENCE_THRESHOLD: f64 = 0.7;
+
 pub async fn classify(
     _user: AuthUser,
     State(state): State<crate::AppState>,
@@ -1026,15 +1028,20 @@ pub async fn classify(
         .join("\n");
 
     let system_prompt = format!(
-        "You are a repository classifier. Given a task description, pick the single best matching \
-         repository from this list and respond with ONLY the repo name (owner/repo format), nothing else.\n\n\
+        "You are a repository classifier. Given a task description, rank the repositories by \
+         how well they match and respond with ONLY a JSON array (no markdown, no explanation) \
+         in this exact format: [{{\"repo\": \"owner/repo\", \"confidence\": 0.95}}, ...]\n\n\
+         Rules:\n\
+         - confidence is a float between 0.0 and 1.0\n\
+         - list up to 5 candidates sorted by confidence descending\n\
+         - only include repos from the allowed list\n\
+         - respond with ONLY the JSON array, nothing else\n\n\
          Available repositories:\n{repo_list}"
     );
 
     let full_prompt = format!("{system_prompt}\n\nTask: {}", req.prompt);
     let escaped = full_prompt.replace('\'', "'\\''");
 
-    // Run claude CLI on the host using the long-lived OAuth token
     let oauth_token = read_claude_oauth_token().await?;
     let output = tokio::process::Command::new(&state.config.claude_bin)
         .env("CLAUDE_CODE_OAUTH_TOKEN", &oauth_token)
@@ -1045,23 +1052,65 @@ pub async fn classify(
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-    // Find which allowed repo the response matches
-    let repo = state
-        .config
-        .allowed_repos
-        .iter()
-        .find(|r| stdout.contains(r.as_str()))
-        .cloned()
-        .unwrap_or_else(|| {
-            // Fallback: return the raw output truncated, or first repo
-            if stdout.is_empty() {
-                state.config.allowed_repos[0].clone()
-            } else {
-                stdout.lines().next().unwrap_or("").to_string()
-            }
-        });
+    let mut candidates: Vec<ClassifyCandidate> = serde_json::from_str::<serde_json::Value>(&stdout)
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .map(|arr| {
+            arr.into_iter()
+                .filter_map(|item| {
+                    let repo = item.get("repo")?.as_str()?.to_string();
+                    let confidence = item.get("confidence")?.as_f64()?;
+                    if state.config.allowed_repos.contains(&repo) {
+                        Some(ClassifyCandidate { repo, confidence })
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
-    Ok(Json(ClassifyResponse { repo }))
+    if candidates.is_empty() {
+        if let Some(matched) = state
+            .config
+            .allowed_repos
+            .iter()
+            .find(|r| stdout.contains(r.as_str()))
+        {
+            candidates.push(ClassifyCandidate {
+                repo: matched.clone(),
+                confidence: 0.5,
+            });
+        } else if !state.config.allowed_repos.is_empty() {
+            candidates.push(ClassifyCandidate {
+                repo: state.config.allowed_repos[0].clone(),
+                confidence: 0.1,
+            });
+        }
+    }
+
+    candidates.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    candidates.truncate(5);
+
+    let top_confidence = candidates.first().map(|c| c.confidence).unwrap_or(0.0);
+    let top_repo = candidates.first().map(|c| c.repo.clone()).unwrap_or_default();
+
+    let (repo, status) = if top_confidence >= CONFIDENCE_THRESHOLD {
+        (top_repo, "confident".to_string())
+    } else {
+        (top_repo, "unknown".to_string())
+    };
+
+    Ok(Json(ClassifyResponse {
+        repo,
+        status,
+        confidence: top_confidence,
+        candidates,
+    }))
 }
 
 // ── Messages ──

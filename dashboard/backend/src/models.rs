@@ -109,6 +109,15 @@ pub struct ClassifyRequest {
 }
 
 #[derive(Debug, Serialize)]
+pub struct ClassifyCandidate {
+    pub repo: String,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Serialize)]
 pub struct ClassifyResponse {
     pub repo: String,
+    pub status: String,
+    pub confidence: f64,
+    pub candidates: Vec<ClassifyCandidate>,
 }
