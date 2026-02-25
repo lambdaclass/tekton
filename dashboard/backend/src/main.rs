@@ -15,7 +15,7 @@ use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::Router;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::sync::Arc;
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
@@ -26,7 +26,7 @@ use tasks::TaskChannels;
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
-    pub db: SqlitePool,
+    pub db: PgPool,
     pub task_channels: TaskChannels,
 }
 
@@ -72,6 +72,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/tasks/{id}/messages", get(tasks::list_messages))
         .route("/tasks/{id}/messages", post(tasks::send_message))
         .route("/tasks/{id}/reopen", post(tasks::reopen_task))
+        .route("/tasks/{id}/actions", get(tasks::list_actions))
         // Uploads
         .route("/uploads", post(tasks::upload_image))
         // Classify

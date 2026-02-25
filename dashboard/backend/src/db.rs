@@ -1,22 +1,17 @@
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::SqlitePool;
-use std::str::FromStr;
+use sqlx::postgres::PgPoolOptions;
+use sqlx::PgPool;
 
-pub async fn init_pool(database_url: &str) -> anyhow::Result<SqlitePool> {
-    let opts = SqliteConnectOptions::from_str(database_url)?
-        .create_if_missing(true)
-        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
-
-    let pool = SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect_with(opts)
+pub async fn init_pool(database_url: &str) -> anyhow::Result<PgPool> {
+    let pool = PgPoolOptions::new()
+        .max_connections(10)
+        .connect(database_url)
         .await?;
 
     run_migrations(&pool).await?;
     Ok(pool)
 }
 
-async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
+async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS tasks (
             id TEXT PRIMARY KEY,
@@ -29,12 +24,14 @@ async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
             preview_slug TEXT,
             preview_url TEXT,
             error_message TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             parent_task_id TEXT,
             created_by TEXT,
             screenshot_url TEXT,
-            image_url TEXT
+            image_url TEXT,
+            total_input_tokens BIGINT DEFAULT 0,
+            total_output_tokens BIGINT DEFAULT 0
         )",
     )
     .execute(pool)
@@ -42,20 +39,21 @@ async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
 
     // Add new columns to existing tasks table if they don't exist (for upgrades)
     for col_sql in &[
-        "ALTER TABLE tasks ADD COLUMN parent_task_id TEXT",
-        "ALTER TABLE tasks ADD COLUMN created_by TEXT",
-        "ALTER TABLE tasks ADD COLUMN screenshot_url TEXT",
-        "ALTER TABLE tasks ADD COLUMN image_url TEXT",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS parent_task_id TEXT",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_by TEXT",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS screenshot_url TEXT",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS image_url TEXT",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS total_input_tokens BIGINT DEFAULT 0",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS total_output_tokens BIGINT DEFAULT 0",
     ] {
-        // Ignore errors — column likely already exists
         let _ = sqlx::query(col_sql).execute(pool).await;
     }
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS task_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id BIGSERIAL PRIMARY KEY,
             task_id TEXT NOT NULL REFERENCES tasks(id),
-            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+            timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             line TEXT NOT NULL
         )",
     )
@@ -64,11 +62,11 @@ async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS task_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id BIGSERIAL PRIMARY KEY,
             task_id TEXT NOT NULL REFERENCES tasks(id),
             sender TEXT NOT NULL,
             content TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             image_url TEXT
         )",
     )
@@ -77,7 +75,7 @@ async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
 
     // Add new columns to task_messages if they don't exist (for upgrades)
     for col_sql in &[
-        "ALTER TABLE task_messages ADD COLUMN image_url TEXT",
+        "ALTER TABLE task_messages ADD COLUMN IF NOT EXISTS image_url TEXT",
     ] {
         let _ = sqlx::query(col_sql).execute(pool).await;
     }
@@ -88,8 +86,34 @@ async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
             name TEXT NOT NULL,
             email TEXT,
             github_token TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS task_actions (
+            id BIGSERIAL PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES tasks(id),
+            action_type TEXT NOT NULL,
+            tool_name TEXT,
+            tool_input JSONB,
+            summary TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS task_state_transitions (
+            id BIGSERIAL PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES tasks(id),
+            from_status TEXT,
+            to_status TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )",
     )
     .execute(pool)
