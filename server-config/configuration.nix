@@ -129,6 +129,7 @@
     claude-code  # For initial credential setup on host
     nodejs_22   # For building/running the preview webhook
     postgresql  # For preview DB management (psql)
+    chromium   # For headless screenshot capture
     (pkgs.writeShellApplication {
       name = "agent";
       runtimeInputs = [ nixos-container openssh ];
