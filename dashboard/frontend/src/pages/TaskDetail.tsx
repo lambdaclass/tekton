@@ -128,6 +128,14 @@ export default function TaskDetail() {
                   <p className="truncate">{task.created_by}</p>
                 </div>
               )}
+              {(task.total_input_tokens || task.total_output_tokens) ? (
+                <div>
+                  <span className="text-muted-foreground">Token Usage</span>
+                  <p>
+                    {(task.total_input_tokens ?? 0).toLocaleString()} in / {(task.total_output_tokens ?? 0).toLocaleString()} out
+                  </p>
+                </div>
+              ) : null}
             </div>
             <Separator className="my-3" />
             <div>
