@@ -70,6 +70,22 @@ sync_code() {
 # ── Dashboard (Rust backend + React frontend) ──────────────────────────────
 
 deploy_dashboard() {
+    info "Ensuring PostgreSQL dashboard database exists..."
+    $SSH "
+        sudo -u postgres psql -tc \"SELECT 1 FROM pg_roles WHERE rolname='dashboard'\" | grep -q 1 || \
+            sudo -u postgres psql -c \"CREATE USER dashboard;\"
+        sudo -u postgres psql -tc \"SELECT 1 FROM pg_database WHERE datname='dashboard'\" | grep -q 1 || \
+            sudo -u postgres psql -c \"CREATE DATABASE dashboard OWNER dashboard;\"
+    "
+
+    info "Updating DATABASE_URL in dashboard.env if needed..."
+    $SSH "
+        if grep -q 'sqlite:' /var/secrets/dashboard.env 2>/dev/null; then
+            sed -i 's|DATABASE_URL=sqlite:.*|DATABASE_URL=postgresql:///dashboard?host=/run/postgresql\&user=dashboard|' /var/secrets/dashboard.env
+            echo 'Migrated DATABASE_URL from SQLite to PostgreSQL.'
+        fi
+    "
+
     info "Building dashboard frontend..."
     $SSH "
         cd ${REMOTE_SRC}/dashboard/frontend && \

@@ -1,7 +1,7 @@
-use axum::extract::{Multipart, Path, State};
+use axum::extract::{Multipart, Path, Query, State};
 use axum::Json;
 use dashmap::DashMap;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -10,9 +10,8 @@ use crate::auth::AuthUser;
 use crate::config::Config;
 use crate::error::AppError;
 use crate::models::{
-    ClassifyCandidate, ClassifyRequest, ClassifyResponse, CreateTaskRequest, SendMessageRequest,
-    Task, TaskLog,
-    TaskMessage,
+    ClassifyCandidate, ClassifyRequest, ClassifyResponse, CreateTaskRequest, ListMessagesQuery,
+    ListTasksQuery, PaginatedTasks, SendMessageRequest, Task, TaskAction, TaskLog, TaskMessage,
 };
 use crate::shell;
 
@@ -65,9 +64,9 @@ struct GitIdentity {
     email: String,
 }
 
-async fn get_git_identity(db: &SqlitePool, github_login: &str) -> Result<GitIdentity, AppError> {
+async fn get_git_identity(db: &PgPool, github_login: &str) -> Result<GitIdentity, AppError> {
     let row = sqlx::query_as::<_, (String, String, Option<String>)>(
-        "SELECT github_token, name, email FROM users WHERE github_login = ?"
+        "SELECT github_token, name, email FROM users WHERE github_login = $1"
     )
     .bind(github_login)
     .fetch_optional(db)
@@ -176,11 +175,80 @@ pub async fn upload_image(
 pub async fn list_tasks(
     _user: AuthUser,
     State(state): State<crate::AppState>,
-) -> Result<Json<Vec<Task>>, AppError> {
-    let tasks = sqlx::query_as::<_, Task>("SELECT * FROM tasks ORDER BY created_at DESC")
-        .fetch_all(&state.db)
-        .await?;
-    Ok(Json(tasks))
+    Query(params): Query<ListTasksQuery>,
+) -> Result<Json<PaginatedTasks>, AppError> {
+    let page = params.page.unwrap_or(1).max(1);
+    let per_page = params.per_page.unwrap_or(50).min(200).max(1);
+    let offset = ((page - 1) * per_page) as i64;
+    let limit = per_page as i64;
+
+    // Build dynamic WHERE clause
+    let mut conditions: Vec<String> = Vec::new();
+    let mut bind_idx = 1u32;
+
+    // We'll collect bind values as strings for the dynamic query
+    let mut bind_values: Vec<String> = Vec::new();
+
+    if let Some(ref status) = params.status {
+        conditions.push(format!("status = ${bind_idx}"));
+        bind_values.push(status.clone());
+        bind_idx += 1;
+    }
+    if let Some(ref repo) = params.repo {
+        conditions.push(format!("repo = ${bind_idx}"));
+        bind_values.push(repo.clone());
+        bind_idx += 1;
+    }
+    if let Some(ref created_by) = params.created_by {
+        conditions.push(format!("created_by = ${bind_idx}"));
+        bind_values.push(created_by.clone());
+        bind_idx += 1;
+    }
+    if let Some(ref search) = params.search {
+        conditions.push(format!("prompt ILIKE ${bind_idx}"));
+        bind_values.push(format!("%{search}%"));
+        bind_idx += 1;
+    }
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    // Count query
+    let count_sql = format!("SELECT COUNT(*) FROM tasks {where_clause}");
+    let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
+    for val in &bind_values {
+        count_query = count_query.bind(val);
+    }
+    let total = count_query.fetch_one(&state.db).await?;
+
+    // Data query
+    let data_sql = format!(
+        "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
+         preview_slug, preview_url, error_message, \
+         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         parent_task_id, created_by, screenshot_url, image_url, \
+         total_input_tokens, total_output_tokens \
+         FROM tasks {where_clause} ORDER BY created_at DESC LIMIT ${bind_idx} OFFSET ${next_idx}",
+        bind_idx = bind_idx,
+        next_idx = bind_idx + 1,
+    );
+    let mut data_query = sqlx::query_as::<_, Task>(&data_sql);
+    for val in &bind_values {
+        data_query = data_query.bind(val);
+    }
+    data_query = data_query.bind(limit).bind(offset);
+    let tasks = data_query.fetch_all(&state.db).await?;
+
+    Ok(Json(PaginatedTasks {
+        tasks,
+        total,
+        page,
+        per_page,
+    }))
 }
 
 pub async fn get_task(
@@ -188,11 +256,19 @@ pub async fn get_task(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Task>, AppError> {
-    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Task not found".into()))?;
+    let task = sqlx::query_as::<_, Task>(
+        "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
+         preview_slug, preview_url, error_message, \
+         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         parent_task_id, created_by, screenshot_url, image_url, \
+         total_input_tokens, total_output_tokens \
+         FROM tasks WHERE id = $1"
+    )
+    .bind(&id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Task not found".into()))?;
     Ok(Json(task))
 }
 
@@ -202,17 +278,23 @@ pub async fn get_subtasks(
     Path(id): Path<String>,
 ) -> Result<Json<Vec<Task>>, AppError> {
     // Verify parent exists
-    let _ = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
+    let _ = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tasks WHERE id = $1")
         .bind(&id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Task not found".into()))?;
+        .fetch_one(&state.db)
+        .await?;
 
-    let subtasks =
-        sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE parent_task_id = ? ORDER BY created_at ASC")
-            .bind(&id)
-            .fetch_all(&state.db)
-            .await?;
+    let subtasks = sqlx::query_as::<_, Task>(
+        "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
+         preview_slug, preview_url, error_message, \
+         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         parent_task_id, created_by, screenshot_url, image_url, \
+         total_input_tokens, total_output_tokens \
+         FROM tasks WHERE parent_task_id = $1 ORDER BY created_at ASC"
+    )
+    .bind(&id)
+    .fetch_all(&state.db)
+    .await?;
     Ok(Json(subtasks))
 }
 
@@ -233,7 +315,7 @@ pub async fn create_task(
 
     // Validate parent_task_id if provided
     if let Some(ref parent_id) = req.parent_task_id {
-        let parent_exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tasks WHERE id = ?")
+        let parent_exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tasks WHERE id = $1")
             .bind(parent_id)
             .fetch_one(&state.db)
             .await?;
@@ -257,7 +339,8 @@ pub async fn create_task(
         .map(|v| serde_json::to_string(v).unwrap());
 
     sqlx::query(
-        "INSERT INTO tasks (id, prompt, repo, base_branch, status, parent_task_id, created_by, image_url) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)",
+        "INSERT INTO tasks (id, prompt, repo, base_branch, status, parent_task_id, created_by, image_url) \
+         VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7)",
     )
     .bind(&id)
     .bind(&req.prompt)
@@ -269,10 +352,21 @@ pub async fn create_task(
     .execute(&state.db)
     .await?;
 
-    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
-        .bind(&id)
-        .fetch_one(&state.db)
-        .await?;
+    // Record initial state transition
+    record_state_transition(&state.db, &id, None, "pending").await;
+
+    let task = sqlx::query_as::<_, Task>(
+        "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
+         preview_slug, preview_url, error_message, \
+         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         parent_task_id, created_by, screenshot_url, image_url, \
+         total_input_tokens, total_output_tokens \
+         FROM tasks WHERE id = $1"
+    )
+    .bind(&id)
+    .fetch_one(&state.db)
+    .await?;
 
     // Get the user's git identity (GitHub token, name, email)
     let git_id = get_git_identity(&state.db, created_by).await?;
@@ -320,7 +414,7 @@ pub async fn create_task(
 
 async fn run_task_pipeline(
     config: &Config,
-    db: &SqlitePool,
+    db: &PgPool,
     task_id: &str,
     short_id: &str,
     prompt: &str,
@@ -360,8 +454,10 @@ async fn run_task_pipeline(
 
     update_task_status(db, task_id, "running_claude", None).await?;
     log_and_send(db, task_id, &tx, "[STEP] Running Claude...");
-    let claude_text = run_claude_streaming(&agent_name, &effective_prompt, tx.clone()).await?;
-    save_claude_response_as_message(db, task_id, &claude_text).await?;
+    let result = run_claude_streaming(&agent_name, &effective_prompt, tx.clone()).await?;
+    save_claude_response_as_message(db, task_id, &result.text).await?;
+    persist_actions(db, task_id, &result.actions).await;
+    increment_token_usage(db, task_id, &result.usage).await;
 
     // Step 3b: Commit any changes (if Claude asked a question and made none, that's fine —
     // the user will see the question in chat and respond via the follow-up loop)
@@ -403,7 +499,7 @@ async fn run_claude_streaming(
     agent_name: &str,
     prompt: &str,
     tx: broadcast::Sender<String>,
-) -> Result<String, AppError> {
+) -> Result<shell::ClaudeStreamResult, AppError> {
     let oauth_token = read_claude_oauth_token().await?;
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
@@ -417,7 +513,7 @@ async fn run_claude_continue(
     agent_name: &str,
     prompt: &str,
     tx: broadcast::Sender<String>,
-) -> Result<String, AppError> {
+) -> Result<shell::ClaudeStreamResult, AppError> {
     let oauth_token = read_claude_oauth_token().await?;
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
@@ -429,8 +525,9 @@ async fn run_claude_continue(
 }
 
 /// Save Claude's text response as a chat message so it appears in the UI.
+/// Full response is stored — no truncation.
 async fn save_claude_response_as_message(
-    db: &SqlitePool,
+    db: &PgPool,
     task_id: &str,
     claude_text: &str,
 ) -> Result<(), AppError> {
@@ -438,26 +535,72 @@ async fn save_claude_response_as_message(
     if text.is_empty() {
         return Ok(());
     }
-    // Truncate to a reasonable length for chat display
-    let display_text: String = text.chars().take(2000).collect();
     sqlx::query(
-        "INSERT INTO task_messages (task_id, sender, content) VALUES (?, 'claude', ?)",
+        "INSERT INTO task_messages (task_id, sender, content) VALUES ($1, 'claude', $2)",
     )
     .bind(task_id)
-    .bind(&display_text)
+    .bind(text)
     .execute(db)
     .await?;
     Ok(())
 }
 
 /// Save a system/status message to the chat so it appears inline in the UI.
-async fn save_system_message(db: &SqlitePool, task_id: &str, content: &str) -> Result<(), AppError> {
-    sqlx::query("INSERT INTO task_messages (task_id, sender, content) VALUES (?, 'system', ?)")
+async fn save_system_message(db: &PgPool, task_id: &str, content: &str) -> Result<(), AppError> {
+    sqlx::query("INSERT INTO task_messages (task_id, sender, content) VALUES ($1, 'system', $2)")
         .bind(task_id)
         .bind(content)
         .execute(db)
         .await?;
     Ok(())
+}
+
+/// Batch-insert structured actions into the task_actions table.
+async fn persist_actions(db: &PgPool, task_id: &str, actions: &[shell::RawAction]) {
+    for action in actions {
+        let _ = sqlx::query(
+            "INSERT INTO task_actions (task_id, action_type, tool_name, tool_input, summary) \
+             VALUES ($1, $2, $3, $4, $5)"
+        )
+        .bind(task_id)
+        .bind(&action.action_type)
+        .bind(&action.tool_name)
+        .bind(&action.tool_input)
+        .bind(&action.summary)
+        .execute(db)
+        .await;
+    }
+}
+
+/// Increment the task's cumulative token usage counters.
+async fn increment_token_usage(db: &PgPool, task_id: &str, usage: &shell::TokenUsage) {
+    if usage.input_tokens == 0 && usage.output_tokens == 0 {
+        return;
+    }
+    let _ = sqlx::query(
+        "UPDATE tasks SET \
+         total_input_tokens = COALESCE(total_input_tokens, 0) + $1, \
+         total_output_tokens = COALESCE(total_output_tokens, 0) + $2, \
+         updated_at = NOW() \
+         WHERE id = $3"
+    )
+    .bind(usage.input_tokens)
+    .bind(usage.output_tokens)
+    .bind(task_id)
+    .execute(db)
+    .await;
+}
+
+/// Record a state transition in the task_state_transitions table.
+async fn record_state_transition(db: &PgPool, task_id: &str, from: Option<&str>, to: &str) {
+    let _ = sqlx::query(
+        "INSERT INTO task_state_transitions (task_id, from_status, to_status) VALUES ($1, $2, $3)"
+    )
+    .bind(task_id)
+    .bind(from)
+    .bind(to)
+    .execute(db)
+    .await;
 }
 
 /// Parse image_url JSON and copy all images into an agent container.
@@ -577,7 +720,7 @@ enum FollowUpOutcome {
 
 async fn follow_up_loop(
     config: &Config,
-    db: &SqlitePool,
+    db: &PgPool,
     task_id: &str,
     short_id: &str,
     agent_name: &str,
@@ -601,7 +744,11 @@ async fn follow_up_loop(
         // Check for new messages IMMEDIATELY (no sleep before first check)
         // Filter out claude's own messages so we only process user messages
         let new_messages: Vec<TaskMessage> = sqlx::query_as::<_, TaskMessage>(
-            "SELECT * FROM task_messages WHERE task_id = ? AND id > ? AND sender NOT IN ('claude', 'system') ORDER BY id ASC",
+            "SELECT id, task_id, sender, content, \
+             TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, image_url \
+             FROM task_messages \
+             WHERE task_id = $1 AND id > $2 AND sender NOT IN ('claude', 'system') \
+             ORDER BY id ASC",
         )
         .bind(task_id)
         .bind(last_seen_id)
@@ -639,12 +786,12 @@ async fn follow_up_loop(
         update_task_status(db, task_id, "running_claude", None).await?;
         let _ = tx.send("[FOLLOWUP] Running Claude with follow-up...".to_string());
 
-        let claude_text = match run_claude_continue(agent_name, &combined_prompt, tx.clone()).await {
-            Ok(text) => text,
+        let result = match run_claude_continue(agent_name, &combined_prompt, tx.clone()).await {
+            Ok(r) => r,
             Err(e) => {
                 // Fallback: if --continue fails, use fresh session with full context
                 let _ = tx.send(format!("[WARN] --continue failed ({e}), falling back to fresh session..."));
-                let original_prompt = sqlx::query_scalar::<_, String>("SELECT prompt FROM tasks WHERE id = ?")
+                let original_prompt = sqlx::query_scalar::<_, String>("SELECT prompt FROM tasks WHERE id = $1")
                     .bind(task_id)
                     .fetch_one(db)
                     .await?;
@@ -652,7 +799,9 @@ async fn follow_up_loop(
                 run_claude_streaming(agent_name, &context_prompt, tx.clone()).await?
             }
         };
-        save_claude_response_as_message(db, task_id, &claude_text).await?;
+        save_claude_response_as_message(db, task_id, &result.text).await?;
+        persist_actions(db, task_id, &result.actions).await;
+        increment_token_usage(db, task_id, &result.usage).await;
 
         let _ = commit_changes_in_agent(agent_name, &combined_parts[0], tx.clone()).await?;
 
@@ -877,7 +1026,7 @@ async fn sync_agent_to_remote(agent_name: &str, branch_name: &str) -> Result<(),
 
 async fn push_and_preview(
     config: &Config,
-    db: &SqlitePool,
+    db: &PgPool,
     task_id: &str,
     short_id: &str,
     agent_name: &str,
@@ -941,7 +1090,7 @@ async fn push_and_preview(
     };
 
     // Build commit message from the task prompt
-    let commit_msg = sqlx::query_scalar::<_, String>("SELECT prompt FROM tasks WHERE id = ?")
+    let commit_msg = sqlx::query_scalar::<_, String>("SELECT prompt FROM tasks WHERE id = $1")
         .bind(task_id)
         .fetch_one(db)
         .await
@@ -998,7 +1147,7 @@ async fn push_and_preview(
 
 async fn take_screenshot(
     config: &Config,
-    db: &SqlitePool,
+    db: &PgPool,
     task_id: &str,
     preview_slug: &str,
     preview_url: &str,
@@ -1030,7 +1179,7 @@ async fn take_screenshot(
     match output {
         Ok(o) if o.status.success() => {
             let _ = sqlx::query(
-                "UPDATE tasks SET screenshot_url = ?, updated_at = datetime('now') WHERE id = ?",
+                "UPDATE tasks SET screenshot_url = $1, updated_at = NOW() WHERE id = $2",
             )
             .bind(&screenshot_url)
             .bind(task_id)
@@ -1167,19 +1316,50 @@ pub async fn list_messages(
     _user: AuthUser,
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
+    Query(params): Query<ListMessagesQuery>,
 ) -> Result<Json<Vec<TaskMessage>>, AppError> {
     // Verify task exists
-    let _ = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tasks WHERE id = ?")
+    let _ = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tasks WHERE id = $1")
         .bind(&id)
         .fetch_one(&state.db)
         .await?;
 
-    let messages = sqlx::query_as::<_, TaskMessage>(
-        "SELECT * FROM task_messages WHERE task_id = ? ORDER BY created_at ASC",
-    )
-    .bind(&id)
-    .fetch_all(&state.db)
-    .await?;
+    let messages = if let Some(before_id) = params.before_id {
+        let limit = params.limit.unwrap_or(100);
+        sqlx::query_as::<_, TaskMessage>(
+            "SELECT id, task_id, sender, content, \
+             TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, image_url \
+             FROM task_messages WHERE task_id = $1 AND id < $2 \
+             ORDER BY created_at ASC LIMIT $3",
+        )
+        .bind(&id)
+        .bind(before_id)
+        .bind(limit)
+        .fetch_all(&state.db)
+        .await?
+    } else if let Some(limit) = params.limit {
+        sqlx::query_as::<_, TaskMessage>(
+            "SELECT id, task_id, sender, content, \
+             TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, image_url \
+             FROM task_messages WHERE task_id = $1 \
+             ORDER BY created_at ASC LIMIT $2",
+        )
+        .bind(&id)
+        .bind(limit)
+        .fetch_all(&state.db)
+        .await?
+    } else {
+        sqlx::query_as::<_, TaskMessage>(
+            "SELECT id, task_id, sender, content, \
+             TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, image_url \
+             FROM task_messages WHERE task_id = $1 \
+             ORDER BY created_at ASC",
+        )
+        .bind(&id)
+        .fetch_all(&state.db)
+        .await?
+    };
+
     Ok(Json(messages))
 }
 
@@ -1190,7 +1370,7 @@ pub async fn send_message(
     Json(req): Json<SendMessageRequest>,
 ) -> Result<Json<TaskMessage>, AppError> {
     // Verify task exists
-    let task_exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tasks WHERE id = ?")
+    let task_exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tasks WHERE id = $1")
         .bind(&id)
         .fetch_one(&state.db)
         .await?;
@@ -1212,7 +1392,7 @@ pub async fn send_message(
     let sender = &user.0.sub;
 
     sqlx::query(
-        "INSERT INTO task_messages (task_id, sender, content, image_url) VALUES (?, ?, ?, ?)",
+        "INSERT INTO task_messages (task_id, sender, content, image_url) VALUES ($1, $2, $3, $4)",
     )
     .bind(&id)
     .bind(sender)
@@ -1222,7 +1402,9 @@ pub async fn send_message(
     .await?;
 
     let message = sqlx::query_as::<_, TaskMessage>(
-        "SELECT * FROM task_messages WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+        "SELECT id, task_id, sender, content, \
+         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, image_url \
+         FROM task_messages WHERE task_id = $1 ORDER BY id DESC LIMIT 1",
     )
     .bind(&id)
     .fetch_one(&state.db)
@@ -1231,10 +1413,28 @@ pub async fn send_message(
     Ok(Json(message))
 }
 
+// ── Actions endpoint ──
+
+pub async fn list_actions(
+    _user: AuthUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<TaskAction>>, AppError> {
+    let actions = sqlx::query_as::<_, TaskAction>(
+        "SELECT id, task_id, action_type, tool_name, tool_input, summary, \
+         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at \
+         FROM task_actions WHERE task_id = $1 ORDER BY id ASC",
+    )
+    .bind(&id)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(actions))
+}
+
 // ── Helpers ──
 
 fn log_and_send(
-    db: &SqlitePool,
+    db: &PgPool,
     task_id: &str,
     tx: &broadcast::Sender<String>,
     msg: &str,
@@ -1245,7 +1445,7 @@ fn log_and_send(
     let task_id = task_id.to_string();
     let msg = msg.to_string();
     tokio::spawn(async move {
-        let _ = sqlx::query("INSERT INTO task_logs (task_id, line) VALUES (?, ?)")
+        let _ = sqlx::query("INSERT INTO task_logs (task_id, line) VALUES ($1, $2)")
             .bind(&task_id)
             .bind(&msg)
             .execute(&db)
@@ -1254,31 +1454,43 @@ fn log_and_send(
 }
 
 async fn update_task_status(
-    db: &SqlitePool,
+    db: &PgPool,
     task_id: &str,
     status: &str,
     error: Option<&str>,
 ) -> Result<(), AppError> {
+    // Get the current status for the state transition record
+    let current_status = sqlx::query_scalar::<_, String>(
+        "SELECT status FROM tasks WHERE id = $1"
+    )
+    .bind(task_id)
+    .fetch_optional(db)
+    .await?;
+
     sqlx::query(
-        "UPDATE tasks SET status = ?, error_message = ?, updated_at = datetime('now') WHERE id = ?",
+        "UPDATE tasks SET status = $1, error_message = $2, updated_at = NOW() WHERE id = $3",
     )
     .bind(status)
     .bind(error)
     .bind(task_id)
     .execute(db)
     .await?;
+
+    // Record state transition
+    record_state_transition(db, task_id, current_status.as_deref(), status).await;
+
     Ok(())
 }
 
 async fn update_task_field(
-    db: &SqlitePool,
+    db: &PgPool,
     task_id: &str,
     field: &str,
     value: &str,
 ) -> Result<(), AppError> {
     // Safe because field is always a hardcoded string from our code
     let query = format!(
-        "UPDATE tasks SET {field} = ?, updated_at = datetime('now') WHERE id = ?"
+        "UPDATE tasks SET {field} = $1, updated_at = NOW() WHERE id = $2"
     );
     sqlx::query(&query)
         .bind(value)
@@ -1293,11 +1505,19 @@ pub async fn reopen_task(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Task>, AppError> {
-    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Task not found".into()))?;
+    let task = sqlx::query_as::<_, Task>(
+        "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
+         preview_slug, preview_url, error_message, \
+         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         parent_task_id, created_by, screenshot_url, image_url, \
+         total_input_tokens, total_output_tokens \
+         FROM tasks WHERE id = $1"
+    )
+    .bind(&id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Task not found".into()))?;
 
     if task.status != "completed" && task.status != "failed" {
         return Err(AppError::BadRequest(format!(
@@ -1354,10 +1574,18 @@ pub async fn reopen_task(
         });
     });
 
-    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
-        .bind(&id)
-        .fetch_one(&state.db)
-        .await?;
+    let task = sqlx::query_as::<_, Task>(
+        "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
+         preview_slug, preview_url, error_message, \
+         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         parent_task_id, created_by, screenshot_url, image_url, \
+         total_input_tokens, total_output_tokens \
+         FROM tasks WHERE id = $1"
+    )
+    .bind(&id)
+    .fetch_one(&state.db)
+    .await?;
     Ok(Json(task))
 }
 
@@ -1391,7 +1619,7 @@ pub async fn fail_task(
 
 async fn run_reopen_pipeline(
     config: &Config,
-    db: &SqlitePool,
+    db: &PgPool,
     task_id: &str,
     short_id: &str,
     repo: &str,
@@ -1445,7 +1673,8 @@ pub async fn get_task_logs(
     Path(id): Path<String>,
 ) -> Result<Json<Vec<TaskLog>>, AppError> {
     let logs = sqlx::query_as::<_, TaskLog>(
-        "SELECT * FROM task_logs WHERE task_id = ? ORDER BY id ASC",
+        "SELECT id, task_id, TO_CHAR(timestamp, 'YYYY-MM-DD HH24:MI:SS') as timestamp, line \
+         FROM task_logs WHERE task_id = $1 ORDER BY id ASC",
     )
     .bind(&id)
     .fetch_all(&state.db)

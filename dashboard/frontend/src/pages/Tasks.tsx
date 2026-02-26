@@ -1,7 +1,7 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { listTasks, createTask, classifyPrompt, uploadImage } from '@/lib/api';
+import { listTasks, createTask, classifyPrompt, uploadImage, type ListTasksParams } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,15 +10,49 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { statusVariant } from '@/lib/status';
 import VoiceInput from '@/components/VoiceInput';
-import { ImagePlus, X } from 'lucide-react';
+import { ImagePlus, X, ChevronLeft, ChevronRight, Search } from 'lucide-react';
+
+const STATUS_OPTIONS = ['all', 'pending', 'creating_agent', 'cloning', 'running_claude', 'pushing', 'creating_preview', 'awaiting_followup', 'completed', 'failed'];
 
 export default function Tasks() {
   const queryClient = useQueryClient();
-  const { data: tasks, isLoading } = useQuery({
-    queryKey: ['tasks'],
-    queryFn: listTasks,
+
+  // Filter / pagination state
+  const [searchInput, setSearchInput] = useState('');
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [page, setPage] = useState(1);
+  const perPage = 50;
+
+  // Debounce search input
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => {
+      setSearch(searchInput);
+      setPage(1);
+    }, 400);
+    return () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    };
+  }, [searchInput]);
+
+  const queryParams: ListTasksParams = {
+    page,
+    per_page: perPage,
+    ...(statusFilter !== 'all' ? { status: statusFilter } : {}),
+    ...(search ? { search } : {}),
+  };
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['tasks', queryParams],
+    queryFn: () => listTasks(queryParams),
     refetchInterval: 5000,
   });
+
+  const tasks = data?.tasks;
+  const total = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / perPage));
 
   const [showCreate, setShowCreate] = useState(false);
   const [prompt, setPrompt] = useState('');
@@ -256,10 +290,32 @@ export default function Tasks() {
         </Card>
       )}
 
+      {/* Search and filter bar */}
+      <div className="flex flex-col sm:flex-row gap-3 mb-4">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+          <Input
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder="Search prompts..."
+            className="pl-9"
+          />
+        </div>
+        <select
+          value={statusFilter}
+          onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
+          className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+        >
+          {STATUS_OPTIONS.map((s) => (
+            <option key={s} value={s}>{s === 'all' ? 'All statuses' : s}</option>
+          ))}
+        </select>
+      </div>
+
       {isLoading ? (
         <p className="text-muted-foreground">Loading tasks...</p>
       ) : !tasks?.length ? (
-        <p className="text-muted-foreground">No tasks yet.</p>
+        <p className="text-muted-foreground">No tasks found.</p>
       ) : (
         <div className="space-y-3">
           {tasks.map((t) => (
@@ -279,6 +335,9 @@ export default function Tasks() {
                     {t.preview_url && (
                       <span className="text-green-400">{t.preview_url}</span>
                     )}
+                    {(t.total_input_tokens || t.total_output_tokens) ? (
+                      <span>{((t.total_input_tokens ?? 0) + (t.total_output_tokens ?? 0)).toLocaleString()} tokens</span>
+                    ) : null}
                     <span className="ml-auto">
                       {new Date(t.created_at).toLocaleString()}
                     </span>
@@ -287,6 +346,33 @@ export default function Tasks() {
               </Card>
             </Link>
           ))}
+        </div>
+      )}
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-4 mt-6">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page <= 1}
+          >
+            <ChevronLeft className="size-4" />
+            Prev
+          </Button>
+          <span className="text-sm text-muted-foreground">
+            Page {page} of {totalPages} ({total} tasks)
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={page >= totalPages}
+          >
+            Next
+            <ChevronRight className="size-4" />
+          </Button>
         </div>
       )}
     </div>

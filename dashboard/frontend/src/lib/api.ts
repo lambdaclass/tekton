@@ -28,6 +28,8 @@ export interface Task {
   screenshot_url: string | null;
   image_url: string | null;
   name?: string | null;
+  total_input_tokens: number | null;
+  total_output_tokens: number | null;
 }
 
 export interface TaskMessage {
@@ -44,6 +46,32 @@ export interface TaskLog {
   task_id: string;
   timestamp: string;
   line: string;
+}
+
+export interface TaskAction {
+  id: number;
+  task_id: string;
+  action_type: string;
+  tool_name: string | null;
+  tool_input: unknown | null;
+  summary: string | null;
+  created_at: string;
+}
+
+export interface PaginatedTasks {
+  tasks: Task[];
+  total: number;
+  page: number;
+  per_page: number;
+}
+
+export interface ListTasksParams {
+  status?: string;
+  repo?: string;
+  created_by?: string;
+  search?: string;
+  page?: number;
+  per_page?: number;
 }
 
 class ApiError extends Error {
@@ -109,7 +137,17 @@ export const uploadImage = async (file: File): Promise<{ url: string }> => {
 };
 
 // Tasks
-export const listTasks = () => apiFetch<Task[]>('/api/tasks');
+export const listTasks = (params?: ListTasksParams) => {
+  const searchParams = new URLSearchParams();
+  if (params?.status) searchParams.set('status', params.status);
+  if (params?.repo) searchParams.set('repo', params.repo);
+  if (params?.created_by) searchParams.set('created_by', params.created_by);
+  if (params?.search) searchParams.set('search', params.search);
+  if (params?.page) searchParams.set('page', String(params.page));
+  if (params?.per_page) searchParams.set('per_page', String(params.per_page));
+  const qs = searchParams.toString();
+  return apiFetch<PaginatedTasks>(`/api/tasks${qs ? `?${qs}` : ''}`);
+};
 export const getTask = (id: string) => apiFetch<Task>(`/api/tasks/${id}`);
 export const createTask = (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[]; name?: string }) =>
   apiFetch<Task>('/api/tasks', {
@@ -133,6 +171,8 @@ export const reopenTask = (id: string) =>
   apiFetch<Task>(`/api/tasks/${id}/reopen`, { method: 'POST' });
 export const markTaskFailed = (id: string) =>
   apiFetch<Task>(`/api/tasks/${id}/fail`, { method: 'POST' });
+export const listTaskActions = (id: string) =>
+  apiFetch<TaskAction[]>(`/api/tasks/${id}/actions`);
 
 /** Parse image_url JSON column (stored as JSON array string) into an array of URLs. */
 export function parseImageUrls(raw: string | null | undefined): string[] {
