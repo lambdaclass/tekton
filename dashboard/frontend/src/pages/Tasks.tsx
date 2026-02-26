@@ -101,7 +101,7 @@ export default function Tasks() {
   };
 
   const createMutation = useMutation({
-    mutationFn: async (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[] }) => {
+    mutationFn: async (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[]; name?: string }) => {
       return createTask(data);
     },
     onSuccess: () => {
