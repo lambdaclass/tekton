@@ -184,6 +184,8 @@ export function parseImageUrls(raw: string | null | undefined): string[] {
   }
 }
 export const listRepos = () => apiFetch<string[]>('/api/repos');
+export const listBranches = (owner: string, repo: string) =>
+  apiFetch<string[]>(`/api/repos/${owner}/${repo}/branches`);
 
 // WebSocket helpers
 export function connectPreviewLogs(slug: string): WebSocket {

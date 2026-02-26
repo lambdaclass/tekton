@@ -1298,6 +1298,61 @@ pub async fn list_repos(
     Ok(Json(rows))
 }
 
+// ── Branches ──
+
+pub async fn list_branches(
+    user: AuthUser,
+    State(state): State<crate::AppState>,
+    Path((owner, repo)): Path<(String, String)>,
+) -> Result<Json<Vec<String>>, AppError> {
+    let git_id = get_git_identity(&state.db, &user.0.sub).await?;
+
+    let client = reqwest::Client::new();
+    let mut branches = Vec::new();
+    let mut page = 1u32;
+
+    loop {
+        let resp = client
+            .get(format!(
+                "https://api.github.com/repos/{owner}/{repo}/branches?per_page=100&page={page}"
+            ))
+            .header("Authorization", format!("token {}", git_id.token))
+            .header("User-Agent", "tekton-dashboard")
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| AppError::Internal(format!("GitHub API request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::Internal(format!(
+                "GitHub API returned {status}: {text}"
+            )));
+        }
+
+        let items: Vec<serde_json::Value> = resp.json().await
+            .map_err(|e| AppError::Internal(format!("Failed to parse branches response: {e}")))?;
+
+        if items.is_empty() {
+            break;
+        }
+
+        for item in &items {
+            if let Some(name) = item["name"].as_str() {
+                branches.push(name.to_string());
+            }
+        }
+
+        if items.len() < 100 {
+            break;
+        }
+        page += 1;
+    }
+
+    Ok(Json(branches))
+}
+
 // ── Messages ──
 
 pub async fn list_messages(
