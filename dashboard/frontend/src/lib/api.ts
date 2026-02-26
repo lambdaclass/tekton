@@ -28,6 +28,8 @@ export interface Task {
   screenshot_url: string | null;
   image_url: string | null;
   name?: string | null;
+  pr_url?: string | null;
+  pr_number?: number | null;
   total_input_tokens: number | null;
   total_output_tokens: number | null;
 }
