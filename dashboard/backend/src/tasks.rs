@@ -342,12 +342,13 @@ pub async fn create_task(
     let repo = req.repo.clone();
     let base = base_branch.to_string();
     let image_url_json2 = image_url_json.clone();
+    let custom_branch = req.custom_branch_name.clone();
     let channels = state.task_channels.clone();
 
     tokio::spawn(async move {
         let agent_name = format!("a-{short}");
         let result = run_task_pipeline(
-            &config, &db, &task_id, &short, &prompt, &repo, &base, image_url_json2.as_deref(), &git_id, tx.clone(),
+            &config, &db, &task_id, &short, &prompt, &repo, &base, image_url_json2.as_deref(), &git_id, custom_branch, tx.clone(),
         )
         .await;
 
@@ -380,6 +381,7 @@ async fn run_task_pipeline(
     base_branch: &str,
     image_url_json: Option<&str>,
     git_id: &GitIdentity,
+    custom_branch_name: Option<String>,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
     let agent_name = format!("a-{short_id}");
@@ -407,9 +409,17 @@ async fn run_task_pipeline(
         .execute(db)
         .await;
 
-    // Use the task name for the branch (with short_id suffix for uniqueness)
-    let slug = slugify_for_branch(&task_name);
-    let branch_name = format!("{slug}-{short_id}");
+    // Use custom branch name if provided, otherwise derive from the task name
+    let branch_name = match custom_branch_name {
+        Some(ref name) if !name.is_empty() => {
+            let slug = slugify_for_branch(name);
+            format!("{slug}-{short_id}")
+        }
+        _ => {
+            let slug = slugify_for_branch(&task_name);
+            format!("{slug}-{short_id}")
+        }
+    };
 
     // Step 1: Create agent container
     update_task_status(db, task_id, "creating_agent", None).await?;
