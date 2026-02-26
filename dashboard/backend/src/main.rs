@@ -5,6 +5,7 @@ mod error;
 mod models;
 mod previews;
 mod public_config;
+mod secrets;
 mod shell;
 mod tasks;
 mod ws;
@@ -13,7 +14,7 @@ use axum::extract::Request;
 use axum::http::{header, HeaderValue};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::Router;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -78,6 +79,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/tasks/{id}/link-pr", post(tasks::link_pr))
         // Uploads
         .route("/uploads", post(tasks::upload_image))
+        // Admin: Users
+        .route("/admin/users", get(auth::list_users))
+        .route("/admin/users/{login}/role", put(auth::set_user_role))
+        .route("/admin/users/{login}/repos", get(auth::get_user_repos))
+        .route("/admin/users/{login}/repos", put(auth::set_user_repos))
+        // Admin: Secrets
+        .route("/admin/secrets", get(secrets::list_secrets))
+        .route("/admin/secrets", post(secrets::create_secret))
+        .route("/admin/secrets/{id}", delete(secrets::delete_secret))
         // Repos
         .route("/repos", get(tasks::list_repos))
         .route("/repos/{owner}/{repo}/branches", get(tasks::list_branches))

@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
-    pub sub: String,   // github_login
+    pub sub: String, // github_login
     pub name: String,
+    pub role: String,
     pub exp: usize,
 }
 
@@ -13,6 +14,34 @@ pub struct Claims {
 pub struct UserInfo {
     pub login: String,
     pub name: String,
+    pub role: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetUserRoleRequest {
+    pub role: String,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct UserRepoPermission {
+    pub github_login: String,
+    pub repo: String,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct SecretEntry {
+    pub id: i64,
+    pub repo: String,
+    pub name: String,
+    pub created_by: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateSecretRequest {
+    pub repo: String,
+    pub name: String,
+    pub value: String,
 }
 
 #[derive(Debug, Deserialize)]
