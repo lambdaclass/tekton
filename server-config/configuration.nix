@@ -81,7 +81,7 @@
   # Enable flakes (needed by `agent build` to evaluate the agent flake output)
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
-  # PostgreSQL for preview deployments
+  # PostgreSQL for preview deployments and dashboard
   services.postgresql = {
     enable = true;
     enableTCPIP = true;
@@ -89,9 +89,18 @@
       listen_addresses = "*";
     };
     authentication = ''
+      local dashboard dashboard peer map=dashboard
       local all all peer
       host all all 10.100.0.0/24 md5
     '';
+    identMap = ''
+      dashboard root dashboard
+    '';
+    ensureDatabases = [ "dashboard" ];
+    ensureUsers = [{
+      name = "dashboard";
+      ensureDBOwnership = true;
+    }];
   };
 
   # Caddy reverse proxy for preview deployments (TLS via Cloudflare Origin CA)
@@ -142,7 +151,8 @@
   systemd.services.dashboard = {
     description = "Preview Dashboard";
     wantedBy = [ "multi-user.target" ];
-    after = [ "network.target" "caddy.service" ];
+    after = [ "network.target" "caddy.service" "postgresql.service" ];
+    requires = [ "postgresql.service" ];
     serviceConfig = {
       Type = "simple";
       Environment = "PATH=/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin";
