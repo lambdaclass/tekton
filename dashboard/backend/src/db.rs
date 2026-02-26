@@ -129,6 +129,19 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .execute(pool)
     .await;
 
+    // Ensure at least one admin exists — promote the earliest user if none
+    let admin_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+            .fetch_one(pool)
+            .await?;
+    if admin_count.0 == 0 {
+        let _ = sqlx::query(
+            "UPDATE users SET role = 'admin' WHERE github_login = (SELECT github_login FROM users ORDER BY created_at ASC LIMIT 1)",
+        )
+        .execute(pool)
+        .await;
+    }
+
     // Create user_repo_permissions table
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS user_repo_permissions (
