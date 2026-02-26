@@ -122,5 +122,38 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
+    // Add role column to users table
+    let _ = sqlx::query(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'member'",
+    )
+    .execute(pool)
+    .await;
+
+    // Create user_repo_permissions table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS user_repo_permissions (
+            github_login TEXT NOT NULL REFERENCES users(github_login),
+            repo TEXT NOT NULL,
+            PRIMARY KEY (github_login, repo)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Create secrets table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS secrets (
+            id BIGSERIAL PRIMARY KEY,
+            repo TEXT NOT NULL,
+            name TEXT NOT NULL,
+            encrypted_value TEXT NOT NULL,
+            created_by TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(repo, name)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }

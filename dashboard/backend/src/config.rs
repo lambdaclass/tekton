@@ -17,6 +17,7 @@ pub struct Config {
     pub claude_bin: String,
     pub claude_config_dir: String,
     pub chromium_bin: String,
+    pub secrets_encryption_key: String,
 }
 
 impl Config {
@@ -48,6 +49,8 @@ impl Config {
             claude_config_dir: env::var("CLAUDE_CONFIG_DIR")
                 .unwrap_or_else(|_| "/var/secrets/claude".into()),
             chromium_bin: env::var("CHROMIUM_BIN").unwrap_or_else(|_| "chromium".into()),
+            secrets_encryption_key: env::var("SECRETS_ENCRYPTION_KEY")
+                .unwrap_or_else(|_| String::new()),
         })
     }
 }

@@ -1,7 +1,7 @@
 use axum::extract::{Path, State};
 use axum::Json;
 
-use crate::auth::AuthUser;
+use crate::auth::{self, AuthUser, MemberUser};
 use crate::error::AppError;
 use crate::models::{CreatePreviewRequest, Preview};
 use crate::shell;
@@ -16,7 +16,7 @@ pub async fn list_previews(
 }
 
 pub async fn create_preview(
-    _user: AuthUser,
+    user: MemberUser,
     State(state): State<AppState>,
     Json(req): Json<CreatePreviewRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
@@ -28,6 +28,9 @@ pub async fn create_preview(
             req.repo
         )));
     }
+
+    // Check per-user repo permission
+    auth::check_repo_permission(&state.db, &user.0.sub, &req.repo, &user.0.role).await?;
 
     let output = shell::create_preview(
         &state.config,
@@ -44,7 +47,7 @@ pub async fn create_preview(
 }
 
 pub async fn destroy_preview(
-    _user: AuthUser,
+    _user: MemberUser,
     State(state): State<AppState>,
     Path(slug): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
@@ -56,7 +59,7 @@ pub async fn destroy_preview(
 }
 
 pub async fn update_preview(
-    _user: AuthUser,
+    _user: MemberUser,
     State(state): State<AppState>,
     Path(slug): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { listTasks, createTask, listRepos, uploadImage, type ListTasksParams } from '@/lib/api';
+import { listTasks, createTask, listRepos, uploadImage, getMe, type ListTasksParams } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -17,6 +17,7 @@ const STATUS_OPTIONS = ['all', 'pending', 'creating_agent', 'cloning', 'running_
 
 export default function Tasks() {
   const queryClient = useQueryClient();
+  const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMe });
 
   // Filter / pagination state
   const [searchInput, setSearchInput] = useState('');
@@ -143,12 +144,14 @@ export default function Tasks() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">Claude Tasks</h1>
-        <Button
-          variant={showCreate ? 'outline' : 'default'}
-          onClick={() => setShowCreate(!showCreate)}
-        >
-          {showCreate ? 'Cancel' : 'New Task'}
-        </Button>
+        {me?.role !== 'viewer' && (
+          <Button
+            variant={showCreate ? 'outline' : 'default'}
+            onClick={() => setShowCreate(!showCreate)}
+          >
+            {showCreate ? 'Cancel' : 'New Task'}
+          </Button>
+        )}
       </div>
 
       {showCreate && (
