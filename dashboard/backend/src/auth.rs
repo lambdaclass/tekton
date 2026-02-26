@@ -118,12 +118,12 @@ pub async fn callback(
 
     sqlx::query(
         "INSERT INTO users (github_login, name, email, github_token)
-         VALUES (?, ?, ?, ?)
+         VALUES ($1, $2, $3, $4)
          ON CONFLICT(github_login) DO UPDATE SET
-           name = excluded.name,
-           email = excluded.email,
-           github_token = excluded.github_token,
-           updated_at = datetime('now')",
+           name = EXCLUDED.name,
+           email = EXCLUDED.email,
+           github_token = EXCLUDED.github_token,
+           updated_at = NOW()",
     )
     .bind(&user_info.login)
     .bind(&name)

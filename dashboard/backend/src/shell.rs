@@ -8,6 +8,29 @@ use crate::config::Config;
 use crate::error::AppError;
 use crate::models::Preview;
 
+/// A structured action extracted from Claude's stream-json output.
+#[derive(Debug, Clone)]
+pub struct RawAction {
+    pub action_type: String,  // "tool_use", "text", "result"
+    pub tool_name: Option<String>,
+    pub tool_input: Option<serde_json::Value>,
+    pub summary: Option<String>,
+}
+
+/// Token usage extracted from Claude's result event.
+#[derive(Debug, Clone, Default)]
+pub struct TokenUsage {
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+}
+
+/// Return value from Claude streaming: text output, structured actions, and token usage.
+pub struct ClaudeStreamResult {
+    pub text: String,
+    pub actions: Vec<RawAction>,
+    pub usage: TokenUsage,
+}
+
 /// Run a command and return its stdout.
 async fn run_cmd(cmd: &str, args: &[&str]) -> Result<String, AppError> {
     tracing::info!("Running: {cmd} {}", args.join(" "));
@@ -254,12 +277,12 @@ pub async fn agent_exec(
 }
 
 /// Run Claude in an agent container with stream-json output, parsing events into readable log lines.
-/// Returns Claude's accumulated text output (from assistant messages) for saving as chat messages.
+/// Returns Claude's accumulated text output, structured actions, and token usage.
 pub async fn agent_exec_claude_streaming(
     name: &str,
     cmd_line: &str,
     tx: broadcast::Sender<String>,
-) -> Result<String, AppError> {
+) -> Result<ClaudeStreamResult, AppError> {
     let ip = agent_ip(name)?;
 
     tracing::info!("Streaming Claude JSON: ssh agent@{ip}");
@@ -281,6 +304,12 @@ pub async fn agent_exec_claude_streaming(
     let claude_text = Arc::new(tokio::sync::Mutex::new(String::new()));
     let claude_text_clone = claude_text.clone();
 
+    let actions = Arc::new(tokio::sync::Mutex::new(Vec::<RawAction>::new()));
+    let actions_clone = actions.clone();
+
+    let usage = Arc::new(tokio::sync::Mutex::new(TokenUsage::default()));
+    let usage_clone = usage.clone();
+
     let tx2 = tx.clone();
     let stdout_handle = tokio::spawn(async move {
         let reader = BufReader::new(stdout);
@@ -293,6 +322,16 @@ pub async fn agent_exec_claude_streaming(
                     buf.push('\n');
                 }
                 buf.push_str(&text);
+            }
+            // Extract structured actions
+            if let Some(action) = extract_action(&line) {
+                actions_clone.lock().await.push(action);
+            }
+            // Extract token usage from result events
+            if let Some(u) = extract_token_usage(&line) {
+                let mut usage = usage_clone.lock().await;
+                usage.input_tokens += u.input_tokens;
+                usage.output_tokens += u.output_tokens;
             }
             if let Some(formatted) = format_claude_event(&line) {
                 let _ = tx.send(formatted);
@@ -325,8 +364,12 @@ pub async fn agent_exec_claude_streaming(
             "Claude streaming exited with status {status}"
         )));
     }
-    let result = claude_text.lock().await.clone();
-    Ok(result)
+
+    let text = claude_text.lock().await.clone();
+    let actions = actions.lock().await.clone();
+    let usage = usage.lock().await.clone();
+
+    Ok(ClaudeStreamResult { text, actions, usage })
 }
 
 /// Extract raw text from a Claude stream-json "assistant" message.
@@ -353,6 +396,115 @@ fn extract_claude_text(line: &str) -> Option<String> {
     } else {
         Some(texts.join("\n"))
     }
+}
+
+/// Extract a structured action from a stream-json line.
+fn extract_action(line: &str) -> Option<RawAction> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let msg_type = v.get("type")?.as_str()?;
+
+    match msg_type {
+        "assistant" => {
+            let content = v.pointer("/message/content")?;
+            if let Some(arr) = content.as_array() {
+                for block in arr {
+                    if let Some(block_type) = block.get("type").and_then(|t| t.as_str()) {
+                        match block_type {
+                            "tool_use" => {
+                                let name = block.get("name").and_then(|n| n.as_str()).map(String::from);
+                                let input = block.get("input").cloned();
+                                let summary = format_tool_use_summary(block);
+                                return Some(RawAction {
+                                    action_type: "tool_use".into(),
+                                    tool_name: name,
+                                    tool_input: input,
+                                    summary,
+                                });
+                            }
+                            "text" => {
+                                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                                    if !text.trim().is_empty() {
+                                        let truncated: String = text.chars().take(200).collect();
+                                        return Some(RawAction {
+                                            action_type: "text".into(),
+                                            tool_name: None,
+                                            tool_input: None,
+                                            summary: Some(truncated),
+                                        });
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            None
+        }
+        "result" => {
+            Some(RawAction {
+                action_type: "result".into(),
+                tool_name: None,
+                tool_input: None,
+                summary: Some("Claude finished".into()),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Extract token usage from a Claude stream-json "result" event.
+fn extract_token_usage(line: &str) -> Option<TokenUsage> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("type")?.as_str()? != "result" {
+        return None;
+    }
+    let input = v.pointer("/usage/input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+    let output = v.pointer("/usage/output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+    if input == 0 && output == 0 {
+        return None;
+    }
+    Some(TokenUsage {
+        input_tokens: input,
+        output_tokens: output,
+    })
+}
+
+/// Generate a human-readable summary for a tool_use block.
+fn format_tool_use_summary(block: &serde_json::Value) -> Option<String> {
+    let name = block.get("name")?.as_str()?;
+    let input = block.get("input").unwrap_or(&serde_json::Value::Null);
+
+    let summary = match name {
+        "Read" => {
+            let path = input.get("file_path").and_then(|p| p.as_str()).unwrap_or("...");
+            format!("Reading {path}")
+        }
+        "Edit" => {
+            let path = input.get("file_path").and_then(|p| p.as_str()).unwrap_or("...");
+            format!("Editing {path}")
+        }
+        "Write" => {
+            let path = input.get("file_path").and_then(|p| p.as_str()).unwrap_or("...");
+            format!("Writing {path}")
+        }
+        "Grep" => {
+            let pattern = input.get("pattern").and_then(|p| p.as_str()).unwrap_or("...");
+            format!("Searching for \"{pattern}\"")
+        }
+        "Glob" => {
+            let pattern = input.get("pattern").and_then(|p| p.as_str()).unwrap_or("...");
+            format!("Globbing \"{pattern}\"")
+        }
+        "Bash" => {
+            let cmd = input.get("command").and_then(|c| c.as_str()).unwrap_or("...");
+            let truncated: String = cmd.chars().take(100).collect();
+            format!("Running: {truncated}")
+        }
+        "Task" => "Spawning sub-agent".to_string(),
+        _ => format!("Using tool: {name}"),
+    };
+    Some(summary)
 }
 
 /// Parse a stream-json line from Claude and format it as a human-readable log line.

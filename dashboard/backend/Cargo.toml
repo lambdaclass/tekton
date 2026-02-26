@@ -8,7 +8,7 @@ axum = { version = "0.8", features = ["ws", "macros", "multipart"] }
 axum-extra = { version = "0.10", features = ["typed-header", "cookie"] }
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 jsonwebtoken = "9"
 serde = { version = "1", features = ["derive"] }

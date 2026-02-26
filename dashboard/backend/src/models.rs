@@ -64,6 +64,8 @@ pub struct Task {
     pub created_by: Option<String>,
     pub screenshot_url: Option<String>,
     pub image_url: Option<String>,
+    pub total_input_tokens: Option<i64>,
+    pub total_output_tokens: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -101,6 +103,48 @@ pub struct SendMessageRequest {
     pub image_urls: Option<Vec<String>>,
 }
 
+// ── Task Actions ──
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct TaskAction {
+    pub id: i64,
+    pub task_id: String,
+    pub action_type: String,
+    pub tool_name: Option<String>,
+    pub tool_input: Option<serde_json::Value>,
+    pub summary: Option<String>,
+    pub created_at: String,
+}
+
+// ── Task State Transitions ──
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct TaskStateTransition {
+    pub id: i64,
+    pub task_id: String,
+    pub from_status: Option<String>,
+    pub to_status: String,
+    pub created_at: String,
+}
+
+// ── Query params ──
+
+#[derive(Debug, Deserialize)]
+pub struct ListTasksQuery {
+    pub status: Option<String>,
+    pub repo: Option<String>,
+    pub created_by: Option<String>,
+    pub search: Option<String>,
+    pub page: Option<u32>,
+    pub per_page: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListMessagesQuery {
+    pub limit: Option<i64>,
+    pub before_id: Option<i64>,
+}
+
 // ── Classify ──
 
 #[derive(Debug, Deserialize)]
@@ -111,4 +155,14 @@ pub struct ClassifyRequest {
 #[derive(Debug, Serialize)]
 pub struct ClassifyResponse {
     pub repo: String,
+}
+
+// ── Paginated response ──
+
+#[derive(Debug, Serialize)]
+pub struct PaginatedTasks {
+    pub tasks: Vec<Task>,
+    pub total: i64,
+    pub page: u32,
+    pub per_page: u32,
 }
