@@ -1,10 +1,10 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ChevronLeft, RotateCcw } from 'lucide-react';
+import { ChevronLeft, RotateCcw, GitPullRequest, ExternalLink } from 'lucide-react';
 import LogViewer from '@/components/LogViewer';
 import TaskChat from '@/components/TaskChat';
-import { getTask, listSubtasks, getMe, parseImageUrls, reopenTask } from '@/lib/api';
+import { getTask, listSubtasks, getMe, parseImageUrls, reopenTask, createPR } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -45,8 +45,16 @@ export default function TaskDetail() {
     },
   });
 
+  const prMutation = useMutation({
+    mutationFn: () => createPR(id!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['task', id] });
+    },
+  });
+
   const showChat = task && CHAT_STATUSES.includes(task.status);
   const canReopen = task && (task.status === 'completed' || task.status === 'failed');
+  const canCreatePR = task && task.branch_name && !task.pr_url && (task.status === 'completed' || task.status === 'awaiting_followup');
 
   return (
     <div>
@@ -70,6 +78,25 @@ export default function TaskDetail() {
             <RotateCcw className="size-4 mr-1" />
             {reopenMutation.isPending ? 'Reopening...' : 'Reopen'}
           </Button>
+        )}
+        {canCreatePR && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => prMutation.mutate()}
+            disabled={prMutation.isPending}
+          >
+            <GitPullRequest className="size-4 mr-1" />
+            {prMutation.isPending ? 'Creating PR...' : 'Create PR'}
+          </Button>
+        )}
+        {task?.pr_url && (
+          <a href={task.pr_url} target="_blank" rel="noopener noreferrer">
+            <Button size="sm" variant="outline">
+              <ExternalLink className="size-4 mr-1" />
+              View PR #{task.pr_number}
+            </Button>
+          </a>
         )}
       </div>
 
