@@ -843,6 +843,46 @@ print(json.dumps(changes))
     Ok(changes)
 }
 
+/// Send an HTTP request with retries and exponential backoff.
+/// Retries on network errors and 5xx server errors up to `max_retries` times.
+/// Returns the response on success or the last error after all retries are exhausted.
+async fn send_with_retries(
+    max_retries: u32,
+    operation: &str,
+    build_request: impl Fn() -> reqwest::RequestBuilder,
+) -> Result<reqwest::Response, AppError> {
+    let mut last_err = None;
+
+    for attempt in 0..=max_retries {
+        match build_request().send().await {
+            Ok(resp) if resp.status().is_server_error() => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                last_err = Some(format!("{operation} failed ({status}): {body}"));
+            }
+            Ok(resp) => return Ok(resp),
+            Err(e) => {
+                last_err = Some(format!("{operation} failed: {e}"));
+            }
+        }
+
+        if attempt < max_retries {
+            let delay = std::time::Duration::from_secs(1 << attempt);
+            tracing::warn!(
+                "{operation} (attempt {}/{}), retrying in {delay:?}: {}",
+                attempt + 1,
+                max_retries + 1,
+                last_err.as_deref().unwrap_or("unknown"),
+            );
+            tokio::time::sleep(delay).await;
+        }
+    }
+
+    Err(AppError::Internal(
+        last_err.unwrap_or_else(|| format!("{operation} failed after retries")),
+    ))
+}
+
 /// Create a branch on GitHub via REST API.
 async fn create_github_branch(
     token: &str,
@@ -857,15 +897,15 @@ async fn create_github_branch(
         "sha": sha,
     });
 
-    let resp = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("User-Agent", "dashboard")
-        .header("Accept", "application/vnd.github+json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| AppError::Internal(format!("GitHub create branch request failed: {e}")))?;
+    let resp = send_with_retries(10, "GitHub create branch", || {
+        client
+            .post(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("User-Agent", "dashboard")
+            .header("Accept", "application/vnd.github+json")
+            .json(&body)
+    })
+    .await?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -936,14 +976,14 @@ async fn github_create_commit(
         "variables": variables,
     });
 
-    let resp = client
-        .post("https://api.github.com/graphql")
-        .header("Authorization", format!("Bearer {token}"))
-        .header("User-Agent", "dashboard")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| AppError::Internal(format!("GitHub GraphQL request failed: {e}")))?;
+    let resp = send_with_retries(10, "GitHub GraphQL request", || {
+        client
+            .post("https://api.github.com/graphql")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("User-Agent", "dashboard")
+            .json(&body)
+    })
+    .await?;
 
     if !resp.status().is_success() {
         let status = resp.status();
