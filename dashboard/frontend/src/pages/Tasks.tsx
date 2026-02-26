@@ -421,34 +421,43 @@ export default function Tasks() {
                       <p className="text-sm font-medium mb-1">{t.name}</p>
                     )}
                     <p className="text-sm line-clamp-2 mb-2 text-muted-foreground">{t.prompt}</p>
-                    <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                      <span>{t.repo}</span>
-                      <span>{t.base_branch}</span>
+                    <div className="flex items-center gap-4 text-xs text-muted-foreground min-w-0">
+                      <span className="shrink-0">{t.repo}</span>
+                      <span className="shrink-0">{t.base_branch}</span>
                       {t.pr_url && (
                         <a
                           href={t.pr_url}
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={(e) => e.stopPropagation()}
-                          className="text-blue-400 hover:text-blue-300"
+                          className="shrink-0 text-blue-400 hover:text-blue-300"
                         >
                           PR #{t.pr_number}
                         </a>
                       )}
                       {t.preview_url && (
-                        <span className="text-green-400">{t.preview_url}</span>
+                        <a
+                          href={t.preview_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-green-400 hover:text-green-300 truncate min-w-0"
+                          title={t.preview_url}
+                        >
+                          {t.preview_url.replace(/^https?:\/\//, '')}
+                        </a>
                       )}
                       {(t.total_input_tokens || t.total_output_tokens) ? (
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <span className="cursor-default">{formatTokenCost(t.total_input_tokens ?? 0, t.total_output_tokens ?? 0)}</span>
+                            <span className="shrink-0 cursor-default">{formatTokenCost(t.total_input_tokens ?? 0, t.total_output_tokens ?? 0)}</span>
                           </TooltipTrigger>
                           <TooltipContent>
                             {(t.total_input_tokens ?? 0).toLocaleString()} input + {(t.total_output_tokens ?? 0).toLocaleString()} output tokens
                           </TooltipContent>
                         </Tooltip>
                       ) : null}
-                      <span className="ml-auto flex items-center gap-1.5">
+                      <span className="ml-auto shrink-0 flex items-center gap-1.5">
                         {t.created_by && (
                           <img
                             src={`https://github.com/${t.created_by}.png?size=20`}
