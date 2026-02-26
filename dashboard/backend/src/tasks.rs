@@ -189,7 +189,7 @@ pub async fn list_tasks(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
          FROM tasks {where_clause} ORDER BY created_at DESC LIMIT ${bind_idx} OFFSET ${next_idx}",
         bind_idx = bind_idx,
         next_idx = bind_idx + 1,
@@ -220,7 +220,7 @@ pub async fn get_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -247,7 +247,7 @@ pub async fn get_subtasks(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
          FROM tasks WHERE parent_task_id = $1 ORDER BY created_at ASC"
     )
     .bind(&id)
@@ -319,7 +319,7 @@ pub async fn create_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -1554,7 +1554,7 @@ pub async fn reopen_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -1623,7 +1623,7 @@ pub async fn reopen_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -1644,7 +1644,7 @@ pub async fn update_task_name(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -1664,7 +1664,7 @@ pub async fn update_task_name(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -1721,6 +1721,216 @@ async fn run_reopen_pipeline(
     log_and_send(db, task_id, &tx, "[DONE] Task completed.");
 
     Ok(())
+}
+
+// ── PR Creation ──
+
+/// Generate a rich PR description using Claude, based on conversation history and diff.
+async fn generate_pr_body(
+    db: &PgPool,
+    github_token: &str,
+    task: &Task,
+) -> Result<String, AppError> {
+    // 1. Fetch conversation messages
+    let messages = sqlx::query_as::<_, TaskMessage>(
+        "SELECT id, task_id, sender, content, \
+         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, image_url \
+         FROM task_messages WHERE task_id = $1 ORDER BY id"
+    )
+    .bind(&task.id)
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    let conversation = messages.iter()
+        .filter(|m| m.sender == "claude" || m.sender == "user")
+        .map(|m| format!("[{}]: {}", m.sender, m.content))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    // 2. Fetch diff from GitHub API (file list + stats)
+    let branch_name = task.branch_name.as_deref().unwrap_or("");
+    let client = reqwest::Client::new();
+    let diff_summary = match client
+        .get(format!(
+            "https://api.github.com/repos/{}/compare/{}...{}",
+            task.repo, task.base_branch, branch_name
+        ))
+        .header("Authorization", format!("token {github_token}"))
+        .header("User-Agent", "tekton-dashboard")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            let data: serde_json::Value = resp.json().await.unwrap_or_default();
+            let files = data["files"].as_array();
+            match files {
+                Some(files) => files.iter()
+                    .map(|f| {
+                        let name = f["filename"].as_str().unwrap_or("?");
+                        let adds = f["additions"].as_i64().unwrap_or(0);
+                        let dels = f["deletions"].as_i64().unwrap_or(0);
+                        let status = f["status"].as_str().unwrap_or("modified");
+                        format!("- `{name}` ({status}, +{adds} -{dels})")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                None => String::from("(no file changes found)"),
+            }
+        }
+        _ => String::from("(could not fetch diff)"),
+    };
+
+    // 3. Build prompt for Claude
+    let context = format!(
+        "You are writing a GitHub Pull Request description. Write a clear, well-structured PR description in markdown.\n\n\
+         Include these sections:\n\
+         - **Summary**: A concise description of what this PR does (2-4 bullet points)\n\
+         - **Changes**: Brief description of the key changes made\n\
+         - **Test plan**: How to verify the changes work\n\n\
+         Do NOT include a title line — just the body content.\n\n\
+         Here is the context:\n\n\
+         **Task prompt**: {}\n\n\
+         **Conversation between user and Claude**:\n{}\n\n\
+         **Files changed**:\n{}\n",
+        task.prompt,
+        if conversation.is_empty() { "(no conversation)" } else { &conversation },
+        diff_summary
+    );
+
+    // 4. Call Claude to generate the description
+    let oauth_token = read_claude_oauth_token().await?;
+
+    let output = tokio::process::Command::new("sudo")
+        .args([
+            "-u", "nobody",
+            "env",
+            &format!("CLAUDE_CODE_OAUTH_TOKEN={oauth_token}"),
+            "HOME=/tmp",
+            "claude",
+            "--dangerously-skip-permissions",
+            "-p",
+            &context,
+        ])
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to run claude for PR body: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::Internal(format!(
+            "Claude PR body generation failed (exit {}): {stderr}",
+            output.status
+        )));
+    }
+
+    let mut body = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    body.push_str(&format!(
+        "\n\n---\n*Created via [Tekton Dashboard](https://dashboard.hipermegared.link/tasks/{})*",
+        task.id
+    ));
+
+    Ok(body)
+}
+
+pub async fn create_pr(
+    user: AuthUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Task>, AppError> {
+    let task = sqlx::query_as::<_, Task>(
+        "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
+         preview_slug, preview_url, error_message, \
+         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         parent_task_id, created_by, screenshot_url, image_url, \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         FROM tasks WHERE id = $1"
+    )
+    .bind(&id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Task not found".into()))?;
+
+    if task.pr_url.is_some() {
+        return Err(AppError::BadRequest("PR already exists for this task".into()));
+    }
+
+    let branch_name = task.branch_name.as_deref()
+        .ok_or_else(|| AppError::BadRequest("Task has no branch".into()))?;
+
+    let git_id = get_git_identity(&state.db, &user.0.sub).await?;
+
+    // Build PR title from task name or prompt
+    let title = task.name.as_deref()
+        .unwrap_or_else(|| &task.prompt)
+        .chars()
+        .take(72)
+        .collect::<String>();
+
+    // Build PR body: gather context and ask Claude to write the description
+    let body = generate_pr_body(&state.db, &git_id.token, &task).await
+        .unwrap_or_else(|e| {
+            tracing::warn!("Failed to generate PR body via Claude: {e}, using fallback");
+            format!(
+                "## Task\n\n{}\n\n---\n*Created via [Tekton Dashboard](https://dashboard.hipermegared.link/tasks/{})*",
+                task.prompt, task.id
+            )
+        });
+
+    // Create PR via GitHub API
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("https://api.github.com/repos/{}/pulls", task.repo))
+        .header("Authorization", format!("token {}", git_id.token))
+        .header("User-Agent", "tekton-dashboard")
+        .header("Accept", "application/vnd.github+json")
+        .json(&serde_json::json!({
+            "title": title,
+            "body": body,
+            "head": branch_name,
+            "base": task.base_branch,
+        }))
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("GitHub API request failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!(
+            "GitHub API returned {status}: {text}"
+        )));
+    }
+
+    let pr_data: serde_json::Value = resp.json().await
+        .map_err(|e| AppError::Internal(format!("Failed to parse PR response: {e}")))?;
+
+    let pr_url = pr_data["html_url"].as_str().unwrap_or("").to_string();
+    let pr_number = pr_data["number"].as_i64().unwrap_or(0) as i32;
+
+    sqlx::query("UPDATE tasks SET pr_url = $1, pr_number = $2, updated_at = NOW() WHERE id = $3")
+        .bind(&pr_url)
+        .bind(pr_number)
+        .bind(&id)
+        .execute(&state.db)
+        .await?;
+
+    let updated_task = sqlx::query_as::<_, Task>(
+        "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
+         preview_slug, preview_url, error_message, \
+         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         parent_task_id, created_by, screenshot_url, image_url, \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         FROM tasks WHERE id = $1"
+    )
+    .bind(&id)
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(Json(updated_task))
 }
 
 pub async fn get_task_logs(
