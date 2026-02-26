@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { statusVariant } from '@/lib/status';
+import { formatTokenCost } from '@/lib/utils';
 
 const CHAT_STATUSES = ['awaiting_followup', 'running_claude', 'pushing', 'creating_preview'];
 
@@ -65,7 +66,16 @@ export default function TaskDetail() {
           Tasks
         </Button>
         <h1 className="text-2xl font-bold">{task?.name || <span className="font-mono">{id?.slice(0, 8)}</span>}</h1>
-        {task && <Badge variant={statusVariant(task.status).variant} className={statusVariant(task.status).className}>{task.status}</Badge>}
+        {task && (() => {
+          const sv = statusVariant(task.status);
+          const StatusIcon = sv.icon;
+          return (
+            <Badge variant={sv.variant} className={sv.className}>
+              {StatusIcon && <StatusIcon className={sv.spin ? 'animate-spin' : ''} />}
+              {task.status}
+            </Badge>
+          );
+        })()}
         <Badge variant={connected ? 'default' : 'outline'}>
           {connected ? 'Live' : 'Disconnected'}
         </Badge>
@@ -153,7 +163,15 @@ export default function TaskDetail() {
               {task.created_by && (
                 <div>
                   <span className="text-muted-foreground">Created by</span>
-                  <p className="truncate">{task.created_by}</p>
+                  <p className="flex items-center gap-1.5 truncate">
+                    <img
+                      src={`https://github.com/${task.created_by}.png?size=20`}
+                      className="size-4 rounded-full"
+                      loading="lazy"
+                      alt=""
+                    />
+                    {task.created_by}
+                  </p>
                 </div>
               )}
               {(task.total_input_tokens || task.total_output_tokens) ? (
@@ -161,6 +179,9 @@ export default function TaskDetail() {
                   <span className="text-muted-foreground">Token Usage</span>
                   <p>
                     {(task.total_input_tokens ?? 0).toLocaleString()} in / {(task.total_output_tokens ?? 0).toLocaleString()} out
+                  </p>
+                  <p className="text-muted-foreground">
+                    {formatTokenCost(task.total_input_tokens ?? 0, task.total_output_tokens ?? 0)}
                   </p>
                 </div>
               ) : null}
@@ -234,9 +255,16 @@ export default function TaskDetail() {
                         <span className="font-mono text-sm text-muted-foreground">
                           {sub.id.slice(0, 8)}
                         </span>
-                        <Badge variant={statusVariant(sub.status).variant} className={statusVariant(sub.status).className}>
-                          {sub.status}
-                        </Badge>
+                        {(() => {
+                          const sv = statusVariant(sub.status);
+                          const SubIcon = sv.icon;
+                          return (
+                            <Badge variant={sv.variant} className={sv.className}>
+                              {SubIcon && <SubIcon className={sv.spin ? 'animate-spin' : ''} />}
+                              {sub.status}
+                            </Badge>
+                          );
+                        })()}
                       </div>
                       <p className="text-sm line-clamp-1">{sub.prompt}</p>
                     </CardContent>
