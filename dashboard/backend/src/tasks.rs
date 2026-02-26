@@ -412,8 +412,7 @@ async fn run_task_pipeline(
     // Use custom branch name if provided, otherwise derive from the task name
     let branch_name = match custom_branch_name {
         Some(ref name) if !name.is_empty() => {
-            let slug = slugify_for_branch(name);
-            format!("{slug}-{short_id}")
+            slugify_for_branch(name)
         }
         _ => {
             let slug = slugify_for_branch(&task_name);
