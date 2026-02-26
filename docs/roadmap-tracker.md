@@ -32,7 +32,7 @@ The dependency chain is: **persistence → identity/RBAC → policy engine → e
 | # | Issue | Title | Status | Depends on |
 |---|-------|-------|--------|------------|
 | 1 | [#22](https://github.com/lambdaclass/tekton/issues/22) | Task and prompt persistence | **Done** | — |
-| 2 | [#23](https://github.com/lambdaclass/tekton/issues/23) | Security and access control (RBAC) | Not started | #22 |
+| 2 | [#23](https://github.com/lambdaclass/tekton/issues/23) | Security and access control (RBAC) | **Done** | #22 |
 | 3 | [#24](https://github.com/lambdaclass/tekton/issues/24) | Policy engine and sandbox controls | Not started | #22, #23 |
 | 4 | [#25](https://github.com/lambdaclass/tekton/issues/25) | Fine-grained tool approval UX | Not started | #24 |
 | 5 | [#26](https://github.com/lambdaclass/tekton/issues/26) | Secrets provenance and leak prevention | Not started | #23, #24 |
@@ -49,7 +49,7 @@ These are independent of the P0 dependency chain and can be done as palette clea
 |-------|-------|--------|
 | [#21](https://github.com/lambdaclass/tekton/issues/21) | Remove update button from UI | **Done** |
 | [#19](https://github.com/lambdaclass/tekton/issues/19) | Fix screenshot capture in Nix VM | **Done** |
-| [#20](https://github.com/lambdaclass/tekton/issues/20) | Surface VM startup logs in the UI | Not started |
+| [#20](https://github.com/lambdaclass/tekton/issues/20) | Surface VM startup logs in the UI | **Done** |
 | [#82](https://github.com/lambdaclass/tekton/issues/82) | Custom task naming | **Done** |
 | [#84](https://github.com/lambdaclass/tekton/issues/84) | Mark task as failed | Not started |
 | [#81](https://github.com/lambdaclass/tekton/issues/81) | Branch selector dropdown | **Done** |
