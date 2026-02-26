@@ -78,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/uploads", post(tasks::upload_image))
         // Repos
         .route("/repos", get(tasks::list_repos))
+        .route("/repos/{owner}/{repo}/branches", get(tasks::list_branches))
         // WebSockets
         .route("/ws/logs/{slug}", get(ws::preview_logs_ws))
         .route("/ws/tasks/{id}", get(ws::task_output_ws));

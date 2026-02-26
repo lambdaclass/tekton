@@ -10,6 +10,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { statusVariant } from '@/lib/status';
 import VoiceInput from '@/components/VoiceInput';
+import BranchCombobox from '@/components/BranchCombobox';
 import { ImagePlus, X, ChevronLeft, ChevronRight, Search } from 'lucide-react';
 
 const STATUS_OPTIONS = ['all', 'pending', 'creating_agent', 'cloning', 'running_claude', 'pushing', 'creating_preview', 'awaiting_followup', 'completed', 'failed'];
@@ -244,12 +245,11 @@ export default function Tasks() {
                     </datalist>
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="base-branch">Base Branch</Label>
-                    <Input
-                      id="base-branch"
+                    <Label>Base Branch</Label>
+                    <BranchCombobox
+                      repo={repo}
                       value={baseBranch}
-                      onChange={(e) => setBaseBranch(e.target.value)}
-                      placeholder="main"
+                      onChange={setBaseBranch}
                     />
                   </div>
                 </div>
