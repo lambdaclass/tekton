@@ -1,6 +1,7 @@
 export interface UserInfo {
   login: string;
   name: string;
+  role: string;
 }
 
 export interface Preview {
@@ -151,7 +152,7 @@ export const listTasks = (params?: ListTasksParams) => {
   return apiFetch<PaginatedTasks>(`/api/tasks${qs ? `?${qs}` : ''}`);
 };
 export const getTask = (id: string) => apiFetch<Task>(`/api/tasks/${id}`);
-export const createTask = (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[] }) =>
+export const createTask = (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[]; custom_branch_name?: string }) =>
   apiFetch<Task>('/api/tasks', {
     method: 'POST',
     body: JSON.stringify(data),
@@ -195,6 +196,32 @@ export function parseImageUrls(raw: string | null | undefined): string[] {
 export const listRepos = () => apiFetch<string[]>('/api/repos');
 export const listBranches = (owner: string, repo: string) =>
   apiFetch<string[]>(`/api/repos/${owner}/${repo}/branches`);
+
+// Admin
+export const listUsers = () =>
+  apiFetch<{ login: string; name: string; role: string }[]>('/api/admin/users');
+export const setUserRole = (login: string, role: string) =>
+  apiFetch<{ login: string; role: string }>(`/api/admin/users/${encodeURIComponent(login)}/role`, {
+    method: 'PUT',
+    body: JSON.stringify({ role }),
+  });
+export const getUserRepos = (login: string) =>
+  apiFetch<string[]>(`/api/admin/users/${encodeURIComponent(login)}/repos`);
+export const setUserRepos = (login: string, repos: string[]) =>
+  apiFetch<string[]>(`/api/admin/users/${encodeURIComponent(login)}/repos`, {
+    method: 'PUT',
+    body: JSON.stringify({ repos }),
+  });
+export const listSecrets = (repo?: string) => {
+  const qs = repo ? `?repo=${encodeURIComponent(repo)}` : '';
+  return apiFetch<{ id: number; repo: string; name: string; created_by: string | null; created_at: string }[]>(
+    `/api/admin/secrets${qs}`,
+  );
+};
+export const createSecret = (data: { repo: string; name: string; value: string }) =>
+  apiFetch<unknown>('/api/admin/secrets', { method: 'POST', body: JSON.stringify(data) });
+export const deleteSecret = (id: number) =>
+  apiFetch<{ ok: boolean }>(`/api/admin/secrets/${id}`, { method: 'DELETE' });
 
 // WebSocket helpers
 export function connectPreviewLogs(slug: string): WebSocket {

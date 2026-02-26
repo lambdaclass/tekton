@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getMe, logout, listTasks } from '@/lib/api';
-import { LayoutDashboard, Container, BrainCircuit, LogOut } from 'lucide-react';
+import { LayoutDashboard, Container, BrainCircuit, LogOut, Shield } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
 import {
   Sidebar,
@@ -20,6 +20,7 @@ import {
   SidebarTrigger,
 } from '@/components/ui/sidebar';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 
@@ -166,6 +167,20 @@ export default function Layout() {
                     )}
                   </SidebarMenuItem>
                 ))}
+                {user.role === 'admin' && (
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={isActive('/admin')}
+                      tooltip="Admin"
+                    >
+                      <Link to="/admin">
+                        <Shield />
+                        <span>Admin</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                )}
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
@@ -178,6 +193,9 @@ export default function Layout() {
                   <AvatarFallback className="text-[10px]">{initials}</AvatarFallback>
                 </Avatar>
                 <span className="truncate text-xs">{user.login}</span>
+                <Badge variant="outline" className="ml-auto text-[10px] px-1.5 py-0">
+                  {user.role}
+                </Badge>
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
@@ -194,7 +212,7 @@ export default function Layout() {
           <SidebarTrigger className="-ml-1" />
           <Separator orientation="vertical" className="mr-2 h-4" />
           <span className="text-sm text-muted-foreground">
-            {NAV_ITEMS.find((n) => isActive(n.to))?.label ?? ''}
+            {NAV_ITEMS.find((n) => isActive(n.to))?.label ?? (isActive('/admin') ? 'Admin' : '')}
           </span>
         </header>
         <main className="flex-1 p-6">

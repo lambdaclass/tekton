@@ -53,9 +53,10 @@ export default function TaskDetail() {
     },
   });
 
+  const isViewer = me?.role === 'viewer';
   const showChat = task && CHAT_STATUSES.includes(task.status);
-  const canReopen = task && (task.status === 'completed' || task.status === 'failed');
-  const canCreatePR = task && task.branch_name && !task.pr_url && (task.status === 'completed' || task.status === 'awaiting_followup');
+  const canReopen = task && !isViewer && (task.status === 'completed' || task.status === 'failed');
+  const canCreatePR = task && !isViewer && task.branch_name && !task.pr_url && (task.status === 'completed' || task.status === 'awaiting_followup');
 
   return (
     <div>
@@ -235,7 +236,7 @@ export default function TaskDetail() {
         </Card>
       )}
 
-      {showChat && me && (
+      {showChat && me && !isViewer && (
         <TaskChat taskId={id!} currentUserEmail={me.login} previewUrl={task.preview_url ?? undefined} />
       )}
 

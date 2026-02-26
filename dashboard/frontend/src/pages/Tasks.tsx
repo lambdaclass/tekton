@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
-import { listTasks, createTask, listRepos, uploadImage, type ListTasksParams } from '@/lib/api';
+import { listTasks, createTask, listRepos, uploadImage, getMe, type ListTasksParams } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -41,6 +41,7 @@ function SkeletonCard() {
 export default function Tasks() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMe });
 
   // Filter / pagination state
   const [searchInput, setSearchInput] = useState('');
@@ -89,6 +90,7 @@ export default function Tasks() {
   const [baseBranch, setBaseBranch] = useState('main');
   const [imageFiles, setImageFiles] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
+  const [customBranch, setCustomBranch] = useState('');
   const [uploading, setUploading] = useState(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
@@ -174,7 +176,7 @@ export default function Tasks() {
   };
 
   const createMutation = useMutation({
-    mutationFn: async (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[] }) => {
+    mutationFn: async (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[]; custom_branch_name?: string }) => {
       return createTask(data);
     },
     onSuccess: () => {
@@ -183,6 +185,7 @@ export default function Tasks() {
       setPrompt('');
       setRepo('');
       setBaseBranch('main');
+      setCustomBranch('');
       setImageFiles([]);
       setImagePreviews([]);
     },
@@ -209,6 +212,7 @@ export default function Tasks() {
       repo,
       base_branch: baseBranch || undefined,
       image_urls,
+      custom_branch_name: customBranch || undefined,
     });
   };
 
@@ -216,12 +220,14 @@ export default function Tasks() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">Claude Tasks</h1>
-        <Button
-          variant={showCreate ? 'outline' : 'default'}
-          onClick={() => setShowCreate(!showCreate)}
-        >
-          {showCreate ? 'Cancel' : 'New Task'}
-        </Button>
+        {me?.role !== 'viewer' && (
+          <Button
+            variant={showCreate ? 'outline' : 'default'}
+            onClick={() => setShowCreate(!showCreate)}
+          >
+            {showCreate ? 'Cancel' : 'New Task'}
+          </Button>
+        )}
       </div>
 
       {showCreate && (
@@ -325,6 +331,15 @@ export default function Tasks() {
                       onChange={setBaseBranch}
                     />
                   </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="custom-branch">Branch Name (optional)</Label>
+                  <Input
+                    id="custom-branch"
+                    value={customBranch}
+                    onChange={(e) => setCustomBranch(e.target.value)}
+                    placeholder="Auto-generated from task name if left blank"
+                  />
                 </div>
               </div>
               <Button type="submit" disabled={createMutation.isPending || uploading}>
