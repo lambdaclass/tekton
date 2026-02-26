@@ -1493,6 +1493,50 @@ pub async fn reopen_task(
     Ok(Json(task))
 }
 
+pub async fn fail_task(
+    _user: AuthUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Task>, AppError> {
+    let task = sqlx::query_as::<_, Task>(
+        "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
+         preview_slug, preview_url, error_message, \
+         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         parent_task_id, created_by, screenshot_url, image_url, \
+         total_input_tokens, total_output_tokens \
+         FROM tasks WHERE id = $1"
+    )
+    .bind(&id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Task not found".into()))?;
+
+    let terminal = ["completed", "failed", "abandoned"];
+    if terminal.contains(&task.status.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "Cannot mark task as failed, current status: {}",
+            task.status
+        )));
+    }
+
+    update_task_status(&state.db, &id, "failed", None).await?;
+
+    let task = sqlx::query_as::<_, Task>(
+        "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
+         preview_slug, preview_url, error_message, \
+         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         parent_task_id, created_by, screenshot_url, image_url, \
+         total_input_tokens, total_output_tokens \
+         FROM tasks WHERE id = $1"
+    )
+    .bind(&id)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Json(task))
+}
+
 async fn run_reopen_pipeline(
     config: &Config,
     db: &PgPool,

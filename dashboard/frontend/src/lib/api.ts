@@ -163,6 +163,8 @@ export const sendTaskMessage = (id: string, content: string, image_urls?: string
   });
 export const reopenTask = (id: string) =>
   apiFetch<Task>(`/api/tasks/${id}/reopen`, { method: 'POST' });
+export const markTaskFailed = (id: string) =>
+  apiFetch<Task>(`/api/tasks/${id}/fail`, { method: 'POST' });
 export const listTaskActions = (id: string) =>
   apiFetch<TaskAction[]>(`/api/tasks/${id}/actions`);
 
