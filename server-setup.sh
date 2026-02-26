@@ -397,7 +397,7 @@ chmod 755 /var/secrets /var/secrets/claude
 info "Writing dashboard.env..."
 cat > /var/secrets/dashboard.env << ENVEOF
 LISTEN_ADDR=0.0.0.0:3200
-DATABASE_URL=sqlite:///var/lib/dashboard/dashboard.db
+DATABASE_URL=postgresql:///dashboard?host=/run/postgresql&user=dashboard
 JWT_SECRET=${JWT_SECRET}
 GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
 GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}

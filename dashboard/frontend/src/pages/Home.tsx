@@ -11,7 +11,7 @@ export default function Home() {
   });
   const { data: tasks } = useQuery({
     queryKey: ['tasks'],
-    queryFn: listTasks,
+    queryFn: () => listTasks(),
   });
 
   return (
@@ -44,7 +44,7 @@ export default function Home() {
                 <CardTitle>Claude Tasks</CardTitle>
                 {tasks && (
                   <span className="ml-auto text-sm tabular-nums text-muted-foreground">
-                    {tasks.length}
+                    {tasks.total}
                   </span>
                 )}
               </div>
