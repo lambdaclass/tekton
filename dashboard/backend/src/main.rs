@@ -58,6 +58,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/auth/callback", get(auth::callback))
         .route("/auth/logout", post(auth::logout))
         .route("/auth/me", get(auth::me))
+        .route("/auth/claude/login", get(auth::claude_login))
+        .route("/auth/claude/callback", get(auth::claude_callback))
+        .route("/auth/claude/disconnect", post(auth::claude_disconnect))
         // Previews
         .route("/previews", get(previews::list_previews))
         .route("/previews", post(previews::create_preview))

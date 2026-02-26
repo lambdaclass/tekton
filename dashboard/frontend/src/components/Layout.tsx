@@ -1,7 +1,8 @@
+import { useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getMe, logout } from '@/lib/api';
-import { LayoutDashboard, Container, BrainCircuit, LogOut } from 'lucide-react';
+import { LayoutDashboard, Container, BrainCircuit, LogOut, Settings } from 'lucide-react';
 import {
   Sidebar,
   SidebarContent,
@@ -19,6 +20,7 @@ import {
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
+import ClaudeKeyDialog from '@/components/ClaudeKeyDialog';
 
 const NAV_ITEMS = [
   { to: '/', label: 'Home', icon: LayoutDashboard },
@@ -35,6 +37,8 @@ export default function Layout() {
     queryFn: getMe,
     retry: false,
   });
+
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   if (isLoading) {
     return (
@@ -126,6 +130,20 @@ export default function Layout() {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
+              <SidebarMenuButton
+                tooltip="Settings"
+                onClick={() => setSettingsOpen(true)}
+              >
+                <div className="relative">
+                  <Settings className="size-4" />
+                  {!user.has_claude_key && (
+                    <span className="absolute -top-1 -right-1 size-2 rounded-full bg-yellow-500" />
+                  )}
+                </div>
+                <span>Settings</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
               <SidebarMenuButton tooltip="Logout" onClick={handleLogout}>
                 <LogOut />
                 <span>Logout</span>
@@ -146,6 +164,12 @@ export default function Layout() {
           <Outlet />
         </main>
       </SidebarInset>
+
+      <ClaudeKeyDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        hasClaudeKey={user.has_claude_key}
+      />
     </SidebarProvider>
   );
 }

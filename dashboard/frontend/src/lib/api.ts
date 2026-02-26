@@ -1,6 +1,7 @@
 export interface UserInfo {
   login: string;
   name: string;
+  has_claude_key: boolean;
 }
 
 export interface Preview {
@@ -113,6 +114,8 @@ export const getConfig = () => apiFetch<PublicConfig>('/api/config');
 // Auth
 export const getMe = () => apiFetch<UserInfo>('/api/auth/me');
 export const logout = () => fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+export const disconnectClaude = () =>
+  apiFetch<{ ok: boolean }>('/api/auth/claude/disconnect', { method: 'POST' });
 
 // Previews
 export const listPreviews = () => apiFetch<Preview[]>('/api/previews');

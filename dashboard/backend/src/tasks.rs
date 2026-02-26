@@ -329,6 +329,9 @@ pub async fn create_task(
     // Get the user's git identity (GitHub token, name, email)
     let git_id = get_git_identity(&state.db, created_by).await?;
 
+    // Resolve Claude credential for this user (per-user or shared fallback)
+    let claude_token = get_claude_credential(&state.db, created_by).await?;
+
     // Create broadcast channel for this task
     let (tx, _) = broadcast::channel(1024);
     state.task_channels.insert(id.clone(), tx.clone());
@@ -347,7 +350,7 @@ pub async fn create_task(
     tokio::spawn(async move {
         let agent_name = format!("a-{short}");
         let result = run_task_pipeline(
-            &config, &db, &task_id, &short, &prompt, &repo, &base, image_url_json2.as_deref(), &git_id, tx.clone(),
+            &config, &db, &task_id, &short, &prompt, &repo, &base, image_url_json2.as_deref(), &git_id, &claude_token, tx.clone(),
         )
         .await;
 
@@ -380,12 +383,13 @@ async fn run_task_pipeline(
     base_branch: &str,
     image_url_json: Option<&str>,
     git_id: &GitIdentity,
+    claude_token: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
     let agent_name = format!("a-{short_id}");
 
     // Generate a short name for the task using Claude
-    let task_name = match generate_task_name(prompt).await {
+    let task_name = match generate_task_name(prompt, claude_token).await {
         Ok(name) if !name.is_empty() => {
             tracing::info!("Generated task name for {task_id}: {name}");
             name
@@ -438,7 +442,7 @@ async fn run_task_pipeline(
 
     update_task_status(db, task_id, "running_claude", None).await?;
     log_and_send(db, task_id, &tx, "[STEP] Running Claude...");
-    let result = run_claude_streaming(&agent_name, &effective_prompt, tx.clone()).await?;
+    let result = run_claude_streaming(&agent_name, &effective_prompt, claude_token, tx.clone()).await?;
     save_claude_response_as_message(db, task_id, &result.text).await?;
     persist_actions(db, task_id, &result.actions).await;
     increment_token_usage(db, task_id, &result.usage).await;
@@ -456,7 +460,7 @@ async fn run_task_pipeline(
     }
 
     // Step 4: Follow-up loop
-    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, &tx).await?;
+    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, claude_token, &tx).await?;
 
     // Step 5: Destroy agent
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
@@ -479,10 +483,124 @@ async fn read_claude_oauth_token() -> Result<String, AppError> {
         )))
 }
 
+/// Refresh a user's Claude OAuth token if expired.
+async fn refresh_claude_token(
+    db: &PgPool,
+    github_login: &str,
+    refresh_token: &str,
+) -> Result<String, AppError> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .post("https://console.anthropic.com/v1/oauth/token")
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+            ("client_id", "9d1c250a-e61b-44d9-88ed-5944d1962f5e"),
+        ])
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("Claude token refresh request failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!(
+            "Claude token refresh failed ({status}): {body}"
+        )));
+    }
+
+    let data: serde_json::Value = resp.json().await
+        .map_err(|e| AppError::Internal(format!("Failed to parse Claude refresh response: {e}")))?;
+
+    let new_access_token = data["access_token"]
+        .as_str()
+        .ok_or_else(|| AppError::Internal("Missing access_token in refresh response".into()))?
+        .to_string();
+    let new_refresh_token = data["refresh_token"]
+        .as_str()
+        .ok_or_else(|| AppError::Internal("Missing refresh_token in refresh response".into()))?;
+    let expires_in = data["expires_in"].as_i64().unwrap_or(28800);
+    let expires_at = chrono::Utc::now().timestamp() + expires_in;
+
+    sqlx::query(
+        "UPDATE users SET
+           claude_access_token = $1,
+           claude_refresh_token = $2,
+           claude_token_expires_at = $3,
+           updated_at = NOW()
+         WHERE github_login = $4",
+    )
+    .bind(&new_access_token)
+    .bind(new_refresh_token)
+    .bind(expires_at)
+    .bind(github_login)
+    .execute(db)
+    .await?;
+
+    tracing::info!("Refreshed Claude token for user '{github_login}'");
+    Ok(new_access_token)
+}
+
+/// Get the Claude OAuth token for a user, refreshing if needed.
+/// Falls back to the shared token if no per-user token is stored.
+async fn get_claude_credential(db: &PgPool, github_login: &str) -> Result<String, AppError> {
+    let row = sqlx::query_as::<_, (Option<String>, Option<String>, Option<i64>)>(
+        "SELECT claude_access_token, claude_refresh_token, claude_token_expires_at
+         FROM users WHERE github_login = $1",
+    )
+    .bind(github_login)
+    .fetch_optional(db)
+    .await?;
+
+    let (access_token, refresh_token, expires_at) = match row {
+        Some(r) => r,
+        None => return read_claude_oauth_token().await,
+    };
+
+    let access_token = match access_token {
+        Some(t) if !t.is_empty() => t,
+        _ => return read_claude_oauth_token().await,
+    };
+
+    let refresh_token = match refresh_token {
+        Some(t) if !t.is_empty() => t,
+        _ => return Ok(access_token),
+    };
+
+    let now = chrono::Utc::now().timestamp();
+    let token_expires_at = expires_at.unwrap_or(0);
+
+    // If token is still valid (with 300s buffer), use it directly
+    if now < token_expires_at - 300 {
+        return Ok(access_token);
+    }
+
+    // Token expired or about to expire — refresh it
+    tracing::info!("Claude token for '{github_login}' expired, refreshing...");
+    match refresh_claude_token(db, github_login, &refresh_token).await {
+        Ok(new_token) => Ok(new_token),
+        Err(e) => {
+            tracing::warn!(
+                "Failed to refresh Claude token for '{github_login}': {e}. Falling back to shared token."
+            );
+            // Clear the broken tokens
+            let _ = sqlx::query(
+                "UPDATE users SET claude_access_token = NULL, claude_refresh_token = NULL, \
+                 claude_token_expires_at = NULL WHERE github_login = $1"
+            )
+            .bind(github_login)
+            .execute(db)
+            .await;
+            read_claude_oauth_token().await
+        }
+    }
+}
+
 /// Generate a short task name from the prompt using Claude CLI.
 /// Runs as a non-root user since claude --dangerously-skip-permissions refuses root.
-async fn generate_task_name(prompt: &str) -> Result<String, AppError> {
-    let oauth_token = read_claude_oauth_token().await?;
+async fn generate_task_name(prompt: &str, claude_token: &str) -> Result<String, AppError> {
+    let oauth_token = claude_token;
     let naming_prompt = format!(
         "Generate a very short name (3-5 words, no quotes, no punctuation) that summarizes this coding task. \
          Reply with ONLY the name, nothing else.\n\nTask: {}", prompt
@@ -544,12 +662,12 @@ fn slugify_for_branch(name: &str) -> String {
 async fn run_claude_streaming(
     agent_name: &str,
     prompt: &str,
+    claude_token: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<shell::ClaudeStreamResult, AppError> {
-    let oauth_token = read_claude_oauth_token().await?;
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
-        "export CLAUDE_CODE_OAUTH_TOKEN='{oauth_token}' && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose -p '{escaped_prompt}'"
+        "export CLAUDE_CODE_OAUTH_TOKEN='{claude_token}' && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose -p '{escaped_prompt}'"
     );
     shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
 }
@@ -558,12 +676,12 @@ async fn run_claude_streaming(
 async fn run_claude_continue(
     agent_name: &str,
     prompt: &str,
+    claude_token: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<shell::ClaudeStreamResult, AppError> {
-    let oauth_token = read_claude_oauth_token().await?;
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
-        "export CLAUDE_CODE_OAUTH_TOKEN='{oauth_token}' && cd /home/agent/repo && \
+        "export CLAUDE_CODE_OAUTH_TOKEN='{claude_token}' && cd /home/agent/repo && \
          claude --dangerously-skip-permissions --output-format stream-json --verbose \
          --continue -p '{escaped_prompt}'"
     );
@@ -776,6 +894,7 @@ async fn follow_up_loop(
     branch_pushed: &mut bool,
     preview_created: &mut bool,
     git_id: &GitIdentity,
+    claude_token: &str,
     tx: &broadcast::Sender<String>,
 ) -> Result<FollowUpOutcome, AppError> {
     let mut last_seen_id: i64 = 0;
@@ -832,7 +951,7 @@ async fn follow_up_loop(
         update_task_status(db, task_id, "running_claude", None).await?;
         let _ = tx.send("[FOLLOWUP] Running Claude with follow-up...".to_string());
 
-        let result = match run_claude_continue(agent_name, &combined_prompt, tx.clone()).await {
+        let result = match run_claude_continue(agent_name, &combined_prompt, claude_token, tx.clone()).await {
             Ok(r) => r,
             Err(e) => {
                 // Fallback: if --continue fails, use fresh session with full context
@@ -842,7 +961,7 @@ async fn follow_up_loop(
                     .fetch_one(db)
                     .await?;
                 let context_prompt = build_followup_prompt(&original_prompt, &conversation_history, &combined_prompt);
-                run_claude_streaming(agent_name, &context_prompt, tx.clone()).await?
+                run_claude_streaming(agent_name, &context_prompt, claude_token, tx.clone()).await?
             }
         };
         save_claude_response_as_message(db, task_id, &result.text).await?;
@@ -1578,6 +1697,9 @@ pub async fn reopen_task(
     // Get the reopening user's git identity
     let git_id = get_git_identity(&state.db, &user.0.sub).await?;
 
+    // Resolve Claude credential for this user
+    let claude_token = get_claude_credential(&state.db, &user.0.sub).await?;
+
     // Reset status and error
     update_task_status(&state.db, &id, "creating_agent", None).await?;
 
@@ -1599,7 +1721,7 @@ pub async fn reopen_task(
     tokio::spawn(async move {
         let agent_name = format!("a-{short}");
         let result = run_reopen_pipeline(
-            &config, &db, &task_id, &short, &repo, &branch, &base, has_preview, &git_id, tx.clone(),
+            &config, &db, &task_id, &short, &repo, &branch, &base, has_preview, &git_id, &claude_token, tx.clone(),
         )
         .await;
 
@@ -1683,6 +1805,7 @@ async fn run_reopen_pipeline(
     base_branch: &str,
     had_preview: bool,
     git_id: &GitIdentity,
+    claude_token: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
     let agent_name = format!("a-{short_id}");
@@ -1711,7 +1834,7 @@ async fn run_reopen_pipeline(
     // branch_pushed starts as true since the branch already exists on GitHub
     let mut branch_pushed = true;
     let mut preview_created = had_preview;
-    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, &tx).await?;
+    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, claude_token, &tx).await?;
 
     // Step 4: Destroy agent
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
@@ -1730,6 +1853,7 @@ async fn generate_pr_body(
     db: &PgPool,
     github_token: &str,
     task: &Task,
+    claude_token: &str,
 ) -> Result<String, AppError> {
     // 1. Fetch conversation messages
     let messages = sqlx::query_as::<_, TaskMessage>(
@@ -1800,13 +1924,11 @@ async fn generate_pr_body(
     );
 
     // 4. Call Claude to generate the description
-    let oauth_token = read_claude_oauth_token().await?;
-
     let output = tokio::process::Command::new("sudo")
         .args([
             "-u", "nobody",
             "env",
-            &format!("CLAUDE_CODE_OAUTH_TOKEN={oauth_token}"),
+            &format!("CLAUDE_CODE_OAUTH_TOKEN={claude_token}"),
             "HOME=/tmp",
             "claude",
             "--dangerously-skip-permissions",
@@ -1862,6 +1984,9 @@ pub async fn create_pr(
 
     let git_id = get_git_identity(&state.db, &user.0.sub).await?;
 
+    // Resolve Claude credential for this user
+    let claude_token = get_claude_credential(&state.db, &user.0.sub).await?;
+
     // Build PR title from task name or prompt
     let title = task.name.as_deref()
         .unwrap_or_else(|| &task.prompt)
@@ -1870,7 +1995,7 @@ pub async fn create_pr(
         .collect::<String>();
 
     // Build PR body: gather context and ask Claude to write the description
-    let body = generate_pr_body(&state.db, &git_id.token, &task).await
+    let body = generate_pr_body(&state.db, &git_id.token, &task, &claude_token).await
         .unwrap_or_else(|e| {
             tracing::warn!("Failed to generate PR body via Claude: {e}, using fallback");
             format!(

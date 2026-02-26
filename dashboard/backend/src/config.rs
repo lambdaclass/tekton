@@ -17,6 +17,7 @@ pub struct Config {
     pub claude_bin: String,
     pub claude_config_dir: String,
     pub chromium_bin: String,
+    pub claude_oauth_redirect_uri: String,
 }
 
 impl Config {
@@ -48,6 +49,8 @@ impl Config {
             claude_config_dir: env::var("CLAUDE_CONFIG_DIR")
                 .unwrap_or_else(|_| "/var/secrets/claude".into()),
             chromium_bin: env::var("CHROMIUM_BIN").unwrap_or_else(|_| "chromium".into()),
+            claude_oauth_redirect_uri: env::var("CLAUDE_OAUTH_REDIRECT_URI")
+                .unwrap_or_else(|_| String::new()),
         })
     }
 }

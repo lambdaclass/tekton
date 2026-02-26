@@ -13,6 +13,7 @@ pub struct Claims {
 pub struct UserInfo {
     pub login: String,
     pub name: String,
+    pub has_claude_key: bool,
 }
 
 #[derive(Debug, Deserialize)]

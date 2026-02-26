@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { listTasks, createTask, listRepos, uploadImage, type ListTasksParams } from '@/lib/api';
+import { listTasks, createTask, listRepos, uploadImage, getMe, type ListTasksParams } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,12 +11,20 @@ import { Badge } from '@/components/ui/badge';
 import { statusVariant } from '@/lib/status';
 import VoiceInput from '@/components/VoiceInput';
 import BranchCombobox from '@/components/BranchCombobox';
-import { ImagePlus, X, ChevronLeft, ChevronRight, Search } from 'lucide-react';
+import ClaudeKeyDialog from '@/components/ClaudeKeyDialog';
+import { ImagePlus, X, ChevronLeft, ChevronRight, Search, AlertTriangle } from 'lucide-react';
 
 const STATUS_OPTIONS = ['all', 'pending', 'creating_agent', 'cloning', 'running_claude', 'pushing', 'creating_preview', 'awaiting_followup', 'completed', 'failed'];
 
 export default function Tasks() {
   const queryClient = useQueryClient();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  const { data: user } = useQuery({
+    queryKey: ['me'],
+    queryFn: getMe,
+    retry: false,
+  });
 
   // Filter / pagination state
   const [searchInput, setSearchInput] = useState('');
@@ -150,6 +158,23 @@ export default function Tasks() {
           {showCreate ? 'Cancel' : 'New Task'}
         </Button>
       </div>
+
+      {user && !user.has_claude_key && (
+        <div className="mb-4 flex items-center gap-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3">
+          <AlertTriangle className="size-5 text-yellow-500 shrink-0" />
+          <span className="text-sm text-yellow-200">
+            Connect your Claude account to create tasks with your own credentials.
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto shrink-0"
+            onClick={() => setSettingsOpen(true)}
+          >
+            Connect
+          </Button>
+        </div>
+      )}
 
       {showCreate && (
         <Card className="mb-8">
@@ -366,6 +391,12 @@ export default function Tasks() {
           </Button>
         </div>
       )}
+
+      <ClaudeKeyDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        hasClaudeKey={user?.has_claude_key ?? false}
+      />
     </div>
   );
 }

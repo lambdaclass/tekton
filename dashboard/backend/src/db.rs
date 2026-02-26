@@ -96,6 +96,26 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
+    // Add Claude OAuth columns to users table
+    for col_sql in &[
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS claude_access_token TEXT",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS claude_refresh_token TEXT",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS claude_token_expires_at BIGINT",
+    ] {
+        let _ = sqlx::query(col_sql).execute(pool).await;
+    }
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS claude_oauth_states (
+            state TEXT PRIMARY KEY,
+            github_login TEXT NOT NULL,
+            code_verifier TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS task_actions (
             id BIGSERIAL PRIMARY KEY,
