@@ -567,6 +567,14 @@ cmd_create() {
                 fi
             done < <(jq -r '.hostSecrets[]' "$meta_file")
         fi
+
+        # Append secrets from the dashboard DB (admin panel).
+        # The dashboard runs on port 3200 and has a localhost-only endpoint.
+        local db_secrets
+        db_secrets=$(curl -sf "http://127.0.0.1:3200/internal/secrets/${repo}" 2>/dev/null || true)
+        if [[ -n "$db_secrets" ]]; then
+            echo "$db_secrets"
+        fi
     } > "$env_file"
     chmod 644 "$env_file"
 

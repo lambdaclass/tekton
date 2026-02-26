@@ -1,5 +1,8 @@
+use std::net::SocketAddr;
+
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
+use axum::extract::connect_info::ConnectInfo;
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -152,6 +155,35 @@ pub async fn delete_secret(
     }
 
     Ok(Json(serde_json::json!({ "deleted": true })))
+}
+
+// ── Internal endpoint for preview.sh ──
+
+/// GET /internal/secrets/{owner}/{repo}
+/// Localhost-only endpoint for preview.sh to fetch decrypted secrets.
+/// Returns plain text with one KEY=VALUE per line.
+pub async fn internal_list_secrets(
+    State(state): State<crate::AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Path((owner, repo)): Path<(String, String)>,
+) -> Result<String, AppError> {
+    if !addr.ip().is_loopback() {
+        return Err(AppError::Forbidden(
+            "This endpoint is only accessible from localhost".into(),
+        ));
+    }
+
+    let full_repo = format!("{owner}/{repo}");
+    let secrets =
+        load_secrets_for_repo(&state.db, &state.config.secrets_encryption_key, &full_repo).await?;
+
+    let body = secrets
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Ok(body)
 }
 
 // ── Helper for pipeline use ──
