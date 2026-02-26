@@ -61,6 +61,7 @@ export default function Tasks() {
   const [baseBranch, setBaseBranch] = useState('main');
   const [imageFiles, setImageFiles] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
+  const [customBranch, setCustomBranch] = useState('');
   const [uploading, setUploading] = useState(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
@@ -101,7 +102,7 @@ export default function Tasks() {
   };
 
   const createMutation = useMutation({
-    mutationFn: async (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[] }) => {
+    mutationFn: async (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[]; custom_branch_name?: string }) => {
       return createTask(data);
     },
     onSuccess: () => {
@@ -110,6 +111,7 @@ export default function Tasks() {
       setPrompt('');
       setRepo('');
       setBaseBranch('main');
+      setCustomBranch('');
       setImageFiles([]);
       setImagePreviews([]);
     },
@@ -136,6 +138,7 @@ export default function Tasks() {
       repo,
       base_branch: baseBranch || undefined,
       image_urls,
+      custom_branch_name: customBranch || undefined,
     });
   };
 
@@ -253,6 +256,15 @@ export default function Tasks() {
                     />
                   </div>
                 </div>
+                <div className="space-y-2">
+                  <Label htmlFor="custom-branch">Branch Name (optional)</Label>
+                  <Input
+                    id="custom-branch"
+                    value={customBranch}
+                    onChange={(e) => setCustomBranch(e.target.value)}
+                    placeholder="Auto-generated from task name if left blank"
+                  />
+                </div>
               </div>
               <Button type="submit" disabled={createMutation.isPending || uploading}>
                 {uploading ? 'Uploading images...' : createMutation.isPending ? 'Creating...' : 'Submit Task'}
@@ -312,6 +324,7 @@ export default function Tasks() {
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
                     <span>{t.repo}</span>
                     <span>{t.base_branch}</span>
+                    {t.created_by && <span>{t.created_by}</span>}
                     {t.pr_url && (
                       <a
                         href={t.pr_url}
