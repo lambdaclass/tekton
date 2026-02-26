@@ -1725,6 +1725,115 @@ async fn run_reopen_pipeline(
 
 // ── PR Creation ──
 
+/// Generate a rich PR description using Claude, based on conversation history and diff.
+async fn generate_pr_body(
+    db: &PgPool,
+    github_token: &str,
+    task: &Task,
+) -> Result<String, AppError> {
+    // 1. Fetch conversation messages
+    let messages = sqlx::query_as::<_, TaskMessage>(
+        "SELECT id, task_id, sender, content, \
+         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, image_url \
+         FROM task_messages WHERE task_id = $1 ORDER BY id"
+    )
+    .bind(&task.id)
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    let conversation = messages.iter()
+        .filter(|m| m.sender == "claude" || m.sender == "user")
+        .map(|m| format!("[{}]: {}", m.sender, m.content))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    // 2. Fetch diff from GitHub API (file list + stats)
+    let branch_name = task.branch_name.as_deref().unwrap_or("");
+    let client = reqwest::Client::new();
+    let diff_summary = match client
+        .get(format!(
+            "https://api.github.com/repos/{}/compare/{}...{}",
+            task.repo, task.base_branch, branch_name
+        ))
+        .header("Authorization", format!("token {github_token}"))
+        .header("User-Agent", "tekton-dashboard")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            let data: serde_json::Value = resp.json().await.unwrap_or_default();
+            let files = data["files"].as_array();
+            match files {
+                Some(files) => files.iter()
+                    .map(|f| {
+                        let name = f["filename"].as_str().unwrap_or("?");
+                        let adds = f["additions"].as_i64().unwrap_or(0);
+                        let dels = f["deletions"].as_i64().unwrap_or(0);
+                        let status = f["status"].as_str().unwrap_or("modified");
+                        format!("- `{name}` ({status}, +{adds} -{dels})")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                None => String::from("(no file changes found)"),
+            }
+        }
+        _ => String::from("(could not fetch diff)"),
+    };
+
+    // 3. Build prompt for Claude
+    let context = format!(
+        "You are writing a GitHub Pull Request description. Write a clear, well-structured PR description in markdown.\n\n\
+         Include these sections:\n\
+         - **Summary**: A concise description of what this PR does (2-4 bullet points)\n\
+         - **Changes**: Brief description of the key changes made\n\
+         - **Test plan**: How to verify the changes work\n\n\
+         Do NOT include a title line — just the body content.\n\n\
+         Here is the context:\n\n\
+         **Task prompt**: {}\n\n\
+         **Conversation between user and Claude**:\n{}\n\n\
+         **Files changed**:\n{}\n",
+        task.prompt,
+        if conversation.is_empty() { "(no conversation)" } else { &conversation },
+        diff_summary
+    );
+
+    // 4. Call Claude to generate the description
+    let oauth_token = read_claude_oauth_token().await?;
+
+    let output = tokio::process::Command::new("sudo")
+        .args([
+            "-u", "nobody",
+            "env",
+            &format!("CLAUDE_CODE_OAUTH_TOKEN={oauth_token}"),
+            "HOME=/tmp",
+            "claude",
+            "--dangerously-skip-permissions",
+            "-p",
+            &context,
+        ])
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to run claude for PR body: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::Internal(format!(
+            "Claude PR body generation failed (exit {}): {stderr}",
+            output.status
+        )));
+    }
+
+    let mut body = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    body.push_str(&format!(
+        "\n\n---\n*Created via [Tekton Dashboard](https://dashboard.hipermegared.link/tasks/{})*",
+        task.id
+    ));
+
+    Ok(body)
+}
+
 pub async fn create_pr(
     user: AuthUser,
     State(state): State<crate::AppState>,
@@ -1760,11 +1869,15 @@ pub async fn create_pr(
         .take(72)
         .collect::<String>();
 
-    // Build PR body
-    let body = format!(
-        "## Task\n\n{}\n\n---\n*Created via [Tekton Dashboard](https://dashboard.hipermegared.link/tasks/{})*",
-        task.prompt, task.id
-    );
+    // Build PR body: gather context and ask Claude to write the description
+    let body = generate_pr_body(&state.db, &git_id.token, &task).await
+        .unwrap_or_else(|e| {
+            tracing::warn!("Failed to generate PR body via Claude: {e}, using fallback");
+            format!(
+                "## Task\n\n{}\n\n---\n*Created via [Tekton Dashboard](https://dashboard.hipermegared.link/tasks/{})*",
+                task.prompt, task.id
+            )
+        });
 
     // Create PR via GitHub API
     let client = reqwest::Client::new();
