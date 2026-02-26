@@ -42,9 +42,9 @@ export default function BranchCombobox({ repo, value, onChange }: BranchCombobox
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  const filtered = (branches ?? [])
-    .filter((b) => !b.startsWith('gh-readonly-queue/'))
-    .filter((b) => b.toLowerCase().includes(filter.toLowerCase()));
+  const filtered = (branches ?? []).filter((b) =>
+    b.toLowerCase().includes(filter.toLowerCase())
+  );
 
   return (
     <div ref={wrapperRef} className="relative">
