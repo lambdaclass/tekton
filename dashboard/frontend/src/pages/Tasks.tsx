@@ -312,6 +312,17 @@ export default function Tasks() {
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
                     <span>{t.repo}</span>
                     <span>{t.base_branch}</span>
+                    {t.pr_url && (
+                      <a
+                        href={t.pr_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="text-blue-400 hover:text-blue-300"
+                      >
+                        PR #{t.pr_number}
+                      </a>
+                    )}
                     {t.preview_url && (
                       <span className="text-green-400">{t.preview_url}</span>
                     )}

@@ -75,6 +75,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/tasks/{id}/name", patch(tasks::update_task_name))
         .route("/tasks/{id}/actions", get(tasks::list_actions))
         .route("/tasks/{id}/create-pr", post(tasks::create_pr))
+        .route("/tasks/{id}/link-pr", post(tasks::link_pr))
         // Uploads
         .route("/uploads", post(tasks::upload_image))
         // Repos

@@ -85,6 +85,11 @@ pub struct UpdateTaskNameRequest {
     pub name: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct LinkPrRequest {
+    pub pr_url: String,
+}
+
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct TaskLog {
     pub id: i64,

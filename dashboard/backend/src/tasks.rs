@@ -1933,6 +1933,42 @@ pub async fn create_pr(
     Ok(Json(updated_task))
 }
 
+pub async fn link_pr(
+    _user: AuthUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<crate::models::LinkPrRequest>,
+) -> Result<Json<Task>, AppError> {
+    // Extract PR number from URL (e.g. https://github.com/owner/repo/pull/123)
+    let pr_number: Option<i32> = req.pr_url
+        .rsplit('/')
+        .next()
+        .and_then(|s| s.parse().ok());
+
+    sqlx::query("UPDATE tasks SET pr_url = $1, pr_number = $2, updated_at = NOW() WHERE id = $3")
+        .bind(&req.pr_url)
+        .bind(pr_number)
+        .bind(&id)
+        .execute(&state.db)
+        .await?;
+
+    let task = sqlx::query_as::<_, Task>(
+        "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
+         preview_slug, preview_url, error_message, \
+         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         parent_task_id, created_by, screenshot_url, image_url, \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         FROM tasks WHERE id = $1"
+    )
+    .bind(&id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Task not found".into()))?;
+
+    Ok(Json(task))
+}
+
 pub async fn get_task_logs(
     _user: AuthUser,
     State(state): State<crate::AppState>,

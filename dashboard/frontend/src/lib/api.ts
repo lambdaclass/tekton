@@ -175,6 +175,11 @@ export const listTaskActions = (id: string) =>
   apiFetch<TaskAction[]>(`/api/tasks/${id}/actions`);
 export const createPR = (id: string) =>
   apiFetch<Task>(`/api/tasks/${id}/create-pr`, { method: 'POST' });
+export const linkPR = (id: string, pr_url: string) =>
+  apiFetch<Task>(`/api/tasks/${id}/link-pr`, {
+    method: 'POST',
+    body: JSON.stringify({ pr_url }),
+  });
 
 /** Parse image_url JSON column (stored as JSON array string) into an array of URLs. */
 export function parseImageUrls(raw: string | null | undefined): string[] {
