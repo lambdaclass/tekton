@@ -137,13 +137,16 @@
     })
     (pkgs.writeShellApplication {
       name = "preview";
-      runtimeInputs = [ coreutils gnused nixos-container openssh curl jq postgresql sudo ];
+      runtimeInputs = [ coreutils gnused nixos-container openssh curl jq postgresql sudo iptables ];
       text = builtins.readFile ./preview.sh;
     })
   ];
 
-  # Firewall: allow HTTP (redirects) and HTTPS
+  # Firewall: allow HTTP (redirects), HTTPS, and SSH port range for preview containers
   networking.firewall.allowedTCPPorts = [ 80 443 ];
+  networking.firewall.allowedTCPPortRanges = [
+    { from = 2201; to = 2327; }
+  ];
 
   # Trust container veth interfaces (allows containers to reach host PostgreSQL, etc.)
   networking.firewall.trustedInterfaces = [ "ve-+" ];

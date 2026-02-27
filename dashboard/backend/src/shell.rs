@@ -149,6 +149,7 @@ fn parse_preview_list(output: &str, _domain: &str) -> Result<Vec<Preview>, AppEr
             // parts[1] = status (running/stopped), parts[2] = branch, parts[3] = url
             let branch = parts[2].to_string();
             let url = parts[3].to_string();
+            let ssh_port = parts.get(4).and_then(|p| p.parse::<u16>().ok());
 
             // Read repo and type from tracking files
             let repo = std::fs::read_to_string(format!("{preview_dir}/{slug}"))
@@ -164,6 +165,7 @@ fn parse_preview_list(output: &str, _domain: &str) -> Result<Vec<Preview>, AppEr
                 repo,
                 branch,
                 url,
+                ssh_port,
             });
         }
     }
@@ -598,16 +600,18 @@ mod tests {
     #[test]
     fn test_parse_preview_list() {
         let output = "\
-SLUG                STATUS          BRANCH                          URL
-123                 running         feat/foo                        https://123.example.com
-456                 stopped         main                            https://456.example.com
+SLUG                STATUS          BRANCH                          URL                                             SSH
+123                 running         feat/foo                        https://123.example.com                         2201
+456                 stopped         main                            https://456.example.com                         2202
 ";
         let result = parse_preview_list(output, "example.com").unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].slug, "123");
         assert_eq!(result[0].branch, "feat/foo");
         assert_eq!(result[0].url, "https://123.example.com");
+        assert_eq!(result[0].ssh_port, Some(2201));
         assert_eq!(result[1].slug, "456");
+        assert_eq!(result[1].ssh_port, Some(2202));
     }
 
     #[test]

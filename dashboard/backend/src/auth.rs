@@ -1,3 +1,6 @@
+use std::net::SocketAddr;
+
+use axum::extract::connect_info::ConnectInfo;
 use axum::extract::{FromRequestParts, Query, State};
 use axum::http::request::Parts;
 use axum::http::StatusCode;
@@ -9,7 +12,7 @@ use serde::Deserialize;
 use sqlx::PgPool;
 
 use crate::error::AppError;
-use crate::models::{Claims, GitHubTokenResponse, GitHubUserInfo, UserInfo};
+use crate::models::{Claims, GitHubTokenResponse, GitHubUserInfo, SetSshKeyRequest, SshKeyResponse, UserInfo};
 use crate::AppState;
 
 const COOKIE_NAME: &str = "dashboard_session";
@@ -186,6 +189,87 @@ pub async fn me(AuthUser(claims): AuthUser) -> axum::Json<UserInfo> {
         name: claims.name,
         role: claims.role,
     })
+}
+
+// ── SSH key handlers ──
+
+/// GET /api/auth/ssh-key — get the current user's SSH public key.
+pub async fn get_ssh_key(
+    AuthUser(claims): AuthUser,
+    State(state): State<AppState>,
+) -> Result<axum::Json<SshKeyResponse>, AppError> {
+    let key: Option<String> =
+        sqlx::query_scalar("SELECT ssh_public_key FROM users WHERE github_login = $1")
+            .bind(&claims.sub)
+            .fetch_one(&state.db)
+            .await?;
+
+    Ok(axum::Json(SshKeyResponse { ssh_public_key: key }))
+}
+
+/// PUT /api/auth/ssh-key — set the current user's SSH public key.
+pub async fn set_ssh_key(
+    AuthUser(claims): AuthUser,
+    State(state): State<AppState>,
+    axum::Json(req): axum::Json<SetSshKeyRequest>,
+) -> Result<axum::Json<SshKeyResponse>, AppError> {
+    let trimmed = req.ssh_public_key.trim().to_string();
+
+    // Basic validation: must start with a known SSH key prefix
+    if !trimmed.is_empty() {
+        let valid_prefixes = ["ssh-rsa", "ssh-ed25519", "ecdsa-sha2-", "ssh-dss", "sk-ssh-ed25519", "sk-ecdsa-sha2-"];
+        if !valid_prefixes.iter().any(|p| trimmed.starts_with(p)) {
+            return Err(AppError::BadRequest(
+                "Invalid SSH public key format. Must start with ssh-rsa, ssh-ed25519, ecdsa-sha2-*, etc.".into(),
+            ));
+        }
+    }
+
+    let key_to_store: Option<&str> = if trimmed.is_empty() { None } else { Some(&trimmed) };
+
+    sqlx::query("UPDATE users SET ssh_public_key = $1, updated_at = NOW() WHERE github_login = $2")
+        .bind(key_to_store)
+        .bind(&claims.sub)
+        .execute(&state.db)
+        .await?;
+
+    Ok(axum::Json(SshKeyResponse {
+        ssh_public_key: key_to_store.map(String::from),
+    }))
+}
+
+/// DELETE /api/auth/ssh-key — remove the current user's SSH public key.
+pub async fn delete_ssh_key(
+    AuthUser(claims): AuthUser,
+    State(state): State<AppState>,
+) -> Result<axum::Json<SshKeyResponse>, AppError> {
+    sqlx::query("UPDATE users SET ssh_public_key = NULL, updated_at = NOW() WHERE github_login = $1")
+        .bind(&claims.sub)
+        .execute(&state.db)
+        .await?;
+
+    Ok(axum::Json(SshKeyResponse { ssh_public_key: None }))
+}
+
+/// GET /internal/ssh-keys — localhost-only endpoint for preview.sh.
+/// Returns one SSH public key per line (all users that have set a key).
+pub async fn internal_list_ssh_keys(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Result<String, AppError> {
+    if !addr.ip().is_loopback() {
+        return Err(AppError::Forbidden(
+            "This endpoint is only accessible from localhost".into(),
+        ));
+    }
+
+    let keys: Vec<String> = sqlx::query_scalar(
+        "SELECT ssh_public_key FROM users WHERE ssh_public_key IS NOT NULL AND ssh_public_key != ''",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(keys.join("\n"))
 }
 
 // ── Extractor: admin user ──

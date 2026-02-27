@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { listPreviews, createPreview, destroyPreview } from '@/lib/api';
+import { listPreviews, createPreview, destroyPreview, getConfig } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,6 +10,12 @@ import { Badge } from '@/components/ui/badge';
 
 export default function Previews() {
   const queryClient = useQueryClient();
+  const [sshHost, setSshHost] = useState<string | null>(null);
+
+  useEffect(() => {
+    getConfig().then((cfg) => setSshHost(cfg.ssh_host)).catch(() => {});
+  }, []);
+
   const { data: previews, isLoading } = useQuery({
     queryKey: ['previews'],
     queryFn: listPreviews,
@@ -126,6 +132,11 @@ export default function Previews() {
                   <p className="text-sm text-muted-foreground mt-1">
                     {p.repo} / {p.branch}
                   </p>
+                  {p.ssh_port && sshHost && (
+                    <p className="text-xs text-muted-foreground mt-1 font-mono">
+                      ssh root@{sshHost} -p {p.ssh_port}
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-center gap-2 ml-4">
                   <Button variant="outline" size="sm" asChild>

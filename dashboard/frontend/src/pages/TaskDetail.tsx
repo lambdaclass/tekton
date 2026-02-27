@@ -1,10 +1,10 @@
-import { useState, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, RotateCcw, GitPullRequest, ExternalLink } from 'lucide-react';
 import LogViewer from '@/components/LogViewer';
 import TaskChat from '@/components/TaskChat';
-import { getTask, listSubtasks, getMe, parseImageUrls, reopenTask, createPR } from '@/lib/api';
+import { getTask, listSubtasks, getMe, parseImageUrls, reopenTask, createPR, listPreviews, getConfig } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -18,6 +18,12 @@ export default function TaskDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [connected, setConnected] = useState(false);
+  const [sshHost, setSshHost] = useState<string | null>(null);
+
+  useEffect(() => {
+    getConfig().then((cfg) => setSshHost(cfg.ssh_host)).catch(() => {});
+  }, []);
+
   const { data: task } = useQuery({
     queryKey: ['task', id],
     queryFn: () => getTask(id!),
@@ -35,6 +41,13 @@ export default function TaskDetail() {
     queryKey: ['me'],
     queryFn: getMe,
   });
+
+  const { data: previews } = useQuery({
+    queryKey: ['previews'],
+    queryFn: listPreviews,
+    enabled: !!task?.preview_slug,
+  });
+  const preview = previews?.find((p) => p.slug === task?.preview_slug);
 
   const onConnectionChange = useCallback((c: boolean) => setConnected(c), []);
 
@@ -158,6 +171,11 @@ export default function TaskDetail() {
                       {task.preview_slug}
                     </a>
                   </p>
+                  {preview?.ssh_port && sshHost && (
+                    <p className="text-xs text-muted-foreground mt-1 font-mono">
+                      ssh root@{sshHost} -p {preview.ssh_port}
+                    </p>
+                  )}
                 </div>
               )}
               {task.created_by && (
