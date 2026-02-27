@@ -14,9 +14,13 @@ export default function PreviewDetail() {
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
   const [previewDomain, setPreviewDomain] = useState<string | null>(null);
+  const [sshHost, setSshHost] = useState<string | null>(null);
 
   useEffect(() => {
-    getConfig().then((cfg) => setPreviewDomain(cfg.preview_domain)).catch(() => {});
+    getConfig().then((cfg) => {
+      setPreviewDomain(cfg.preview_domain);
+      setSshHost(cfg.ssh_host);
+    }).catch(() => {});
   }, []);
 
   const { data: previews } = useQuery({
@@ -59,10 +63,10 @@ export default function PreviewDetail() {
         </Button>
       </div>
 
-      {preview?.ssh_port && previewDomain && (
+      {preview?.ssh_port && sshHost && (
         <div className="mb-6 px-3 py-2 bg-muted rounded-md">
           <span className="text-xs text-muted-foreground">SSH: </span>
-          <code className="text-xs font-mono">ssh root@{previewDomain} -p {preview.ssh_port}</code>
+          <code className="text-xs font-mono">ssh root@{sshHost} -p {preview.ssh_port}</code>
         </div>
       )}
 

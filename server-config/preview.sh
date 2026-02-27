@@ -616,7 +616,8 @@ cmd_create() {
     success "Preview '$slug' created and starting."
     echo ""
     echo -e "  ${BOLD}URL:${NC}           ${preview_url}"
-    echo -e "  ${BOLD}SSH:${NC}           ssh root@${domain} -p ${ssh_port}"
+    local ssh_host="${SSH_HOST:-${domain}}"
+    echo -e "  ${BOLD}SSH:${NC}           ssh root@${ssh_host} -p ${ssh_port}"
 
     # Print extra host URLs
     local n_extra

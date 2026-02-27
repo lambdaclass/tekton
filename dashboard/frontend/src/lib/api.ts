@@ -108,6 +108,7 @@ async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> {
 // Config
 export interface PublicConfig {
   preview_domain: string;
+  ssh_host: string;
   github_org: string;
 }
 export const getConfig = () => apiFetch<PublicConfig>('/api/config');
