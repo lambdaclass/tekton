@@ -590,7 +590,7 @@ cmd_create() {
     # Set up SSH port forwarding (DNAT external port → container port 22)
     ssh_port=$(slot_to_ssh_port "$slot")
     iptables -t nat -A PREROUTING -p tcp --dport "$ssh_port" -j DNAT --to-destination "${local_ip}:22"
-    iptables -A FORWARD -p tcp -d "$local_ip" --dport 22 -j ACCEPT
+    iptables -I FORWARD -p tcp -d "$local_ip" --dport 22 -j ACCEPT
 
     # Inject user SSH keys from the dashboard DB into the container
     local user_ssh_keys
@@ -850,7 +850,7 @@ cmd_ensure_ssh() {
         # Add DNAT rule if not already present
         if ! iptables -t nat -C PREROUTING -p tcp --dport "$ssh_port" -j DNAT --to-destination "${_local_ip}:22" 2>/dev/null; then
             iptables -t nat -A PREROUTING -p tcp --dport "$ssh_port" -j DNAT --to-destination "${_local_ip}:22"
-            iptables -A FORWARD -p tcp -d "$_local_ip" --dport 22 -j ACCEPT
+            iptables -I FORWARD -p tcp -d "$_local_ip" --dport 22 -j ACCEPT
             info "Added SSH rule: port $ssh_port → ${_local_ip}:22 ($name)"
             count=$(( count + 1 ))
         fi
