@@ -13,6 +13,7 @@ use crate::models::{
     CreateTaskRequest, ListMessagesQuery, ListTasksQuery, PaginatedTasks, SendMessageRequest,
     Task, TaskAction, TaskLog, TaskMessage, UpdateTaskNameRequest,
 };
+use crate::policies;
 use crate::secrets;
 use crate::shell;
 
@@ -454,6 +455,22 @@ async fn run_task_pipeline(
         }
     };
 
+    // Load repo policy (if any) for branch protection and tool constraints
+    let policy = policies::load_policy_for_repo(db, repo).await?;
+    if let Some(ref pol) = policy {
+        // Verify the feature branch name doesn't collide with a protected branch
+        if pol.protected_branches.contains(&branch_name) {
+            return Err(AppError::BadRequest(format!(
+                "Branch '{}' is protected by repo policy. Choose a different branch name.",
+                branch_name
+            )));
+        }
+        log_and_send(
+            db, task_id, &tx,
+            &format!("[POLICY] Loaded policy for {repo}: {} protected branch(es)", pol.protected_branches.len()),
+        );
+    }
+
     // Step 1: Create agent container
     update_task_status(db, task_id, "creating_agent", None).await?;
     log_and_send(db, task_id, &tx, &format!("[STEP] Creating agent container '{agent_name}'..."));
@@ -484,7 +501,38 @@ async fn run_task_pipeline(
     }
 
     // Step 3: Copy images and run Claude (streaming)
-    let effective_prompt = augment_prompt_with_images(config, &agent_name, image_url_json, prompt, &tx).await?;
+    let mut effective_prompt = augment_prompt_with_images(config, &agent_name, image_url_json, prompt, &tx).await?;
+
+    // Inject policy constraints into the prompt so Claude knows its boundaries
+    if let Some(ref pol) = policy {
+        let mut constraints = Vec::new();
+        if !pol.protected_branches.is_empty() {
+            constraints.push(format!(
+                "PROTECTED BRANCHES (do NOT push directly to these): {}",
+                pol.protected_branches.join(", ")
+            ));
+        }
+        if let Some(ref tools) = pol.allowed_tools {
+            if let Some(deny) = tools.get("deny").and_then(|v| v.as_array()) {
+                let names: Vec<&str> = deny.iter().filter_map(|v| v.as_str()).collect();
+                if !names.is_empty() {
+                    constraints.push(format!("DENIED TOOLS (do NOT use): {}", names.join(", ")));
+                }
+            }
+            if let Some(allow) = tools.get("allow").and_then(|v| v.as_array()) {
+                let names: Vec<&str> = allow.iter().filter_map(|v| v.as_str()).collect();
+                if !names.is_empty() {
+                    constraints.push(format!("ALLOWED TOOLS (use ONLY these): {}", names.join(", ")));
+                }
+            }
+        }
+        if !constraints.is_empty() {
+            let policy_block = constraints.join("\n");
+            effective_prompt = format!(
+                "REPO POLICY CONSTRAINTS:\n{policy_block}\n\n{effective_prompt}"
+            );
+        }
+    }
 
     update_task_status(db, task_id, "running_claude", None).await?;
     log_and_send(db, task_id, &tx, "[STEP] Running Claude...");

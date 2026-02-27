@@ -200,6 +200,41 @@ pub struct ClassifyResponse {
     pub repo: String,
 }
 
+// ── Repo Policies ──
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct RepoPolicy {
+    pub id: i64,
+    pub repo: String,
+    pub protected_branches: Vec<String>,
+    pub allowed_tools: Option<serde_json::Value>,
+    pub network_egress: Option<serde_json::Value>,
+    pub max_cost_usd: Option<f64>,
+    pub require_approval_above_usd: Option<f64>,
+    pub created_by: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateRepoPolicyRequest {
+    pub repo: String,
+    pub protected_branches: Option<Vec<String>>,
+    pub allowed_tools: Option<serde_json::Value>,
+    pub network_egress: Option<serde_json::Value>,
+    pub max_cost_usd: Option<f64>,
+    pub require_approval_above_usd: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateRepoPolicyRequest {
+    pub protected_branches: Option<Vec<String>>,
+    pub allowed_tools: Option<serde_json::Value>,
+    pub network_egress: Option<serde_json::Value>,
+    pub max_cost_usd: Option<f64>,
+    pub require_approval_above_usd: Option<f64>,
+}
+
 // ── Paginated response ──
 
 #[derive(Debug, Serialize)]

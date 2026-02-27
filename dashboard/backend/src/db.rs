@@ -168,5 +168,23 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
+    // Create repo_policies table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS repo_policies (
+            id BIGSERIAL PRIMARY KEY,
+            repo TEXT NOT NULL UNIQUE,
+            protected_branches TEXT[] NOT NULL DEFAULT '{main,master}',
+            allowed_tools JSONB,
+            network_egress JSONB,
+            max_cost_usd DOUBLE PRECISION,
+            require_approval_above_usd DOUBLE PRECISION,
+            created_by TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }

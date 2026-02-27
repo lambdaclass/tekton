@@ -223,6 +223,27 @@ export const createSecret = (data: { repo: string; name: string; value: string }
 export const deleteSecret = (id: number) =>
   apiFetch<{ ok: boolean }>(`/api/admin/secrets/${id}`, { method: 'DELETE' });
 
+export interface RepoPolicy {
+  id: number;
+  repo: string;
+  protected_branches: string[];
+  allowed_tools: { allow?: string[]; deny?: string[] } | null;
+  network_egress: { allowlist?: string[]; denylist?: string[]; default?: string } | null;
+  max_cost_usd: number | null;
+  require_approval_above_usd: number | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export const listPolicies = () => apiFetch<RepoPolicy[]>('/api/admin/policies');
+export const createPolicy = (data: { repo: string; protected_branches?: string[]; allowed_tools?: any; network_egress?: any; max_cost_usd?: number | null; require_approval_above_usd?: number | null }) =>
+  apiFetch<RepoPolicy>('/api/admin/policies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+export const updatePolicy = (id: number, data: { protected_branches?: string[]; allowed_tools?: any; network_egress?: any; max_cost_usd?: number | null; require_approval_above_usd?: number | null }) =>
+  apiFetch<RepoPolicy>(`/api/admin/policies/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+export const deletePolicy = (id: number) =>
+  apiFetch<{ deleted: boolean }>(`/api/admin/policies/${id}`, { method: 'DELETE' });
+
 // WebSocket helpers
 export function connectPreviewLogs(slug: string): WebSocket {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
