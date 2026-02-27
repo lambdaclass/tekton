@@ -168,6 +168,13 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
+    // Add ssh_public_key column to users table
+    let _ = sqlx::query(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS ssh_public_key TEXT",
+    )
+    .execute(pool)
+    .await;
+
     // Create repo_policies table
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS repo_policies (

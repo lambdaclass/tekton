@@ -126,6 +126,11 @@ export default function Previews() {
                   <p className="text-sm text-muted-foreground mt-1">
                     {p.repo} / {p.branch}
                   </p>
+                  {p.ssh_port && (
+                    <p className="text-xs text-muted-foreground mt-1 font-mono">
+                      ssh root@{p.url.replace(/^https?:\/\/[^.]+\./, '')} -p {p.ssh_port}
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-center gap-2 ml-4">
                   <Button variant="outline" size="sm" asChild>

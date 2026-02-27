@@ -6,6 +6,7 @@ import PreviewDetail from './pages/PreviewDetail';
 import Tasks from './pages/Tasks';
 import TaskDetail from './pages/TaskDetail';
 import Admin from './pages/Admin';
+import Settings from './pages/Settings';
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
         <Route path="/previews/:slug" element={<PreviewDetail />} />
         <Route path="/tasks" element={<Tasks />} />
         <Route path="/tasks/:id" element={<TaskDetail />} />
+        <Route path="/settings" element={<Settings />} />
         <Route path="/admin" element={<Admin />} />
       </Route>
     </Routes>

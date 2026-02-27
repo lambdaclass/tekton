@@ -75,6 +75,8 @@ slot_to_ips() {
     echo "${SUBNET}.${host_last}" "${SUBNET}.${local_last}"
 }
 
+slot_to_ssh_port() { echo $(( 2200 + $1 )); }
+
 # -- PostgreSQL helpers -------------------------------------------------------
 
 generate_password() {
@@ -585,6 +587,22 @@ cmd_create() {
     # Start the container
     nixos-container start "$slug"
 
+    # Set up SSH port forwarding (DNAT external port → container port 22)
+    ssh_port=$(slot_to_ssh_port "$slot")
+    iptables -t nat -A PREROUTING -p tcp --dport "$ssh_port" -j DNAT --to-destination "${local_ip}:22"
+    iptables -A FORWARD -p tcp -d "$local_ip" --dport 22 -j ACCEPT
+
+    # Inject user SSH keys from the dashboard DB into the container
+    local user_ssh_keys
+    user_ssh_keys=$(curl -sf "http://127.0.0.1:3200/internal/ssh-keys" 2>/dev/null || true)
+    if [[ -n "$user_ssh_keys" ]]; then
+        local container_ssh_dir="/var/lib/nixos-containers/${slug}/root/.ssh"
+        mkdir -p "$container_ssh_dir"
+        echo "$user_ssh_keys" >> "${container_ssh_dir}/authorized_keys"
+        chmod 700 "$container_ssh_dir"
+        chmod 600 "${container_ssh_dir}/authorized_keys"
+    fi
+
     # Kick off setup and app services in background
     local setup_service
     setup_service=$(jq -r '.setupService' "$meta_file")
@@ -598,6 +616,7 @@ cmd_create() {
     success "Preview '$slug' created and starting."
     echo ""
     echo -e "  ${BOLD}URL:${NC}           ${preview_url}"
+    echo -e "  ${BOLD}SSH:${NC}           ssh root@${domain} -p ${ssh_port}"
 
     # Print extra host URLs
     local n_extra
@@ -630,6 +649,12 @@ cmd_destroy() {
     fi
 
     info "Destroying preview '$slug'..."
+
+    # Clean up SSH port forwarding iptables rules
+    read -r _slot _host_ip _local_ip _repo _branch < "$PREVIEW_DIR/$slug"
+    ssh_port=$(slot_to_ssh_port "$_slot")
+    iptables -t nat -D PREROUTING -p tcp --dport "$ssh_port" -j DNAT --to-destination "${_local_ip}:22" 2>/dev/null || true
+    iptables -D FORWARD -p tcp -d "$_local_ip" --dport 22 -j ACCEPT 2>/dev/null || true
 
     # Remove Caddy config
     remove_caddy_config "$slug"
@@ -714,7 +739,7 @@ cmd_list() {
 
     local domain="${PREVIEW_DOMAIN:-preview.example.com}"
     local found=0
-    echo -e "${BOLD}SLUG                STATUS          BRANCH                          URL${NC}"
+    echo -e "${BOLD}SLUG                STATUS          BRANCH                          URL                                             SSH${NC}"
 
     for f in "$PREVIEW_DIR"/*; do
         [[ -f "$f" ]] || continue
@@ -737,7 +762,9 @@ cmd_list() {
         fi
 
         local url="https://${name}.${domain}"
-        printf "%-19s %-23b %-31s %s\n" "$name" "$status" "$branch" "$url"
+        local ssh_port
+        ssh_port=$(slot_to_ssh_port "$_slot")
+        printf "%-19s %-23b %-31s %-47s %s\n" "$name" "$status" "$branch" "$url" "$ssh_port"
     done
 
     if [[ $found -eq 0 ]]; then
