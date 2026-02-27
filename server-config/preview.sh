@@ -812,6 +812,7 @@ cmd_help() {
     echo "  list                                             List all preview deployments"
     echo "  logs <slug> [--follow]                           View preview build/app logs"
     echo "  build <owner/repo> <branch>                      Pre-build the preview closure"
+    echo "  ensure-ssh                                       Add SSH iptables rules for all previews"
     echo "  help                                             Show this help"
     echo ""
     echo -e "${BOLD}How it works:${NC}"
@@ -828,6 +829,40 @@ cmd_help() {
     echo "  preview destroy myapp-pr-42"
 }
 
+cmd_ensure_ssh() {
+    ensure_root
+    ensure_dirs
+
+    local count=0
+    for f in "$PREVIEW_DIR"/*; do
+        [[ -f "$f" ]] || continue
+        local name
+        name=$(basename "$f")
+        [[ "$name" == .* ]]    && continue
+        [[ "$name" == *.type ]] && continue
+        [[ "$name" == *.meta ]] && continue
+        [[ "$name" == *.sha ]]  && continue
+
+        read -r _slot _host_ip _local_ip _repo _branch < "$f"
+        local ssh_port
+        ssh_port=$(slot_to_ssh_port "$_slot")
+
+        # Add DNAT rule if not already present
+        if ! iptables -t nat -C PREROUTING -p tcp --dport "$ssh_port" -j DNAT --to-destination "${_local_ip}:22" 2>/dev/null; then
+            iptables -t nat -A PREROUTING -p tcp --dport "$ssh_port" -j DNAT --to-destination "${_local_ip}:22"
+            iptables -A FORWARD -p tcp -d "$_local_ip" --dport 22 -j ACCEPT
+            info "Added SSH rule: port $ssh_port → ${_local_ip}:22 ($name)"
+            count=$(( count + 1 ))
+        fi
+    done
+
+    if [[ $count -eq 0 ]]; then
+        success "All SSH iptables rules already in place."
+    else
+        success "Added $count SSH iptables rules."
+    fi
+}
+
 # -- Main ---------------------------------------------------------------------
 command="${1:-help}"
 shift || true
@@ -839,6 +874,7 @@ case "$command" in
     list)    cmd_list ;;
     logs)    cmd_logs "$@" ;;
     build)   cmd_build "$@" ;;
+    ensure-ssh) cmd_ensure_ssh ;;
     help|--help|-h) cmd_help ;;
     *)       fatal "Unknown command: $command. Run 'preview help' for usage." ;;
 esac
