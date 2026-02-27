@@ -30,7 +30,7 @@ pub async fn create_preview(
     }
 
     // Check per-user repo permission
-    auth::check_repo_permission(&state.db, &user.0.sub, &req.repo, &user.0.role).await?;
+    auth::check_repo_permission(&state.db, &user.0.sub, &req.repo, &user.0.role, &state.config.github_org).await?;
 
     let output = shell::create_preview(
         &state.config,

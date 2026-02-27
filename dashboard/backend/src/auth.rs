@@ -317,14 +317,21 @@ impl FromRequestParts<AppState> for MemberUser {
 // ── Permission helpers ──
 
 /// Check if a user has permission to access a repo.
-/// Admins always have access. Members/viewers need an entry in user_repo_permissions.
+/// Admins always have access. Members automatically have access to repos under
+/// the configured GitHub org. Others need an explicit entry in user_repo_permissions.
 pub async fn check_repo_permission(
     db: &PgPool,
     github_login: &str,
     repo: &str,
     role: &str,
+    github_org: &str,
 ) -> Result<(), AppError> {
     if role == "admin" {
+        return Ok(());
+    }
+
+    // Members of the org automatically have access to all repos under that org
+    if role == "member" && repo.starts_with(&format!("{github_org}/")) {
         return Ok(());
     }
 

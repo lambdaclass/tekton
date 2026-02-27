@@ -23,8 +23,9 @@ async fn check_repo_permission(
     github_login: &str,
     repo: &str,
     role: &str,
+    github_org: &str,
 ) -> Result<(), AppError> {
-    auth::check_repo_permission(db, github_login, repo, role).await
+    auth::check_repo_permission(db, github_login, repo, role, github_org).await
 }
 
 /// Delegate to auth module's check_task_ownership.
@@ -304,7 +305,7 @@ pub async fn create_task(
     }
 
     // Check per-user repo permission
-    check_repo_permission(&state.db, &user.0.sub, &req.repo, &user.0.role).await?;
+    check_repo_permission(&state.db, &user.0.sub, &req.repo, &user.0.role, &state.config.github_org).await?;
 
     // Validate parent_task_id if provided
     if let Some(ref parent_id) = req.parent_task_id {
@@ -1404,7 +1405,7 @@ pub async fn list_branches(
     Path((owner, repo)): Path<(String, String)>,
 ) -> Result<Json<Vec<String>>, AppError> {
     let full_repo = format!("{owner}/{repo}");
-    check_repo_permission(&state.db, &user.0.sub, &full_repo, &user.0.role).await?;
+    check_repo_permission(&state.db, &user.0.sub, &full_repo, &user.0.role, &state.config.github_org).await?;
     let git_id = get_git_identity(&state.db, &user.0.sub).await?;
 
     let client = reqwest::Client::new();
