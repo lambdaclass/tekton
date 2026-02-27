@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { ChevronLeft, ExternalLink } from 'lucide-react';
 import LogViewer from '@/components/LogViewer';
-import { connectPreviewLogs, getConfig } from '@/lib/api';
+import { connectPreviewLogs, getConfig, listPreviews } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -17,6 +18,12 @@ export default function PreviewDetail() {
   useEffect(() => {
     getConfig().then((cfg) => setPreviewDomain(cfg.preview_domain)).catch(() => {});
   }, []);
+
+  const { data: previews } = useQuery({
+    queryKey: ['previews'],
+    queryFn: listPreviews,
+  });
+  const preview = previews?.find((p) => p.slug === slug);
 
   useEffect(() => {
     if (!slug) return;
@@ -51,6 +58,13 @@ export default function PreviewDetail() {
           </a>
         </Button>
       </div>
+
+      {preview?.ssh_port && previewDomain && (
+        <div className="mb-6 px-3 py-2 bg-muted rounded-md">
+          <span className="text-xs text-muted-foreground">SSH: </span>
+          <code className="text-xs font-mono">ssh root@{previewDomain} -p {preview.ssh_port}</code>
+        </div>
+      )}
 
       <Card>
         <CardHeader className="py-3">
