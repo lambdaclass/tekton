@@ -193,5 +193,13 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
+    // Add AI provider columns to users table
+    for col_sql in &[
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_provider TEXT",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_api_key_encrypted TEXT",
+    ] {
+        let _ = sqlx::query(col_sql).execute(pool).await;
+    }
+
     Ok(())
 }

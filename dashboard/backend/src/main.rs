@@ -7,6 +7,7 @@ mod policies;
 mod previews;
 mod public_config;
 mod secrets;
+mod settings;
 mod shell;
 mod tasks;
 mod ws;
@@ -96,6 +97,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/admin/policies", post(policies::create_policy))
         .route("/admin/policies/{id}", put(policies::update_policy))
         .route("/admin/policies/{id}", delete(policies::delete_policy))
+        // Settings
+        .route("/settings/ai", get(settings::get_ai_settings))
+        .route("/settings/ai", put(settings::put_ai_settings))
+        .route("/settings/ai", delete(settings::delete_ai_settings))
         // Repos
         .route("/repos", get(tasks::list_repos))
         .route("/repos/{owner}/{repo}/branches", get(tasks::list_branches))

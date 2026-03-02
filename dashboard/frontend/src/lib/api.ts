@@ -244,6 +244,17 @@ export const updatePolicy = (id: number, data: { protected_branches?: string[]; 
 export const deletePolicy = (id: number) =>
   apiFetch<{ deleted: boolean }>(`/api/admin/policies/${id}`, { method: 'DELETE' });
 
+// AI Settings
+export const getAiSettings = () =>
+  apiFetch<{ provider: string | null; has_api_key: boolean }>('/api/settings/ai');
+export const setAiSettings = (data: { provider: string; api_key: string }) =>
+  apiFetch<{ provider: string | null; has_api_key: boolean }>('/api/settings/ai', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+export const deleteAiSettings = () =>
+  apiFetch<{ deleted: boolean }>('/api/settings/ai', { method: 'DELETE' });
+
 // WebSocket helpers
 export function connectPreviewLogs(slug: string): WebSocket {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
