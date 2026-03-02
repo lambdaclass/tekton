@@ -235,10 +235,10 @@ NIXEOF
 
     local toplevel_rc=0 meta_rc=0
     if [[ $toplevel_pid -ne -1 ]]; then
-        wait "$toplevel_pid"; toplevel_rc=$?
+        wait "$toplevel_pid" || toplevel_rc=$?
     fi
     if [[ $meta_pid -ne -1 ]]; then
-        wait "$meta_pid"; meta_rc=$?
+        wait "$meta_pid" || meta_rc=$?
     fi
 
     if [[ $need_toplevel -eq 1 ]] && [[ $toplevel_rc -ne 0 || ! -s "$toplevel_tmp" ]]; then
