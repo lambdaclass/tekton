@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
 import { ChevronLeft, ExternalLink } from 'lucide-react';
 import LogViewer from '@/components/LogViewer';
 import { connectPreviewLogs, getConfig } from '@/lib/api';
