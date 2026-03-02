@@ -1,7 +1,9 @@
+import { useEffect, useRef } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { getMe, logout } from '@/lib/api';
-import { LayoutDashboard, Container, BrainCircuit, LogOut } from 'lucide-react';
+import { getMe, logout, listTasks } from '@/lib/api';
+import { LayoutDashboard, Container, BrainCircuit, LogOut, Shield } from 'lucide-react';
+import { Toaster, toast } from 'sonner';
 import {
   Sidebar,
   SidebarContent,
@@ -11,14 +13,24 @@ import {
   SidebarHeader,
   SidebarInset,
   SidebarMenu,
+  SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarProvider,
   SidebarTrigger,
 } from '@/components/ui/sidebar';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
+
+const ACTIVE_STATUSES = new Set([
+  'creating_agent',
+  'cloning',
+  'running_claude',
+  'pushing',
+  'creating_preview',
+]);
 
 const NAV_ITEMS = [
   { to: '/', label: 'Home', icon: LayoutDashboard },
@@ -35,6 +47,47 @@ export default function Layout() {
     queryFn: getMe,
     retry: false,
   });
+
+  // Poll all tasks for running count + toast notifications
+  const { data: allTasksData } = useQuery({
+    queryKey: ['tasks', { per_page: 200 }],
+    queryFn: () => listTasks({ per_page: 200 }),
+    refetchInterval: 5000,
+  });
+
+  const allTasks = allTasksData?.tasks ?? [];
+  const runningCount = allTasks.filter((t) => ACTIVE_STATUSES.has(t.status)).length;
+
+  // Dynamic document title
+  useEffect(() => {
+    document.title = runningCount > 0 ? `Tekton (${runningCount} running)` : 'Tekton';
+  }, [runningCount]);
+
+  // Toast notifications on status transitions
+  const prevStatuses = useRef<Map<string, string> | null>(null);
+  useEffect(() => {
+    if (!allTasks.length) return;
+
+    const currentMap = new Map(allTasks.map((t) => [t.id, t.status]));
+
+    if (prevStatuses.current !== null) {
+      for (const [id, status] of currentMap) {
+        const prev = prevStatuses.current.get(id);
+        if (!prev) continue;
+        if (prev !== status) {
+          const task = allTasks.find((t) => t.id === id);
+          const label = task?.name || id.slice(0, 8);
+          if (status === 'completed') {
+            toast.success(`Task ${label} completed`);
+          } else if (status === 'failed') {
+            toast.error(`Task ${label} failed`);
+          }
+        }
+      }
+    }
+
+    prevStatuses.current = currentMap;
+  }, [allTasks]);
 
   if (isLoading) {
     return (
@@ -109,8 +162,25 @@ export default function Layout() {
                         <span>{item.label}</span>
                       </Link>
                     </SidebarMenuButton>
+                    {item.to === '/tasks' && runningCount > 0 && (
+                      <SidebarMenuBadge>{runningCount}</SidebarMenuBadge>
+                    )}
                   </SidebarMenuItem>
                 ))}
+                {user.role === 'admin' && (
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={isActive('/admin')}
+                      tooltip="Admin"
+                    >
+                      <Link to="/admin">
+                        <Shield />
+                        <span>Admin</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                )}
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
@@ -123,6 +193,9 @@ export default function Layout() {
                   <AvatarFallback className="text-[10px]">{initials}</AvatarFallback>
                 </Avatar>
                 <span className="truncate text-xs">{user.login}</span>
+                <Badge variant="outline" className="ml-auto text-[10px] px-1.5 py-0">
+                  {user.role}
+                </Badge>
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
@@ -139,13 +212,14 @@ export default function Layout() {
           <SidebarTrigger className="-ml-1" />
           <Separator orientation="vertical" className="mr-2 h-4" />
           <span className="text-sm text-muted-foreground">
-            {NAV_ITEMS.find((n) => isActive(n.to))?.label ?? ''}
+            {NAV_ITEMS.find((n) => isActive(n.to))?.label ?? (isActive('/admin') ? 'Admin' : '')}
           </span>
         </header>
         <main className="flex-1 p-6">
           <Outlet />
         </main>
       </SidebarInset>
+      <Toaster position="bottom-right" richColors closeButton />
     </SidebarProvider>
   );
 }

@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge';
 
 export default function Previews() {
   const queryClient = useQueryClient();
+
   const { data: previews, isLoading } = useQuery({
     queryKey: ['previews'],
     queryFn: listPreviews,

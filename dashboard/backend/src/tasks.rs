@@ -6,14 +6,37 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use crate::auth::AuthUser;
+use crate::auth::{self, AuthUser, MemberUser};
 use crate::config::Config;
 use crate::error::AppError;
 use crate::models::{
     CreateTaskRequest, ListMessagesQuery, ListTasksQuery, PaginatedTasks, SendMessageRequest,
     Task, TaskAction, TaskLog, TaskMessage, UpdateTaskNameRequest,
 };
+use crate::policies;
+use crate::secrets;
 use crate::shell;
+
+/// Delegate to auth module's check_repo_permission.
+async fn check_repo_permission(
+    db: &PgPool,
+    github_login: &str,
+    repo: &str,
+    role: &str,
+    github_org: &str,
+) -> Result<(), AppError> {
+    auth::check_repo_permission(db, github_login, repo, role, github_org).await
+}
+
+/// Delegate to auth module's check_task_ownership.
+async fn check_task_ownership(
+    db: &PgPool,
+    task_id: &str,
+    github_login: &str,
+    role: &str,
+) -> Result<(), AppError> {
+    auth::check_task_ownership(db, task_id, github_login, role).await
+}
 
 #[derive(Clone)]
 struct GitIdentity {
@@ -66,7 +89,7 @@ pub fn new_task_channels() -> TaskChannels {
 const MAX_UPLOAD_SIZE: usize = 10 * 1024 * 1024; // 10MB
 
 pub async fn upload_image(
-    _user: AuthUser,
+    _user: MemberUser,
     State(state): State<crate::AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<serde_json::Value>, AppError> {
@@ -131,7 +154,7 @@ pub async fn upload_image(
 }
 
 pub async fn list_tasks(
-    _user: AuthUser,
+    user: AuthUser,
     State(state): State<crate::AppState>,
     Query(params): Query<ListTasksQuery>,
 ) -> Result<Json<PaginatedTasks>, AppError> {
@@ -146,6 +169,13 @@ pub async fn list_tasks(
 
     // We'll collect bind values as strings for the dynamic query
     let mut bind_values: Vec<String> = Vec::new();
+
+    // Non-admin users only see their own tasks
+    if user.0.role != "admin" {
+        conditions.push(format!("created_by = ${bind_idx}"));
+        bind_values.push(user.0.sub.clone());
+        bind_idx += 1;
+    }
 
     if let Some(ref status) = params.status {
         conditions.push(format!("status = ${bind_idx}"));
@@ -210,10 +240,11 @@ pub async fn list_tasks(
 }
 
 pub async fn get_task(
-    _user: AuthUser,
+    user: AuthUser,
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Task>, AppError> {
+    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
@@ -231,10 +262,12 @@ pub async fn get_task(
 }
 
 pub async fn get_subtasks(
-    _user: AuthUser,
+    user: AuthUser,
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<Task>>, AppError> {
+    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+
     // Verify parent exists
     let _ = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tasks WHERE id = $1")
         .bind(&id)
@@ -257,7 +290,7 @@ pub async fn get_subtasks(
 }
 
 pub async fn create_task(
-    user: AuthUser,
+    user: MemberUser,
     State(state): State<crate::AppState>,
     Json(req): Json<CreateTaskRequest>,
 ) -> Result<Json<Task>, AppError> {
@@ -270,6 +303,9 @@ pub async fn create_task(
             req.repo
         )));
     }
+
+    // Check per-user repo permission
+    check_repo_permission(&state.db, &user.0.sub, &req.repo, &user.0.role, &state.config.github_org).await?;
 
     // Validate parent_task_id if provided
     if let Some(ref parent_id) = req.parent_task_id {
@@ -342,12 +378,13 @@ pub async fn create_task(
     let repo = req.repo.clone();
     let base = base_branch.to_string();
     let image_url_json2 = image_url_json.clone();
+    let custom_branch = req.custom_branch_name.clone();
     let channels = state.task_channels.clone();
 
     tokio::spawn(async move {
         let agent_name = format!("a-{short}");
         let result = run_task_pipeline(
-            &config, &db, &task_id, &short, &prompt, &repo, &base, image_url_json2.as_deref(), &git_id, tx.clone(),
+            &config, &db, &task_id, &short, &prompt, &repo, &base, image_url_json2.as_deref(), &git_id, custom_branch, tx.clone(),
         )
         .await;
 
@@ -380,6 +417,7 @@ async fn run_task_pipeline(
     base_branch: &str,
     image_url_json: Option<&str>,
     git_id: &GitIdentity,
+    custom_branch_name: Option<String>,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
     let agent_name = format!("a-{short_id}");
@@ -407,9 +445,32 @@ async fn run_task_pipeline(
         .execute(db)
         .await;
 
-    // Use the task name for the branch (with short_id suffix for uniqueness)
-    let slug = slugify_for_branch(&task_name);
-    let branch_name = format!("{slug}-{short_id}");
+    // Use custom branch name if provided, otherwise derive from the task name
+    let branch_name = match custom_branch_name {
+        Some(ref name) if !name.is_empty() => {
+            slugify_for_branch(name)
+        }
+        _ => {
+            let slug = slugify_for_branch(&task_name);
+            format!("{slug}-{short_id}")
+        }
+    };
+
+    // Load repo policy (if any) for branch protection and tool constraints
+    let policy = policies::load_policy_for_repo(db, repo).await?;
+    if let Some(ref pol) = policy {
+        // Verify the feature branch name doesn't collide with a protected branch
+        if pol.protected_branches.contains(&branch_name) {
+            return Err(AppError::BadRequest(format!(
+                "Branch '{}' is protected by repo policy. Choose a different branch name.",
+                branch_name
+            )));
+        }
+        log_and_send(
+            db, task_id, &tx,
+            &format!("[POLICY] Loaded policy for {repo}: {} protected branch(es)", pol.protected_branches.len()),
+        );
+    }
 
     // Step 1: Create agent container
     update_task_status(db, task_id, "creating_agent", None).await?;
@@ -433,8 +494,46 @@ async fn run_task_pipeline(
     shell::agent_exec(&agent_name, &clone_cmd, tx.clone()).await?;
     update_task_field(db, task_id, "branch_name", &branch_name).await?;
 
+    // Step 2b: Load and inject secrets
+    let repo_secrets = secrets::load_secrets_for_repo(db, &config.secrets_encryption_key, repo).await?;
+    if !repo_secrets.is_empty() {
+        log_and_send(db, task_id, &tx, &format!("[STEP] Injecting {} secret(s)...", repo_secrets.len()));
+        write_secrets_env_file(&agent_name, &repo_secrets, tx.clone()).await?;
+    }
+
     // Step 3: Copy images and run Claude (streaming)
-    let effective_prompt = augment_prompt_with_images(config, &agent_name, image_url_json, prompt, &tx).await?;
+    let mut effective_prompt = augment_prompt_with_images(config, &agent_name, image_url_json, prompt, &tx).await?;
+
+    // Inject policy constraints into the prompt so Claude knows its boundaries
+    if let Some(ref pol) = policy {
+        let mut constraints = Vec::new();
+        if !pol.protected_branches.is_empty() {
+            constraints.push(format!(
+                "PROTECTED BRANCHES (do NOT push directly to these): {}",
+                pol.protected_branches.join(", ")
+            ));
+        }
+        if let Some(ref tools) = pol.allowed_tools {
+            if let Some(deny) = tools.get("deny").and_then(|v| v.as_array()) {
+                let names: Vec<&str> = deny.iter().filter_map(|v| v.as_str()).collect();
+                if !names.is_empty() {
+                    constraints.push(format!("DENIED TOOLS (do NOT use): {}", names.join(", ")));
+                }
+            }
+            if let Some(allow) = tools.get("allow").and_then(|v| v.as_array()) {
+                let names: Vec<&str> = allow.iter().filter_map(|v| v.as_str()).collect();
+                if !names.is_empty() {
+                    constraints.push(format!("ALLOWED TOOLS (use ONLY these): {}", names.join(", ")));
+                }
+            }
+        }
+        if !constraints.is_empty() {
+            let policy_block = constraints.join("\n");
+            effective_prompt = format!(
+                "REPO POLICY CONSTRAINTS:\n{policy_block}\n\n{effective_prompt}"
+            );
+        }
+    }
 
     update_task_status(db, task_id, "running_claude", None).await?;
     log_and_send(db, task_id, &tx, "[STEP] Running Claude...");
@@ -549,7 +648,7 @@ async fn run_claude_streaming(
     let oauth_token = read_claude_oauth_token().await?;
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
-        "export CLAUDE_CODE_OAUTH_TOKEN='{oauth_token}' && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose -p '{escaped_prompt}'"
+        "source /home/agent/.env.sh 2>/dev/null ; export CLAUDE_CODE_OAUTH_TOKEN='{oauth_token}' && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose -p '{escaped_prompt}'"
     );
     shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
 }
@@ -563,7 +662,7 @@ async fn run_claude_continue(
     let oauth_token = read_claude_oauth_token().await?;
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
-        "export CLAUDE_CODE_OAUTH_TOKEN='{oauth_token}' && cd /home/agent/repo && \
+        "source /home/agent/.env.sh 2>/dev/null ; export CLAUDE_CODE_OAUTH_TOKEN='{oauth_token}' && cd /home/agent/repo && \
          claude --dangerously-skip-permissions --output-format stream-json --verbose \
          --continue -p '{escaped_prompt}'"
     );
@@ -1305,6 +1404,8 @@ pub async fn list_branches(
     State(state): State<crate::AppState>,
     Path((owner, repo)): Path<(String, String)>,
 ) -> Result<Json<Vec<String>>, AppError> {
+    let full_repo = format!("{owner}/{repo}");
+    check_repo_permission(&state.db, &user.0.sub, &full_repo, &user.0.role, &state.config.github_org).await?;
     let git_id = get_git_identity(&state.db, &user.0.sub).await?;
 
     let client = reqwest::Client::new();
@@ -1356,16 +1457,12 @@ pub async fn list_branches(
 // ── Messages ──
 
 pub async fn list_messages(
-    _user: AuthUser,
+    user: AuthUser,
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
     Query(params): Query<ListMessagesQuery>,
 ) -> Result<Json<Vec<TaskMessage>>, AppError> {
-    // Verify task exists
-    let _ = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tasks WHERE id = $1")
-        .bind(&id)
-        .fetch_one(&state.db)
-        .await?;
+    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
 
     let messages = if let Some(before_id) = params.before_id {
         let limit = params.limit.unwrap_or(100);
@@ -1407,11 +1504,13 @@ pub async fn list_messages(
 }
 
 pub async fn send_message(
-    user: AuthUser,
+    user: MemberUser,
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
     Json(req): Json<SendMessageRequest>,
 ) -> Result<Json<TaskMessage>, AppError> {
+    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+
     // Verify task exists
     let task_exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tasks WHERE id = $1")
         .bind(&id)
@@ -1459,10 +1558,11 @@ pub async fn send_message(
 // ── Actions endpoint ──
 
 pub async fn list_actions(
-    _user: AuthUser,
+    user: AuthUser,
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<TaskAction>>, AppError> {
+    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
     let actions = sqlx::query_as::<_, TaskAction>(
         "SELECT id, task_id, action_type, tool_name, tool_input, summary, \
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at \
@@ -1475,6 +1575,38 @@ pub async fn list_actions(
 }
 
 // ── Helpers ──
+
+/// Write a .env.sh script with exported secrets into the agent container.
+async fn write_secrets_env_file(
+    agent_name: &str,
+    repo_secrets: &[(String, String)],
+    tx: broadcast::Sender<String>,
+) -> Result<(), AppError> {
+    let env_lines: Vec<String> = repo_secrets
+        .iter()
+        .map(|(name, value)| format!("export {}='{}'", name, value.replace('\'', "'\\''")))
+        .collect();
+    let env_script = env_lines.join("\n");
+    let escaped_script = env_script.replace('\'', "'\\''");
+    shell::agent_exec(
+        agent_name,
+        &format!("printf '%s\\n' '{escaped_script}' > /home/agent/.env.sh"),
+        tx,
+    )
+    .await
+}
+
+/// Replace any occurrence of secret values in a log message with [REDACTED].
+#[allow(dead_code)]
+pub fn scrub_secrets(msg: &str, repo_secrets: &[(String, String)]) -> String {
+    let mut result = msg.to_string();
+    for (_, value) in repo_secrets {
+        if !value.is_empty() {
+            result = result.replace(value.as_str(), "[REDACTED]");
+        }
+    }
+    result
+}
 
 fn log_and_send(
     db: &PgPool,
@@ -1544,10 +1676,12 @@ async fn update_task_field(
 }
 
 pub async fn reopen_task(
-    user: AuthUser,
+    user: MemberUser,
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Task>, AppError> {
+    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
@@ -1633,11 +1767,12 @@ pub async fn reopen_task(
 }
 
 pub async fn update_task_name(
-    _user: AuthUser,
+    user: MemberUser,
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
     Json(req): Json<UpdateTaskNameRequest>,
 ) -> Result<Json<Task>, AppError> {
+    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
     let _ = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
@@ -1706,6 +1841,13 @@ async fn run_reopen_pipeline(
          git config user.name '{escaped_name}' && git config user.email '{escaped_email}'"
     );
     shell::agent_exec(&agent_name, &clone_cmd, tx.clone()).await?;
+
+    // Step 2b: Load and inject secrets
+    let repo_secrets = secrets::load_secrets_for_repo(db, &config.secrets_encryption_key, repo).await?;
+    if !repo_secrets.is_empty() {
+        log_and_send(db, task_id, &tx, &format!("[STEP] Injecting {} secret(s)...", repo_secrets.len()));
+        write_secrets_env_file(&agent_name, &repo_secrets, tx.clone()).await?;
+    }
 
     // Step 3: Go straight into follow-up loop
     // branch_pushed starts as true since the branch already exists on GitHub
@@ -1835,10 +1977,12 @@ async fn generate_pr_body(
 }
 
 pub async fn create_pr(
-    user: AuthUser,
+    user: MemberUser,
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Task>, AppError> {
+    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
@@ -1934,11 +2078,12 @@ pub async fn create_pr(
 }
 
 pub async fn link_pr(
-    _user: AuthUser,
+    user: MemberUser,
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
     Json(req): Json<crate::models::LinkPrRequest>,
 ) -> Result<Json<Task>, AppError> {
+    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
     // Extract PR number from URL (e.g. https://github.com/owner/repo/pull/123)
     let pr_number: Option<i32> = req.pr_url
         .rsplit('/')
@@ -1970,10 +2115,11 @@ pub async fn link_pr(
 }
 
 pub async fn get_task_logs(
-    _user: AuthUser,
+    user: AuthUser,
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<TaskLog>>, AppError> {
+    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
     let logs = sqlx::query_as::<_, TaskLog>(
         "SELECT id, task_id, TO_CHAR(timestamp, 'YYYY-MM-DD HH24:MI:SS') as timestamp, line \
          FROM task_logs WHERE task_id = $1 ORDER BY id ASC",

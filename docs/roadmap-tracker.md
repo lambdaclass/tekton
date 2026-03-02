@@ -31,8 +31,8 @@ The dependency chain is: **persistence → identity/RBAC → policy engine → e
 
 | # | Issue | Title | Status | Depends on |
 |---|-------|-------|--------|------------|
-| 1 | [#22](https://github.com/lambdaclass/tekton/issues/22) | Task and prompt persistence | Not started | — |
-| 2 | [#23](https://github.com/lambdaclass/tekton/issues/23) | Security and access control (RBAC) | Not started | #22 |
+| 1 | [#22](https://github.com/lambdaclass/tekton/issues/22) | Task and prompt persistence | **Done** | — |
+| 2 | [#23](https://github.com/lambdaclass/tekton/issues/23) | Security and access control (RBAC) | **Done** | #22 |
 | 3 | [#24](https://github.com/lambdaclass/tekton/issues/24) | Policy engine and sandbox controls | Not started | #22, #23 |
 | 4 | [#25](https://github.com/lambdaclass/tekton/issues/25) | Fine-grained tool approval UX | Not started | #24 |
 | 5 | [#26](https://github.com/lambdaclass/tekton/issues/26) | Secrets provenance and leak prevention | Not started | #23, #24 |
@@ -47,16 +47,16 @@ These are independent of the P0 dependency chain and can be done as palette clea
 
 | Issue | Title | Status |
 |-------|-------|--------|
-| [#21](https://github.com/lambdaclass/tekton/issues/21) | Remove update button from UI | Not started |
-| [#19](https://github.com/lambdaclass/tekton/issues/19) | Fix screenshot capture in Nix VM | Not started |
-| [#20](https://github.com/lambdaclass/tekton/issues/20) | Surface VM startup logs in the UI | Not started |
-| [#82](https://github.com/lambdaclass/tekton/issues/82) | Custom task naming | Not started |
+| [#21](https://github.com/lambdaclass/tekton/issues/21) | Remove update button from UI | **Done** |
+| [#19](https://github.com/lambdaclass/tekton/issues/19) | Fix screenshot capture in Nix VM | **Done** |
+| [#20](https://github.com/lambdaclass/tekton/issues/20) | Surface VM startup logs in the UI | **Done** |
+| [#82](https://github.com/lambdaclass/tekton/issues/82) | Custom task naming | **Done** |
 | [#84](https://github.com/lambdaclass/tekton/issues/84) | Mark task as failed | Not started |
-| [#81](https://github.com/lambdaclass/tekton/issues/81) | Branch selector dropdown | Not started |
-| [#83](https://github.com/lambdaclass/tekton/issues/83) | Task-to-PR traceability | Not started |
-| [#79](https://github.com/lambdaclass/tekton/issues/79) | Dynamic task names | Not started |
-| [#80](https://github.com/lambdaclass/tekton/issues/80) | One-click PR creation | Not started |
-| [#41](https://github.com/lambdaclass/tekton/issues/41) | Repo classifier fallback UX | Not started |
+| [#81](https://github.com/lambdaclass/tekton/issues/81) | Branch selector dropdown | **Done** |
+| [#83](https://github.com/lambdaclass/tekton/issues/83) | Task-to-PR traceability | **Done** |
+| [#79](https://github.com/lambdaclass/tekton/issues/79) | Dynamic task names | **Done** |
+| [#80](https://github.com/lambdaclass/tekton/issues/80) | One-click PR creation | **Done** |
+| [#41](https://github.com/lambdaclass/tekton/issues/41) | Repo classifier fallback UX | **Done** |
 
 ## P1: Scale and collaboration (after P0)
 

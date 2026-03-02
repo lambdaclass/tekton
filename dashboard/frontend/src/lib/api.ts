@@ -1,6 +1,7 @@
 export interface UserInfo {
   login: string;
   name: string;
+  role: string;
 }
 
 export interface Preview {
@@ -151,7 +152,7 @@ export const listTasks = (params?: ListTasksParams) => {
   return apiFetch<PaginatedTasks>(`/api/tasks${qs ? `?${qs}` : ''}`);
 };
 export const getTask = (id: string) => apiFetch<Task>(`/api/tasks/${id}`);
-export const createTask = (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[] }) =>
+export const createTask = (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[]; custom_branch_name?: string }) =>
   apiFetch<Task>('/api/tasks', {
     method: 'POST',
     body: JSON.stringify(data),
@@ -195,6 +196,53 @@ export function parseImageUrls(raw: string | null | undefined): string[] {
 export const listRepos = () => apiFetch<string[]>('/api/repos');
 export const listBranches = (owner: string, repo: string) =>
   apiFetch<string[]>(`/api/repos/${owner}/${repo}/branches`);
+
+// Admin
+export const listUsers = () =>
+  apiFetch<{ login: string; name: string; role: string }[]>('/api/admin/users');
+export const setUserRole = (login: string, role: string) =>
+  apiFetch<{ login: string; role: string }>(`/api/admin/users/${encodeURIComponent(login)}/role`, {
+    method: 'PUT',
+    body: JSON.stringify({ role }),
+  });
+export const getUserRepos = (login: string) =>
+  apiFetch<string[]>(`/api/admin/users/${encodeURIComponent(login)}/repos`);
+export const setUserRepos = (login: string, repos: string[]) =>
+  apiFetch<string[]>(`/api/admin/users/${encodeURIComponent(login)}/repos`, {
+    method: 'PUT',
+    body: JSON.stringify({ repos }),
+  });
+export const listSecrets = (repo?: string) => {
+  const qs = repo ? `?repo=${encodeURIComponent(repo)}` : '';
+  return apiFetch<{ id: number; repo: string; name: string; created_by: string | null; created_at: string }[]>(
+    `/api/admin/secrets${qs}`,
+  );
+};
+export const createSecret = (data: { repo: string; name: string; value: string }) =>
+  apiFetch<unknown>('/api/admin/secrets', { method: 'POST', body: JSON.stringify(data) });
+export const deleteSecret = (id: number) =>
+  apiFetch<{ ok: boolean }>(`/api/admin/secrets/${id}`, { method: 'DELETE' });
+
+export interface RepoPolicy {
+  id: number;
+  repo: string;
+  protected_branches: string[];
+  allowed_tools: { allow?: string[]; deny?: string[] } | null;
+  network_egress: { allowlist?: string[]; denylist?: string[]; default?: string } | null;
+  max_cost_usd: number | null;
+  require_approval_above_usd: number | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export const listPolicies = () => apiFetch<RepoPolicy[]>('/api/admin/policies');
+export const createPolicy = (data: { repo: string; protected_branches?: string[]; allowed_tools?: any; network_egress?: any; max_cost_usd?: number | null; require_approval_above_usd?: number | null }) =>
+  apiFetch<RepoPolicy>('/api/admin/policies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+export const updatePolicy = (id: number, data: { protected_branches?: string[]; allowed_tools?: any; network_egress?: any; max_cost_usd?: number | null; require_approval_above_usd?: number | null }) =>
+  apiFetch<RepoPolicy>(`/api/admin/policies/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+export const deletePolicy = (id: number) =>
+  apiFetch<{ deleted: boolean }>(`/api/admin/policies/${id}`, { method: 'DELETE' });
 
 // WebSocket helpers
 export function connectPreviewLogs(slug: string): WebSocket {

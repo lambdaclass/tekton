@@ -15,7 +15,9 @@ export default function PreviewDetail() {
   const [previewDomain, setPreviewDomain] = useState<string | null>(null);
 
   useEffect(() => {
-    getConfig().then((cfg) => setPreviewDomain(cfg.preview_domain)).catch(() => {});
+    getConfig().then((cfg) => {
+      setPreviewDomain(cfg.preview_domain);
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {

@@ -3,20 +3,24 @@ mod config;
 mod db;
 mod error;
 mod models;
+mod policies;
 mod previews;
 mod public_config;
+mod secrets;
 mod shell;
 mod tasks;
 mod ws;
+
+use std::net::SocketAddr;
+use std::sync::Arc;
 
 use axum::extract::Request;
 use axum::http::{header, HeaderValue};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::Router;
 use sqlx::PgPool;
-use std::sync::Arc;
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
@@ -78,6 +82,20 @@ async fn main() -> anyhow::Result<()> {
         .route("/tasks/{id}/link-pr", post(tasks::link_pr))
         // Uploads
         .route("/uploads", post(tasks::upload_image))
+        // Admin: Users
+        .route("/admin/users", get(auth::list_users))
+        .route("/admin/users/{login}/role", put(auth::set_user_role))
+        .route("/admin/users/{login}/repos", get(auth::get_user_repos))
+        .route("/admin/users/{login}/repos", put(auth::set_user_repos))
+        // Admin: Secrets
+        .route("/admin/secrets", get(secrets::list_secrets))
+        .route("/admin/secrets", post(secrets::create_secret))
+        .route("/admin/secrets/{id}", delete(secrets::delete_secret))
+        // Admin: Policies
+        .route("/admin/policies", get(policies::list_policies))
+        .route("/admin/policies", post(policies::create_policy))
+        .route("/admin/policies/{id}", put(policies::update_policy))
+        .route("/admin/policies/{id}", delete(policies::delete_policy))
         // Repos
         .route("/repos", get(tasks::list_repos))
         .route("/repos/{owner}/{repo}/branches", get(tasks::list_branches))
@@ -89,8 +107,16 @@ async fn main() -> anyhow::Result<()> {
     let index_html = std::fs::read_to_string(format!("{static_dir}/index.html"))
         .unwrap_or_else(|_| "<h1>index.html not found</h1>".into());
 
+    // Internal routes (localhost-only, not behind /api so Caddy won't proxy them)
+    let internal = Router::new()
+        .route(
+            "/internal/secrets/{owner}/{repo}",
+            get(secrets::internal_list_secrets),
+        );
+
     let app = Router::new()
         .nest("/api", api)
+        .merge(internal)
         .fallback_service(
             ServeDir::new(&static_dir)
                 .append_index_html_on_directories(true)
@@ -106,7 +132,11 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     tracing::info!("Dashboard listening on {listen_addr}");
     tracing::info!("Serving static files from {static_dir}");
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }

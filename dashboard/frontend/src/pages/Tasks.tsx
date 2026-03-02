@@ -1,22 +1,47 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
-import { listTasks, createTask, listRepos, uploadImage, type ListTasksParams } from '@/lib/api';
+import { Link, useNavigate } from 'react-router-dom';
+import { listTasks, createTask, listRepos, uploadImage, getMe, type ListTasksParams } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import { statusVariant } from '@/lib/status';
+import { timeAgo, formatTokenCost } from '@/lib/utils';
 import VoiceInput from '@/components/VoiceInput';
 import BranchCombobox from '@/components/BranchCombobox';
-import { ImagePlus, X, ChevronLeft, ChevronRight, Search } from 'lucide-react';
+import { ImagePlus, X, ChevronLeft, ChevronRight, Search, BrainCircuit } from 'lucide-react';
 
 const STATUS_OPTIONS = ['all', 'pending', 'creating_agent', 'cloning', 'running_claude', 'pushing', 'creating_preview', 'awaiting_followup', 'completed', 'failed'];
 
+function SkeletonCard() {
+  return (
+    <Card>
+      <CardContent className="py-4">
+        <div className="flex items-center justify-between mb-2">
+          <Skeleton className="h-4 w-16" />
+          <Skeleton className="h-5 w-20 rounded-full" />
+        </div>
+        <Skeleton className="h-4 w-3/4 mb-1" />
+        <Skeleton className="h-4 w-full mb-2" />
+        <div className="flex items-center gap-4">
+          <Skeleton className="h-3 w-24" />
+          <Skeleton className="h-3 w-16" />
+          <Skeleton className="h-3 w-12 ml-auto" />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function Tasks() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMe });
 
   // Filter / pagination state
   const [searchInput, setSearchInput] = useState('');
@@ -24,6 +49,10 @@ export default function Tasks() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [page, setPage] = useState(1);
   const perPage = 50;
+
+  // Keyboard navigation
+  const [selectedIndex, setSelectedIndex] = useState(-1);
+  const cardRefs = useRef<(HTMLAnchorElement | null)[]>([]);
 
   // Debounce search input
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -61,6 +90,7 @@ export default function Tasks() {
   const [baseBranch, setBaseBranch] = useState('main');
   const [imageFiles, setImageFiles] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
+  const [customBranch, setCustomBranch] = useState('');
   const [uploading, setUploading] = useState(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
@@ -68,6 +98,51 @@ export default function Tasks() {
     queryKey: ['repos'],
     queryFn: listRepos,
   });
+
+  // Keyboard shortcuts
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    const tag = (e.target as HTMLElement).tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+    if (e.key === 'n') {
+      e.preventDefault();
+      setShowCreate((prev) => !prev);
+      return;
+    }
+    if (e.key === 'Escape') {
+      setShowCreate(false);
+      return;
+    }
+    if (!tasks?.length) return;
+
+    if (e.key === 'j') {
+      e.preventDefault();
+      setSelectedIndex((prev) => Math.min(prev + 1, tasks.length - 1));
+    } else if (e.key === 'k') {
+      e.preventDefault();
+      setSelectedIndex((prev) => Math.max(prev - 1, 0));
+    } else if (e.key === 'Enter' && selectedIndex >= 0 && selectedIndex < tasks.length) {
+      e.preventDefault();
+      navigate(`/tasks/${tasks[selectedIndex].id}`);
+    }
+  }, [tasks, selectedIndex, navigate]);
+
+  useEffect(() => {
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [handleKeyDown]);
+
+  // Auto-scroll selected card into view
+  useEffect(() => {
+    if (selectedIndex >= 0 && cardRefs.current[selectedIndex]) {
+      cardRefs.current[selectedIndex]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [selectedIndex]);
+
+  // Reset selection when tasks change
+  useEffect(() => {
+    setSelectedIndex(-1);
+  }, [search, statusFilter, page]);
 
   const handlePromptChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setPrompt(e.target.value);
@@ -101,7 +176,7 @@ export default function Tasks() {
   };
 
   const createMutation = useMutation({
-    mutationFn: async (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[] }) => {
+    mutationFn: async (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[]; custom_branch_name?: string }) => {
       return createTask(data);
     },
     onSuccess: () => {
@@ -110,6 +185,7 @@ export default function Tasks() {
       setPrompt('');
       setRepo('');
       setBaseBranch('main');
+      setCustomBranch('');
       setImageFiles([]);
       setImagePreviews([]);
     },
@@ -136,6 +212,7 @@ export default function Tasks() {
       repo,
       base_branch: baseBranch || undefined,
       image_urls,
+      custom_branch_name: customBranch || undefined,
     });
   };
 
@@ -143,12 +220,14 @@ export default function Tasks() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">Claude Tasks</h1>
-        <Button
-          variant={showCreate ? 'outline' : 'default'}
-          onClick={() => setShowCreate(!showCreate)}
-        >
-          {showCreate ? 'Cancel' : 'New Task'}
-        </Button>
+        {me?.role !== 'viewer' && (
+          <Button
+            variant={showCreate ? 'outline' : 'default'}
+            onClick={() => setShowCreate(!showCreate)}
+          >
+            {showCreate ? 'Cancel' : 'New Task'}
+          </Button>
+        )}
       </div>
 
       {showCreate && (
@@ -253,6 +332,15 @@ export default function Tasks() {
                     />
                   </div>
                 </div>
+                <div className="space-y-2">
+                  <Label htmlFor="custom-branch">Branch Name (optional)</Label>
+                  <Input
+                    id="custom-branch"
+                    value={customBranch}
+                    onChange={(e) => setCustomBranch(e.target.value)}
+                    placeholder="Auto-generated from task name if left blank"
+                  />
+                </div>
               </div>
               <Button type="submit" disabled={createMutation.isPending || uploading}>
                 {uploading ? 'Uploading images...' : createMutation.isPending ? 'Creating...' : 'Submit Task'}
@@ -290,53 +378,104 @@ export default function Tasks() {
       </div>
 
       {isLoading ? (
-        <p className="text-muted-foreground">Loading tasks...</p>
-      ) : !tasks?.length ? (
-        <p className="text-muted-foreground">No tasks found.</p>
-      ) : (
-        <div className="space-y-3">
-          {tasks.map((t) => (
-            <Link key={t.id} to={`/tasks/${t.id}`}>
-              <Card className="hover:border-muted-foreground/25 transition-colors">
-                <CardContent className="py-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="font-mono text-sm text-muted-foreground">
-                      {t.id.slice(0, 8)}
-                    </span>
-                    <Badge variant={statusVariant(t.status).variant} className={statusVariant(t.status).className}>{t.status}</Badge>
-                  </div>
-                  {t.name && (
-                    <p className="text-sm font-medium mb-1">{t.name}</p>
-                  )}
-                  <p className="text-sm line-clamp-2 mb-2 text-muted-foreground">{t.prompt}</p>
-                  <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                    <span>{t.repo}</span>
-                    <span>{t.base_branch}</span>
-                    {t.pr_url && (
-                      <a
-                        href={t.pr_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="text-blue-400 hover:text-blue-300"
-                      >
-                        PR #{t.pr_number}
-                      </a>
-                    )}
-                    {t.preview_url && (
-                      <span className="text-green-400">{t.preview_url}</span>
-                    )}
-                    {(t.total_input_tokens || t.total_output_tokens) ? (
-                      <span>{((t.total_input_tokens ?? 0) + (t.total_output_tokens ?? 0)).toLocaleString()} tokens</span>
-                    ) : null}
-                    <span className="ml-auto">
-                      {new Date(t.created_at).toLocaleString()}
-                    </span>
-                  </div>
-                </CardContent>
-              </Card>
-            </Link>
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <SkeletonCard key={i} />
           ))}
+        </div>
+      ) : !tasks?.length ? (
+        <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
+          <BrainCircuit className="size-12 mb-4 opacity-50" />
+          <p className="text-lg font-medium mb-1">
+            {search || statusFilter !== 'all' ? 'No matching tasks' : 'No tasks yet'}
+          </p>
+          <p className="text-sm">
+            {search || statusFilter !== 'all'
+              ? 'Try adjusting your search or filters'
+              : 'Create a new task to get started'}
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+          {tasks.map((t, index) => {
+            const sv = statusVariant(t.status);
+            const StatusIcon = sv.icon;
+            return (
+              <Link
+                key={t.id}
+                to={`/tasks/${t.id}`}
+                ref={(el) => { cardRefs.current[index] = el; }}
+              >
+                <Card className={`hover:border-muted-foreground/25 transition-colors ${index === selectedIndex ? 'ring-2 ring-ring' : ''}`}>
+                  <CardContent className="py-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="font-mono text-sm text-muted-foreground">
+                        {t.id.slice(0, 8)}
+                      </span>
+                      <Badge variant={sv.variant} className={sv.className}>
+                        {StatusIcon && <StatusIcon className={sv.spin ? 'animate-spin' : ''} />}
+                        {t.status}
+                      </Badge>
+                    </div>
+                    {t.name && (
+                      <p className="text-sm font-medium mb-1">{t.name}</p>
+                    )}
+                    <p className="text-sm line-clamp-2 mb-2 text-muted-foreground">{t.prompt}</p>
+                    <div className="flex items-center gap-4 text-xs text-muted-foreground min-w-0">
+                      <span className="shrink-0">{t.repo}</span>
+                      <span className="shrink-0">{t.base_branch}</span>
+                      {t.pr_url && (
+                        <a
+                          href={t.pr_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="shrink-0 text-blue-400 hover:text-blue-300"
+                        >
+                          PR #{t.pr_number}
+                        </a>
+                      )}
+                      {t.preview_url && (
+                        <a
+                          href={t.preview_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-green-400 hover:text-green-300 truncate min-w-0"
+                          title={t.preview_url}
+                        >
+                          {t.preview_url.replace(/^https?:\/\//, '')}
+                        </a>
+                      )}
+                      {(t.total_input_tokens || t.total_output_tokens) ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="shrink-0 cursor-default">{formatTokenCost(t.total_input_tokens ?? 0, t.total_output_tokens ?? 0)}</span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {(t.total_input_tokens ?? 0).toLocaleString()} input + {(t.total_output_tokens ?? 0).toLocaleString()} output tokens
+                          </TooltipContent>
+                        </Tooltip>
+                      ) : null}
+                      <span className="ml-auto shrink-0 flex items-center gap-1.5">
+                        {t.created_by && (
+                          <img
+                            src={`https://github.com/${t.created_by}.png?size=20`}
+                            className="size-4 rounded-full"
+                            loading="lazy"
+                            alt=""
+                          />
+                        )}
+                        <span title={new Date(t.created_at).toLocaleString()}>
+                          {timeAgo(t.created_at)}
+                        </span>
+                      </span>
+                    </div>
+                  </CardContent>
+                </Card>
+              </Link>
+            );
+          })}
         </div>
       )}
 

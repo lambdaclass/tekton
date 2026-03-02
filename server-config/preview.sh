@@ -235,10 +235,10 @@ NIXEOF
 
     local toplevel_rc=0 meta_rc=0
     if [[ $toplevel_pid -ne -1 ]]; then
-        wait "$toplevel_pid"; toplevel_rc=$?
+        wait "$toplevel_pid" || toplevel_rc=$?
     fi
     if [[ $meta_pid -ne -1 ]]; then
-        wait "$meta_pid"; meta_rc=$?
+        wait "$meta_pid" || meta_rc=$?
     fi
 
     if [[ $need_toplevel -eq 1 ]] && [[ $toplevel_rc -ne 0 || ! -s "$toplevel_tmp" ]]; then
@@ -566,6 +566,14 @@ cmd_create() {
                     echo "${secret_key}="
                 fi
             done < <(jq -r '.hostSecrets[]' "$meta_file")
+        fi
+
+        # Append secrets from the dashboard DB (admin panel).
+        # The dashboard runs on port 3200 and has a localhost-only endpoint.
+        local db_secrets
+        db_secrets=$(curl -sf "http://127.0.0.1:3200/internal/secrets/${repo}" 2>/dev/null || true)
+        if [[ -n "$db_secrets" ]]; then
+            echo "$db_secrets"
         fi
     } > "$env_file"
     chmod 644 "$env_file"
