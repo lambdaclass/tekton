@@ -11,7 +11,6 @@ set -euo pipefail
 #   - Repo cloned at /opt/src/ (done by setup.sh)
 #   - Secret files uploaded to /var/secrets/ (done by setup.sh):
 #     - cloudflare-origin.pem, cloudflare-origin-key.pem
-#     - github-pat (if GitHub PAT was provided)
 #
 # Usage:
 #   cd /opt/src && ./server-setup.sh
@@ -138,28 +137,6 @@ echo ""
 prompt GITHUB_CLIENT_ID "GitHub OAuth App Client ID"
 prompt_secret GITHUB_CLIENT_SECRET "GitHub OAuth App Client Secret"
 prompt GITHUB_ORG "GitHub organization (users must be members to login)"
-echo ""
-
-echo -e "${BOLD}--- GitHub Personal Access Token ---${NC}"
-echo "Create at: GitHub > Settings > Developer settings > Personal access tokens > Tokens (classic)"
-echo "Required scope: repo (full control of private repositories)"
-echo ""
-if [[ -n "${GITHUB_PAT:-}" ]]; then
-    echo -e "${BOLD}GitHub Personal Access Token${NC}: ${GREEN}****${GITHUB_PAT: -4}${NC} (from env)"
-else
-    GITHUB_PAT_DEFAULT=""
-    if [[ -f /var/secrets/github-pat ]]; then
-        GITHUB_PAT_DEFAULT=$(cat /var/secrets/github-pat)
-        success "GitHub PAT found at /var/secrets/github-pat (uploaded by setup.sh)"
-    fi
-    if [[ -n "$GITHUB_PAT_DEFAULT" ]]; then
-        echo -ne "${BOLD}GitHub Personal Access Token${NC} [****${GITHUB_PAT_DEFAULT: -4}]: "
-        read -r GITHUB_PAT_INPUT
-        GITHUB_PAT="${GITHUB_PAT_INPUT:-$GITHUB_PAT_DEFAULT}"
-    else
-        prompt GITHUB_PAT "GitHub Personal Access Token"
-    fi
-fi
 echo ""
 
 echo -e "${BOLD}--- Webhook Secret ---${NC}"
@@ -307,7 +284,6 @@ echo "  Disk 1:         $DISK_DEVICE_1"
 echo "  Domain:         $DOMAIN"
 echo "  GitHub Org:     $GITHUB_ORG"
 echo "  GitHub Client:  ${GITHUB_CLIENT_ID:0:20}..."
-echo "  GitHub PAT:     ****${GITHUB_PAT: -4}"
 echo "  Allowed repos:  ${ALLOWED_REPOS:-<all>}"
 echo ""
 
@@ -414,7 +390,6 @@ success "dashboard.env written."
 
 info "Writing preview.env..."
 cat > /var/secrets/preview.env << ENVEOF
-GITHUB_TOKEN=${GITHUB_PAT}
 GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
 PREVIEW_DOMAIN=${DOMAIN}
 WEBHOOK_PORT=3100
