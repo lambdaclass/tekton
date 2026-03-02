@@ -45,16 +45,6 @@ pub struct CreateSecretRequest {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct SetSshKeyRequest {
-    pub ssh_public_key: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct SshKeyResponse {
-    pub ssh_public_key: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct GitHubTokenResponse {
     pub access_token: String,
 }
@@ -74,7 +64,6 @@ pub struct Preview {
     pub repo: String,
     pub branch: String,
     pub url: String,
-    pub ssh_port: Option<u16>,
 }
 
 #[derive(Debug, Deserialize)]

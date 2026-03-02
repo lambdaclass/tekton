@@ -10,7 +10,6 @@ pub struct Config {
     pub github_redirect_uri: String,
     pub github_org: String,
     pub preview_domain: String,
-    pub ssh_host: String,
     pub allowed_repos: Vec<String>,
     pub preview_bin: String,
     pub agent_bin: String,
@@ -34,9 +33,6 @@ impl Config {
             github_org: env::var("GITHUB_ORG")?,
             preview_domain: env::var("PREVIEW_DOMAIN")
                 .unwrap_or_else(|_| "example.com".into()),
-            ssh_host: env::var("SSH_HOST").unwrap_or_else(|_| {
-                env::var("PREVIEW_DOMAIN").unwrap_or_else(|_| "example.com".into())
-            }),
             allowed_repos: env::var("ALLOWED_REPOS")
                 .unwrap_or_default()
                 .split(',')

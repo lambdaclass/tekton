@@ -62,9 +62,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/auth/callback", get(auth::callback))
         .route("/auth/logout", post(auth::logout))
         .route("/auth/me", get(auth::me))
-        .route("/auth/ssh-key", get(auth::get_ssh_key))
-        .route("/auth/ssh-key", put(auth::set_ssh_key))
-        .route("/auth/ssh-key", delete(auth::delete_ssh_key))
         // Previews
         .route("/previews", get(previews::list_previews))
         .route("/previews", post(previews::create_preview))
@@ -115,8 +112,7 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/internal/secrets/{owner}/{repo}",
             get(secrets::internal_list_secrets),
-        )
-        .route("/internal/ssh-keys", get(auth::internal_list_ssh_keys));
+        );
 
     let app = Router::new()
         .nest("/api", api)

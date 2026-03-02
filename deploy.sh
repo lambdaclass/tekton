@@ -144,38 +144,6 @@ deploy_nix() {
         cd /etc/nixos && nixos-rebuild switch
     "
     success "NixOS configs deployed."
-
-    # Patch the server's configuration.nix with settings that preview.sh depends on.
-    # configuration.nix has host-specific values so it can't be copied from the repo,
-    # but we can safely add missing blocks.
-    info "Ensuring configuration.nix has preview SSH port range..."
-    $SSH '
-        CFG=/etc/nixos/configuration.nix
-        changed=0
-
-        # Add firewall port range for preview SSH (2201-2327) if missing
-        if ! grep -q "allowedTCPPortRanges" "$CFG"; then
-            sed -i "/allowedTCPPorts/a\\  networking.firewall.allowedTCPPortRanges = [\n    { from = 2201; to = 2327; }\n  ];" "$CFG"
-            changed=1
-        fi
-
-        # Add iptables to preview wrapper runtimeInputs if missing
-        if grep -q "name = \"preview\"" "$CFG" && ! grep "iptables" "$CFG" | grep -q "runtimeInputs"; then
-            sed -i "/name = \"preview\"/,/runtimeInputs/{s/runtimeInputs = \[/runtimeInputs = [ iptables/}" "$CFG"
-            changed=1
-        fi
-
-        if [ "$changed" -eq 1 ]; then
-            echo "configuration.nix updated, running nixos-rebuild switch..."
-            cd /etc/nixos && nixos-rebuild switch
-        else
-            echo "configuration.nix already up to date."
-        fi
-    '
-
-    # Ensure SSH iptables rules exist for all running previews
-    info "Ensuring SSH iptables rules for existing previews..."
-    $SSH 'preview ensure-ssh'
 }
 
 deploy_nix_agents() {

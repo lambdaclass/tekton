@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getMe, logout, listTasks } from '@/lib/api';
-import { LayoutDashboard, Container, BrainCircuit, LogOut, Shield, Settings } from 'lucide-react';
+import { LayoutDashboard, Container, BrainCircuit, LogOut, Shield } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
 import {
   Sidebar,
@@ -36,7 +36,6 @@ const NAV_ITEMS = [
   { to: '/', label: 'Home', icon: LayoutDashboard },
   { to: '/previews', label: 'Previews', icon: Container },
   { to: '/tasks', label: 'Tasks', icon: BrainCircuit },
-  { to: '/settings', label: 'Settings', icon: Settings },
 ];
 
 export default function Layout() {

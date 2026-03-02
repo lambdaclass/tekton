@@ -9,7 +9,6 @@ export interface Preview {
   repo: string;
   branch: string;
   url: string;
-  ssh_port: number | null;
 }
 
 export interface Task {
@@ -108,7 +107,6 @@ async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> {
 // Config
 export interface PublicConfig {
   preview_domain: string;
-  ssh_host: string;
   github_org: string;
 }
 export const getConfig = () => apiFetch<PublicConfig>('/api/config');
@@ -116,19 +114,6 @@ export const getConfig = () => apiFetch<PublicConfig>('/api/config');
 // Auth
 export const getMe = () => apiFetch<UserInfo>('/api/auth/me');
 export const logout = () => fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
-
-// SSH Key
-export interface SshKeyResponse {
-  ssh_public_key: string | null;
-}
-export const getSshKey = () => apiFetch<SshKeyResponse>('/api/auth/ssh-key');
-export const setSshKey = (ssh_public_key: string) =>
-  apiFetch<SshKeyResponse>('/api/auth/ssh-key', {
-    method: 'PUT',
-    body: JSON.stringify({ ssh_public_key }),
-  });
-export const deleteSshKey = () =>
-  apiFetch<SshKeyResponse>('/api/auth/ssh-key', { method: 'DELETE' });
 
 // Previews
 export const listPreviews = () => apiFetch<Preview[]>('/api/previews');
