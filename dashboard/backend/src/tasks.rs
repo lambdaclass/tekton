@@ -1204,7 +1204,7 @@ async fn push_and_preview(
         update_task_status(db, task_id, "creating_preview", None).await?;
         log_and_send(db, task_id, tx, &format!("[STEP] Creating preview '{preview_slug}'..."));
 
-        shell::create_preview(config, repo, branch_name, Some(&preview_slug)).await?;
+        shell::create_preview(config, repo, branch_name, Some(&preview_slug), &git_id.token).await?;
 
         let preview_url = format!("https://{preview_slug}.{}", config.preview_domain);
         update_task_field(db, task_id, "preview_slug", &preview_slug).await?;
@@ -1212,7 +1212,7 @@ async fn push_and_preview(
         *preview_created = true;
     } else {
         log_and_send(db, task_id, tx, &format!("[STEP] Updating preview '{preview_slug}'..."));
-        let _ = shell::update_preview(config, &preview_slug).await;
+        let _ = shell::update_preview(config, &preview_slug, &git_id.token).await;
     }
 
     // Screenshot (fire-and-forget so it doesn't block the follow-up loop)

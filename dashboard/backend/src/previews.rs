@@ -7,6 +7,14 @@ use crate::models::{CreatePreviewRequest, Preview};
 use crate::shell;
 use crate::AppState;
 
+async fn get_github_token(state: &AppState, github_login: &str) -> Result<String, AppError> {
+    sqlx::query_scalar("SELECT github_token FROM users WHERE github_login = $1")
+        .bind(github_login)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|_| AppError::Auth("User not found".to_string()))
+}
+
 pub async fn list_previews(
     _user: AuthUser,
     State(state): State<AppState>,
@@ -16,7 +24,7 @@ pub async fn list_previews(
 }
 
 pub async fn create_preview(
-    _user: AuthUser,
+    user: AuthUser,
     State(state): State<AppState>,
     Json(req): Json<CreatePreviewRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
@@ -29,11 +37,13 @@ pub async fn create_preview(
         )));
     }
 
+    let github_token = get_github_token(&state, &user.0.sub).await?;
     let output = shell::create_preview(
         &state.config,
         &req.repo,
         &req.branch,
         req.slug.as_deref(),
+        &github_token,
     )
     .await?;
 
@@ -56,11 +66,12 @@ pub async fn destroy_preview(
 }
 
 pub async fn update_preview(
-    _user: AuthUser,
+    user: AuthUser,
     State(state): State<AppState>,
     Path(slug): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let output = shell::update_preview(&state.config, &slug).await?;
+    let github_token = get_github_token(&state, &user.0.sub).await?;
+    let output = shell::update_preview(&state.config, &slug, &github_token).await?;
     Ok(Json(serde_json::json!({
         "message": "Preview update triggered",
         "output": output.trim(),
