@@ -78,9 +78,7 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .await?;
 
     // Add new columns to task_messages if they don't exist (for upgrades)
-    for col_sql in &[
-        "ALTER TABLE task_messages ADD COLUMN IF NOT EXISTS image_url TEXT",
-    ] {
+    for col_sql in &["ALTER TABLE task_messages ADD COLUMN IF NOT EXISTS image_url TEXT"] {
         let _ = sqlx::query(col_sql).execute(pool).await;
     }
 
@@ -131,10 +129,9 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .await;
 
     // Ensure at least one admin exists — promote the earliest user if none
-    let admin_count: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM users WHERE role = 'admin'")
-            .fetch_one(pool)
-            .await?;
+    let admin_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+        .fetch_one(pool)
+        .await?;
     if admin_count.0 == 0 {
         let _ = sqlx::query(
             "UPDATE users SET role = 'admin' WHERE github_login = (SELECT github_login FROM users ORDER BY created_at ASC LIMIT 1)",
@@ -170,11 +167,9 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .await?;
 
     // Add ssh_public_key column to users table
-    let _ = sqlx::query(
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS ssh_public_key TEXT",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS ssh_public_key TEXT")
+        .execute(pool)
+        .await;
 
     // Create repo_policies table
     sqlx::query(
@@ -251,11 +246,9 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .await;
 
     // Add compute_seconds column to tasks table
-    let _ = sqlx::query(
-        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS compute_seconds INTEGER",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS compute_seconds INTEGER")
+        .execute(pool)
+        .await;
 
     // Create budgets table
     sqlx::query(

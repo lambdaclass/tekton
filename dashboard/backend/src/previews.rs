@@ -28,9 +28,7 @@ pub async fn create_preview(
     State(state): State<AppState>,
     Json(req): Json<CreatePreviewRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    if !state.config.allowed_repos.is_empty()
-        && !state.config.allowed_repos.contains(&req.repo)
-    {
+    if !state.config.allowed_repos.is_empty() && !state.config.allowed_repos.contains(&req.repo) {
         return Err(AppError::BadRequest(format!(
             "Repo '{}' is not in the allowed list",
             req.repo
@@ -38,7 +36,14 @@ pub async fn create_preview(
     }
 
     // Check per-user repo permission
-    auth::check_repo_permission(&state.db, &user.0.sub, &req.repo, &user.0.role, &state.config.github_org).await?;
+    auth::check_repo_permission(
+        &state.db,
+        &user.0.sub,
+        &req.repo,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
 
     let github_token = get_github_token(&state, &user.0.sub).await?;
     let output = shell::create_preview(

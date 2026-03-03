@@ -97,10 +97,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/admin/secrets/{id}", delete(secrets::delete_secret))
         // Admin: Policy Presets
         .route("/admin/policy-presets", get(policies::list_presets))
-        .route(
-            "/admin/policies/from-preset",
-            post(policies::apply_preset),
-        )
+        .route("/admin/policies/from-preset", post(policies::apply_preset))
         // Admin: Repo Policies
         .route("/admin/policies", get(policies::list_policies))
         .route("/admin/policies", post(policies::create_policy))

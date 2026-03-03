@@ -11,7 +11,7 @@ use crate::models::Preview;
 /// A structured action extracted from Claude's stream-json output.
 #[derive(Debug, Clone)]
 pub struct RawAction {
-    pub action_type: String,  // "tool_use", "text", "result"
+    pub action_type: String, // "tool_use", "text", "result"
     pub tool_name: Option<String>,
     pub tool_input: Option<serde_json::Value>,
     pub summary: Option<String>,
@@ -39,7 +39,11 @@ async fn run_cmd(cmd: &str, args: &[&str]) -> Result<String, AppError> {
 }
 
 /// Run a command with extra environment variables and return its stdout.
-async fn run_cmd_with_env(cmd: &str, args: &[&str], env: &[(&str, &str)]) -> Result<String, AppError> {
+async fn run_cmd_with_env(
+    cmd: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Result<String, AppError> {
     tracing::info!("Running: {cmd} {}", args.join(" "));
     let output = Command::new(cmd)
         .args(args)
@@ -191,15 +195,29 @@ pub async fn create_preview(
         args.push("--slug");
         args.push(s);
     }
-    run_cmd_with_env(&config.preview_bin, &args, &[("GITHUB_TOKEN", github_token)]).await
+    run_cmd_with_env(
+        &config.preview_bin,
+        &args,
+        &[("GITHUB_TOKEN", github_token)],
+    )
+    .await
 }
 
 pub async fn destroy_preview(config: &Config, slug: &str) -> Result<String, AppError> {
     run_cmd(&config.preview_bin, &["destroy", slug]).await
 }
 
-pub async fn update_preview(config: &Config, slug: &str, github_token: &str) -> Result<String, AppError> {
-    run_cmd_with_env(&config.preview_bin, &["update", slug], &[("GITHUB_TOKEN", github_token)]).await
+pub async fn update_preview(
+    config: &Config,
+    slug: &str,
+    github_token: &str,
+) -> Result<String, AppError> {
+    run_cmd_with_env(
+        &config.preview_bin,
+        &["update", slug],
+        &[("GITHUB_TOKEN", github_token)],
+    )
+    .await
 }
 
 // ── Agent operations ──
@@ -244,9 +262,7 @@ pub async fn apply_egress_rules(
         let domains: Vec<&str> = allow_list.iter().filter_map(|v| v.as_str()).collect();
         for domain in &domains {
             // Use the domain directly — iptables can resolve hostnames
-            cmds.push(format!(
-                "iptables -A {chain_name} -d {domain} -j ACCEPT"
-            ));
+            cmds.push(format!("iptables -A {chain_name} -d {domain} -j ACCEPT"));
         }
         // Drop everything else
         cmds.push(format!("iptables -A {chain_name} -j DROP"));
@@ -254,9 +270,7 @@ pub async fn apply_egress_rules(
         // Deny-list mode: block specific domains, allow everything else
         let domains: Vec<&str> = deny_list.iter().filter_map(|v| v.as_str()).collect();
         for domain in &domains {
-            cmds.push(format!(
-                "iptables -A {chain_name} -d {domain} -j DROP"
-            ));
+            cmds.push(format!("iptables -A {chain_name} -d {domain} -j DROP"));
         }
         // Accept everything else (implicit by falling through to FORWARD default)
         cmds.push(format!("iptables -A {chain_name} -j ACCEPT"));
@@ -313,7 +327,11 @@ pub fn agent_host_ip(name: &str) -> Result<String, AppError> {
 }
 
 /// Fetch the last `max_lines` lines of logs from a preview container.
-pub async fn get_preview_logs(config: &Config, slug: &str, max_lines: usize) -> Result<String, AppError> {
+pub async fn get_preview_logs(
+    config: &Config,
+    slug: &str,
+    max_lines: usize,
+) -> Result<String, AppError> {
     let output = tokio::process::Command::new(&config.preview_bin)
         .args(["logs", slug])
         .output()
@@ -343,17 +361,15 @@ fn agent_ip(name: &str) -> Result<String, AppError> {
 }
 
 /// Copy a local file into an agent container via SCP.
-pub async fn scp_to_agent(
-    name: &str,
-    local_path: &str,
-    remote_path: &str,
-) -> Result<(), AppError> {
+pub async fn scp_to_agent(name: &str, local_path: &str, remote_path: &str) -> Result<(), AppError> {
     let ip = agent_ip(name)?;
     run_cmd(
         "scp",
         &[
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
             local_path,
             &format!("agent@{ip}:{remote_path}"),
         ],
@@ -368,8 +384,10 @@ pub async fn agent_exec_capture(name: &str, cmd_line: &str) -> Result<String, Ap
     run_cmd(
         "ssh",
         &[
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
             &format!("agent@{ip}"),
             cmd_line,
         ],
@@ -387,8 +405,10 @@ pub async fn agent_exec(
     run_cmd_streaming(
         "ssh",
         &[
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
             &format!("agent@{ip}"),
             cmd_line,
         ],
@@ -409,15 +429,19 @@ pub async fn agent_exec_claude_streaming(
     tracing::info!("Streaming Claude JSON: ssh agent@{ip}");
     let mut child = Command::new("ssh")
         .args([
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
             &format!("agent@{ip}"),
             cmd_line,
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| AppError::Internal(format!("Failed to spawn ssh for Claude streaming: {e}")))?;
+        .map_err(|e| {
+            AppError::Internal(format!("Failed to spawn ssh for Claude streaming: {e}"))
+        })?;
 
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
@@ -500,7 +524,11 @@ pub async fn agent_exec_claude_streaming(
     let actions = actions.lock().await.clone();
     let usage = usage.lock().await.clone();
 
-    Ok(ClaudeStreamResult { text, actions, usage })
+    Ok(ClaudeStreamResult {
+        text,
+        actions,
+        usage,
+    })
 }
 
 /// Extract raw text from a Claude stream-json "assistant" message.
@@ -542,7 +570,8 @@ fn extract_action(line: &str) -> Option<RawAction> {
                     if let Some(block_type) = block.get("type").and_then(|t| t.as_str()) {
                         match block_type {
                             "tool_use" => {
-                                let name = block.get("name").and_then(|n| n.as_str()).map(String::from);
+                                let name =
+                                    block.get("name").and_then(|n| n.as_str()).map(String::from);
                                 let input = block.get("input").cloned();
                                 let summary = format_tool_use_summary(block);
                                 return Some(RawAction {
@@ -572,14 +601,12 @@ fn extract_action(line: &str) -> Option<RawAction> {
             }
             None
         }
-        "result" => {
-            Some(RawAction {
-                action_type: "result".into(),
-                tool_name: None,
-                tool_input: None,
-                summary: Some("Claude finished".into()),
-            })
-        }
+        "result" => Some(RawAction {
+            action_type: "result".into(),
+            tool_name: None,
+            tool_input: None,
+            summary: Some("Claude finished".into()),
+        }),
         _ => None,
     }
 }
@@ -590,9 +617,18 @@ fn extract_token_usage(line: &str) -> Option<TokenUsage> {
     if v.get("type")?.as_str()? != "result" {
         return None;
     }
-    let input = v.pointer("/usage/input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-    let output = v.pointer("/usage/output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-    let cost = v.get("total_cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let input = v
+        .pointer("/usage/input_tokens")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let output = v
+        .pointer("/usage/output_tokens")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let cost = v
+        .get("total_cost_usd")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     if input == 0 && output == 0 && cost == 0.0 {
         return None;
     }
@@ -610,27 +646,45 @@ fn format_tool_use_summary(block: &serde_json::Value) -> Option<String> {
 
     let summary = match name {
         "Read" => {
-            let path = input.get("file_path").and_then(|p| p.as_str()).unwrap_or("...");
+            let path = input
+                .get("file_path")
+                .and_then(|p| p.as_str())
+                .unwrap_or("...");
             format!("Reading {path}")
         }
         "Edit" => {
-            let path = input.get("file_path").and_then(|p| p.as_str()).unwrap_or("...");
+            let path = input
+                .get("file_path")
+                .and_then(|p| p.as_str())
+                .unwrap_or("...");
             format!("Editing {path}")
         }
         "Write" => {
-            let path = input.get("file_path").and_then(|p| p.as_str()).unwrap_or("...");
+            let path = input
+                .get("file_path")
+                .and_then(|p| p.as_str())
+                .unwrap_or("...");
             format!("Writing {path}")
         }
         "Grep" => {
-            let pattern = input.get("pattern").and_then(|p| p.as_str()).unwrap_or("...");
+            let pattern = input
+                .get("pattern")
+                .and_then(|p| p.as_str())
+                .unwrap_or("...");
             format!("Searching for \"{pattern}\"")
         }
         "Glob" => {
-            let pattern = input.get("pattern").and_then(|p| p.as_str()).unwrap_or("...");
+            let pattern = input
+                .get("pattern")
+                .and_then(|p| p.as_str())
+                .unwrap_or("...");
             format!("Globbing \"{pattern}\"")
         }
         "Bash" => {
-            let cmd = input.get("command").and_then(|c| c.as_str()).unwrap_or("...");
+            let cmd = input
+                .get("command")
+                .and_then(|c| c.as_str())
+                .unwrap_or("...");
             let truncated: String = cmd.chars().take(100).collect();
             format!("Running: {truncated}")
         }
@@ -689,27 +743,45 @@ fn format_tool_use(block: &serde_json::Value) -> Option<String> {
 
     match name {
         "Read" => {
-            let path = input.get("file_path").and_then(|p| p.as_str()).unwrap_or("...");
+            let path = input
+                .get("file_path")
+                .and_then(|p| p.as_str())
+                .unwrap_or("...");
             Some(format!("⚡ Reading {path}"))
         }
         "Edit" => {
-            let path = input.get("file_path").and_then(|p| p.as_str()).unwrap_or("...");
+            let path = input
+                .get("file_path")
+                .and_then(|p| p.as_str())
+                .unwrap_or("...");
             Some(format!("✏️ Editing {path}"))
         }
         "Write" => {
-            let path = input.get("file_path").and_then(|p| p.as_str()).unwrap_or("...");
+            let path = input
+                .get("file_path")
+                .and_then(|p| p.as_str())
+                .unwrap_or("...");
             Some(format!("✏️ Writing {path}"))
         }
         "Grep" => {
-            let pattern = input.get("pattern").and_then(|p| p.as_str()).unwrap_or("...");
+            let pattern = input
+                .get("pattern")
+                .and_then(|p| p.as_str())
+                .unwrap_or("...");
             Some(format!("🔍 Searching for \"{pattern}\""))
         }
         "Glob" => {
-            let pattern = input.get("pattern").and_then(|p| p.as_str()).unwrap_or("...");
+            let pattern = input
+                .get("pattern")
+                .and_then(|p| p.as_str())
+                .unwrap_or("...");
             Some(format!("🔍 Globbing \"{pattern}\""))
         }
         "Bash" => {
-            let cmd = input.get("command").and_then(|c| c.as_str()).unwrap_or("...");
+            let cmd = input
+                .get("command")
+                .and_then(|c| c.as_str())
+                .unwrap_or("...");
             let truncated: String = cmd.chars().take(100).collect();
             Some(format!("🖥️ Running: {truncated}"))
         }

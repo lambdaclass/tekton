@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getAiSettings, setAiSettings, deleteAiSettings } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -49,14 +49,11 @@ export default function Settings() {
   });
 
   const [selectedProvider, setSelectedProvider] = useState<ProviderValue>('anthropic');
-  const [selectedModel, setSelectedModel] = useState(OPENROUTER_MODELS[0].value);
+  const [userSelectedModel, setUserSelectedModel] = useState<string | null>(null);
+  const selectedModel = userSelectedModel
+    ?? (settings?.provider === 'openrouter' && settings?.model ? settings.model : null)
+    ?? OPENROUTER_MODELS[0].value;
   const [apiKey, setApiKey] = useState('');
-
-  useEffect(() => {
-    if (settings?.provider === 'openrouter' && settings.model) {
-      setSelectedModel(settings.model);
-    }
-  }, [settings]);
 
   const saveMutation = useMutation({
     mutationFn: (data: { provider: string; api_key?: string; model?: string }) => setAiSettings(data),
@@ -178,7 +175,7 @@ export default function Settings() {
                   <select
                     id="model-select"
                     value={selectedModel}
-                    onChange={(e) => setSelectedModel(e.target.value)}
+                    onChange={(e) => setUserSelectedModel(e.target.value)}
                     className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
                     {OPENROUTER_MODELS.map((m) => (

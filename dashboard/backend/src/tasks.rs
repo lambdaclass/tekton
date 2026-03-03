@@ -10,8 +10,8 @@ use crate::auth::{self, AuthUser, MemberUser};
 use crate::config::Config;
 use crate::error::AppError;
 use crate::models::{
-    CreateTaskRequest, ListMessagesQuery, ListTasksQuery, PaginatedTasks, SendMessageRequest,
-    Task, TaskAction, TaskLog, TaskMessage, UpdateTaskNameRequest,
+    CreateTaskRequest, ListMessagesQuery, ListTasksQuery, PaginatedTasks, SendMessageRequest, Task,
+    TaskAction, TaskLog, TaskMessage, UpdateTaskNameRequest,
 };
 use crate::policies;
 use crate::secrets;
@@ -39,6 +39,17 @@ async fn check_task_ownership(
     auth::check_task_ownership(db, task_id, github_login, role).await
 }
 
+/// Shared context threaded through the pipeline functions.
+struct PipelineCtx<'a> {
+    config: &'a Config,
+    db: &'a PgPool,
+    task_id: &'a str,
+    short_id: &'a str,
+    repo: &'a str,
+    base_branch: &'a str,
+    git_id: &'a GitIdentity,
+}
+
 #[derive(Clone)]
 struct GitIdentity {
     token: String,
@@ -48,14 +59,16 @@ struct GitIdentity {
 
 async fn get_git_identity(db: &PgPool, github_login: &str) -> Result<GitIdentity, AppError> {
     let row = sqlx::query_as::<_, (String, String, Option<String>)>(
-        "SELECT github_token, name, email FROM users WHERE github_login = $1"
+        "SELECT github_token, name, email FROM users WHERE github_login = $1",
     )
     .bind(github_login)
     .fetch_optional(db)
     .await?
     .ok_or_else(|| AppError::Auth(format!("User '{github_login}' not found in database")))?;
 
-    let email = row.2.unwrap_or_else(|| format!("{github_login}@users.noreply.github.com"));
+    let email = row
+        .2
+        .unwrap_or_else(|| format!("{github_login}@users.noreply.github.com"));
 
     Ok(GitIdentity {
         token: row.0,
@@ -160,7 +173,7 @@ pub async fn list_tasks(
     Query(params): Query<ListTasksQuery>,
 ) -> Result<Json<PaginatedTasks>, AppError> {
     let page = params.page.unwrap_or(1).max(1);
-    let per_page = params.per_page.unwrap_or(50).min(200).max(1);
+    let per_page = params.per_page.unwrap_or(50).clamp(1, 200);
     let offset = ((page - 1) * per_page) as i64;
     let limit = per_page as i64;
 
@@ -296,9 +309,7 @@ pub async fn create_task(
     Json(req): Json<CreateTaskRequest>,
 ) -> Result<Json<Task>, AppError> {
     // Validate repo is allowed
-    if !state.config.allowed_repos.is_empty()
-        && !state.config.allowed_repos.contains(&req.repo)
-    {
+    if !state.config.allowed_repos.is_empty() && !state.config.allowed_repos.contains(&req.repo) {
         return Err(AppError::BadRequest(format!(
             "Repo '{}' is not in the allowed list",
             req.repo
@@ -306,17 +317,25 @@ pub async fn create_task(
     }
 
     // Check per-user repo permission
-    check_repo_permission(&state.db, &user.0.sub, &req.repo, &user.0.role, &state.config.github_org).await?;
+    check_repo_permission(
+        &state.db,
+        &user.0.sub,
+        &req.repo,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
 
     // Check budget limits before creating the task
     crate::cost::check_budget(&state.db, &user.0.sub, &state.config.github_org).await?;
 
     // Validate parent_task_id if provided
     if let Some(ref parent_id) = req.parent_task_id {
-        let parent_exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tasks WHERE id = $1")
-            .bind(parent_id)
-            .fetch_one(&state.db)
-            .await?;
+        let parent_exists =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tasks WHERE id = $1")
+                .bind(parent_id)
+                .fetch_one(&state.db)
+                .await?;
         if parent_exists == 0 {
             return Err(AppError::BadRequest(format!(
                 "Parent task '{}' does not exist",
@@ -407,8 +426,22 @@ pub async fn create_task(
     let channels = state.task_channels.clone();
 
     tokio::spawn(async move {
+        let ctx = PipelineCtx {
+            config: &config,
+            db: &db,
+            task_id: &task_id,
+            short_id: &short,
+            repo: &repo,
+            base_branch: &base,
+            git_id: &git_id,
+        };
         let result = run_task_pipeline(
-            &config, &db, &task_id, &short, &prompt, &repo, &base, image_url_json2.as_deref(), &git_id, custom_branch, &created_by, tx.clone(),
+            &ctx,
+            &prompt,
+            image_url_json2.as_deref(),
+            custom_branch,
+            &created_by,
+            tx.clone(),
         )
         .await;
 
@@ -417,7 +450,7 @@ pub async fn create_task(
             let _ = tx.send(format!("[ERROR] Task failed: {e}"));
             // Clean up agent container on failure
             if let Ok(Some(name)) = sqlx::query_scalar::<_, Option<String>>(
-                "SELECT agent_name FROM tasks WHERE id = $1"
+                "SELECT agent_name FROM tasks WHERE id = $1",
             )
             .bind(&task_id)
             .fetch_one(&db)
@@ -440,34 +473,38 @@ pub async fn create_task(
 }
 
 async fn run_task_pipeline(
-    config: &Config,
-    db: &PgPool,
-    task_id: &str,
-    short_id: &str,
+    ctx: &PipelineCtx<'_>,
     prompt: &str,
-    repo: &str,
-    base_branch: &str,
     image_url_json: Option<&str>,
-    git_id: &GitIdentity,
     custom_branch_name: Option<String>,
     created_by: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
+    let &PipelineCtx {
+        config,
+        db,
+        task_id,
+        short_id,
+        repo,
+        base_branch,
+        git_id,
+    } = ctx;
     // Generate a short name for the task using Claude
-    let task_name = match generate_task_name(db, &config.secrets_encryption_key, created_by, prompt).await {
-        Ok(name) if !name.is_empty() => {
-            tracing::info!("Generated task name for {task_id}: {name}");
-            name
-        }
-        Ok(_) => {
-            tracing::warn!("Empty task name generated for {task_id}, using fallback");
-            format!("task-{short_id}")
-        }
-        Err(e) => {
-            tracing::warn!("Failed to generate task name for {task_id}: {e}");
-            format!("task-{short_id}")
-        }
-    };
+    let task_name =
+        match generate_task_name(db, &config.secrets_encryption_key, created_by, prompt).await {
+            Ok(name) if !name.is_empty() => {
+                tracing::info!("Generated task name for {task_id}: {name}");
+                name
+            }
+            Ok(_) => {
+                tracing::warn!("Empty task name generated for {task_id}, using fallback");
+                format!("task-{short_id}")
+            }
+            Err(e) => {
+                tracing::warn!("Failed to generate task name for {task_id}: {e}");
+                format!("task-{short_id}")
+            }
+        };
 
     // Save the generated name to the DB
     let _ = sqlx::query("UPDATE tasks SET name = $1 WHERE id = $2")
@@ -478,9 +515,7 @@ async fn run_task_pipeline(
 
     // Use custom branch name if provided, otherwise derive from the task name
     let branch_name = match custom_branch_name {
-        Some(ref name) if !name.is_empty() => {
-            slugify_for_branch(name)
-        }
+        Some(ref name) if !name.is_empty() => slugify_for_branch(name),
         _ => {
             let slug = slugify_for_branch(&task_name);
             format!("{slug}-{short_id}")
@@ -498,8 +533,13 @@ async fn run_task_pipeline(
             )));
         }
         log_and_send(
-            db, task_id, &tx,
-            &format!("[POLICY] Loaded policy for {repo}: {} protected branch(es)", pol.protected_branches.len()),
+            db,
+            task_id,
+            &tx,
+            &format!(
+                "[POLICY] Loaded policy for {repo}: {} protected branch(es)",
+                pol.protected_branches.len()
+            ),
         );
     }
 
@@ -509,18 +549,36 @@ async fn run_task_pipeline(
     // Step 1: Create agent container
     let agent_name = format!("task-{short_id}");
     update_task_status(db, task_id, "creating_agent", None).await?;
-    log_and_send(db, task_id, &tx, &format!("[STEP] Creating agent container '{agent_name}'..."));
+    log_and_send(
+        db,
+        task_id,
+        &tx,
+        &format!("[STEP] Creating agent container '{agent_name}'..."),
+    );
     let create_start = std::time::Instant::now();
     shell::create_agent(config, &agent_name).await?;
     let create_ms = create_start.elapsed().as_millis();
-    log_and_send(db, task_id, &tx, &format!("[STEP] Agent '{agent_name}' created in {create_ms}ms"));
+    log_and_send(
+        db,
+        task_id,
+        &tx,
+        &format!("[STEP] Agent '{agent_name}' created in {create_ms}ms"),
+    );
     update_task_field(db, task_id, "agent_name", &agent_name).await?;
 
     // Step 2: Clone repo and create branch
     update_task_status(db, task_id, "cloning", None).await?;
-    log_and_send(db, task_id, &tx, &format!("[STEP] Cloning {repo} and creating branch {branch_name}..."));
+    log_and_send(
+        db,
+        task_id,
+        &tx,
+        &format!("[STEP] Cloning {repo} and creating branch {branch_name}..."),
+    );
 
-    let clone_url = format!("https://x-access-token:{}@github.com/{repo}.git", git_id.token);
+    let clone_url = format!(
+        "https://x-access-token:{}@github.com/{repo}.git",
+        git_id.token
+    );
 
     let escaped_name = git_id.name.replace('\'', "'\\''");
     let escaped_email = git_id.email.replace('\'', "'\\''");
@@ -542,7 +600,12 @@ async fn run_task_pipeline(
     .trim()
     .to_string();
     create_github_branch(&git_id.token, repo, &branch_name, &base_sha).await?;
-    log_and_send(db, task_id, &tx, &format!("[STEP] Pushed branch '{branch_name}' to GitHub"));
+    log_and_send(
+        db,
+        task_id,
+        &tx,
+        &format!("[STEP] Pushed branch '{branch_name}' to GitHub"),
+    );
 
     // Prewarm preview: create it on the feature branch so it's already on the right
     // branch when the agent finishes. Runs in background while Claude works.
@@ -553,31 +616,50 @@ async fn run_task_pipeline(
         let slug = format!("t-{short_id}");
         let token = git_id.token.clone();
         tokio::spawn(async move {
-            if let Err(e) = shell::create_preview(&config2, &repo2, &branch2, Some(&slug), &token).await {
+            if let Err(e) =
+                shell::create_preview(&config2, &repo2, &branch2, Some(&slug), &token).await
+            {
                 tracing::warn!("Preview prewarm failed for {slug}: {e}");
             }
         });
     }
 
     // Step 2b: Load and inject secrets
-    let repo_secrets = secrets::load_secrets_for_repo(db, &config.secrets_encryption_key, repo).await?;
+    let repo_secrets =
+        secrets::load_secrets_for_repo(db, &config.secrets_encryption_key, repo).await?;
     if !repo_secrets.is_empty() {
-        log_and_send(db, task_id, &tx, &format!("[STEP] Injecting {} secret(s)...", repo_secrets.len()));
+        log_and_send(
+            db,
+            task_id,
+            &tx,
+            &format!("[STEP] Injecting {} secret(s)...", repo_secrets.len()),
+        );
         write_secrets_env_file(&agent_name, &repo_secrets, tx.clone()).await?;
     }
 
     // Step 2c: Apply network egress restrictions (if any)
     if let Some(ref pol) = policy {
         if let Some(ref egress) = pol.network_egress {
-            log_and_send(db, task_id, &tx, "[POLICY] Applying network egress restrictions...");
+            log_and_send(
+                db,
+                task_id,
+                &tx,
+                "[POLICY] Applying network egress restrictions...",
+            );
             if let Err(e) = shell::apply_egress_rules(&agent_name, egress).await {
-                log_and_send(db, task_id, &tx, &format!("[WARN] Failed to apply egress rules: {e}"));
+                log_and_send(
+                    db,
+                    task_id,
+                    &tx,
+                    &format!("[WARN] Failed to apply egress rules: {e}"),
+                );
             }
         }
     }
 
     // Step 3: Copy images and run Claude (streaming)
-    let mut effective_prompt = augment_prompt_with_images(config, &agent_name, image_url_json, prompt, &tx).await?;
+    let mut effective_prompt =
+        augment_prompt_with_images(config, &agent_name, image_url_json, prompt, &tx).await?;
 
     // Inject policy constraints into the prompt so Claude knows its boundaries
     if let Some(ref pol) = policy {
@@ -598,15 +680,17 @@ async fn run_task_pipeline(
             if let Some(allow) = tools.get("allow").and_then(|v| v.as_array()) {
                 let names: Vec<&str> = allow.iter().filter_map(|v| v.as_str()).collect();
                 if !names.is_empty() {
-                    constraints.push(format!("ALLOWED TOOLS (use ONLY these): {}", names.join(", ")));
+                    constraints.push(format!(
+                        "ALLOWED TOOLS (use ONLY these): {}",
+                        names.join(", ")
+                    ));
                 }
             }
         }
         if !constraints.is_empty() {
             let policy_block = constraints.join("\n");
-            effective_prompt = format!(
-                "REPO POLICY CONSTRAINTS:\n{policy_block}\n\n{effective_prompt}"
-            );
+            effective_prompt =
+                format!("REPO POLICY CONSTRAINTS:\n{policy_block}\n\n{effective_prompt}");
         }
     }
 
@@ -615,14 +699,29 @@ async fn run_task_pipeline(
     if let Some(ref pol) = policy {
         let denied = get_denied_tools(pol);
         if !denied.is_empty() {
-            log_and_send(db, task_id, &tx, &format!(
-                "[POLICY] Blocked tools: {}. Claude will not have access to these.",
-                denied.join(", ")
-            ));
+            log_and_send(
+                db,
+                task_id,
+                &tx,
+                &format!(
+                    "[POLICY] Blocked tools: {}. Claude will not have access to these.",
+                    denied.join(", ")
+                ),
+            );
         }
     }
     log_and_send(db, task_id, &tx, "[STEP] Running Claude...");
-    let result = match run_claude_streaming(db, &config.secrets_encryption_key, created_by, &agent_name, &effective_prompt, tx.clone(), policy.as_ref()).await {
+    let result = match run_claude_streaming(
+        db,
+        &config.secrets_encryption_key,
+        created_by,
+        &agent_name,
+        &effective_prompt,
+        tx.clone(),
+        policy.as_ref(),
+    )
+    .await
+    {
         Ok(r) => r,
         Err(e) => {
             // If a policy with denied tools is active, the CLI may exit non-zero because
@@ -641,7 +740,11 @@ async fn run_task_pipeline(
                     shell::ClaudeStreamResult {
                         text: String::new(),
                         actions: Vec::new(),
-                        usage: shell::TokenUsage { input_tokens: 0, output_tokens: 0, cost_usd: 0.0 },
+                        usage: shell::TokenUsage {
+                            input_tokens: 0,
+                            output_tokens: 0,
+                            cost_usd: 0.0,
+                        },
                     }
                 } else {
                     return Err(e);
@@ -663,7 +766,12 @@ async fn run_task_pipeline(
     if let Some(ref pol) = policy {
         if let Some(max_cost) = pol.max_cost_usd {
             if check_cost_limit(db, task_id, max_cost, &tx).await? {
-                save_system_message(db, task_id, "Cost limit reached — further follow-ups will be rejected by policy.").await?;
+                save_system_message(
+                    db,
+                    task_id,
+                    "Cost limit reached — further follow-ups will be rejected by policy.",
+                )
+                .await?;
             }
         }
     }
@@ -675,13 +783,30 @@ async fn run_task_pipeline(
     // Step 3c: Push changes and update preview
     let mut preview_created = true;
     let mut branch_pushed = false;
-    let pushed = push_and_preview(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, &tx).await?;
+    let pushed = push_and_preview(
+        ctx,
+        &agent_name,
+        &branch_name,
+        &mut branch_pushed,
+        &mut preview_created,
+        &tx,
+    )
+    .await?;
     if pushed {
         save_system_message(db, task_id, "Changes pushed and preview updated ✓").await?;
     }
 
     // Step 4: Follow-up loop
-    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, &tx).await?;
+    follow_up_loop(
+        ctx,
+        &agent_name,
+        &branch_name,
+        &mut branch_pushed,
+        &mut preview_created,
+        created_by,
+        &tx,
+    )
+    .await?;
 
     // Step 5: Destroy agent container
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
@@ -698,7 +823,12 @@ async fn run_task_pipeline(
     // Done
     let preview_url = format!("https://t-{short_id}.{}", config.preview_domain);
     update_task_status(db, task_id, "completed", None).await?;
-    log_and_send(db, task_id, &tx, &format!("[DONE] Preview available at {preview_url}"));
+    log_and_send(
+        db,
+        task_id,
+        &tx,
+        &format!("[DONE] Preview available at {preview_url}"),
+    );
 
     Ok(())
 }
@@ -714,7 +844,10 @@ async fn build_claude_auth_env(
 ) -> Result<(String, String), AppError> {
     match settings::get_user_ai_config(db, encryption_key, created_by).await? {
         Some(cfg) if cfg.provider == "openrouter" => {
-            let model = cfg.model.as_deref().unwrap_or("anthropic/claude-sonnet-4.6");
+            let model = cfg
+                .model
+                .as_deref()
+                .unwrap_or("anthropic/claude-sonnet-4.6");
             Ok((
                 format!(
                     "export ANTHROPIC_BASE_URL='https://openrouter.ai/api' ANTHROPIC_AUTH_TOKEN='{}' ANTHROPIC_API_KEY='' ANTHROPIC_MODEL='{}'",
@@ -723,7 +856,10 @@ async fn build_claude_auth_env(
                 String::new(),
             ))
         }
-        Some(cfg) => Ok((format!("export ANTHROPIC_API_KEY='{}'", cfg.api_key), String::new())),
+        Some(cfg) => Ok((
+            format!("export ANTHROPIC_API_KEY='{}'", cfg.api_key),
+            String::new(),
+        )),
         None => Err(AppError::Internal(
             "No AI provider configured. Go to Settings → AI Provider to connect your account."
                 .into(),
@@ -743,9 +879,7 @@ async fn generate_task_name(
     let cfg = settings::get_user_ai_config(db, encryption_key, created_by)
         .await?
         .ok_or_else(|| {
-            AppError::Internal(
-                "No AI provider configured for task name generation".into(),
-            )
+            AppError::Internal("No AI provider configured for task name generation".into())
         })?;
 
     let naming_prompt = format!(
@@ -754,11 +888,21 @@ async fn generate_task_name(
     );
 
     let mut env_args = vec![
-        format!("ANTHROPIC_API_KEY={}", if cfg.provider == "openrouter" { "" } else { &cfg.api_key }),
+        format!(
+            "ANTHROPIC_API_KEY={}",
+            if cfg.provider == "openrouter" {
+                ""
+            } else {
+                &cfg.api_key
+            }
+        ),
         "HOME=/tmp".to_string(),
     ];
     if cfg.provider == "openrouter" {
-        let model = cfg.model.as_deref().unwrap_or("anthropic/claude-sonnet-4.6");
+        let model = cfg
+            .model
+            .as_deref()
+            .unwrap_or("anthropic/claude-sonnet-4.6");
         env_args.push(format!("ANTHROPIC_AUTH_TOKEN={}", cfg.api_key));
         env_args.push("ANTHROPIC_BASE_URL=https://openrouter.ai/api".to_string());
         env_args.push(format!("ANTHROPIC_MODEL={model}"));
@@ -789,7 +933,11 @@ async fn generate_task_name(
 
     let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
     // Take at most 60 chars
-    let name = if name.len() > 60 { name[..60].to_string() } else { name };
+    let name = if name.len() > 60 {
+        name[..60].to_string()
+    } else {
+        name
+    };
     Ok(name)
 }
 
@@ -824,7 +972,10 @@ fn get_denied_tools(policy: &crate::models::RepoPolicy) -> Vec<String> {
         None => return Vec::new(),
     };
     if let Some(deny) = tools.get("deny").and_then(|v| v.as_array()) {
-        deny.iter().filter_map(|v| v.as_str()).map(String::from).collect()
+        deny.iter()
+            .filter_map(|v| v.as_str())
+            .map(String::from)
+            .collect()
     } else {
         Vec::new()
     }
@@ -907,13 +1058,11 @@ async fn save_claude_response_as_message(
     if text.is_empty() {
         return Ok(());
     }
-    sqlx::query(
-        "INSERT INTO task_messages (task_id, sender, content) VALUES ($1, 'claude', $2)",
-    )
-    .bind(task_id)
-    .bind(text)
-    .execute(db)
-    .await?;
+    sqlx::query("INSERT INTO task_messages (task_id, sender, content) VALUES ($1, 'claude', $2)")
+        .bind(task_id)
+        .bind(text)
+        .execute(db)
+        .await?;
     Ok(())
 }
 
@@ -932,7 +1081,7 @@ async fn persist_actions(db: &PgPool, task_id: &str, actions: &[shell::RawAction
     for action in actions {
         let _ = sqlx::query(
             "INSERT INTO task_actions (task_id, action_type, tool_name, tool_input, summary) \
-             VALUES ($1, $2, $3, $4, $5)"
+             VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(task_id)
         .bind(&action.action_type)
@@ -990,7 +1139,7 @@ async fn increment_token_usage(db: &PgPool, task_id: &str, usage: &shell::TokenU
          total_output_tokens = COALESCE(total_output_tokens, 0) + $2, \
          total_cost_usd = COALESCE(total_cost_usd, 0) + $3, \
          updated_at = NOW() \
-         WHERE id = $4"
+         WHERE id = $4",
     )
     .bind(usage.input_tokens)
     .bind(usage.output_tokens)
@@ -1009,12 +1158,11 @@ async fn check_cost_limit(
     max_cost_usd: f64,
     tx: &broadcast::Sender<String>,
 ) -> Result<bool, AppError> {
-    let cost: f64 = sqlx::query_scalar(
-        "SELECT COALESCE(total_cost_usd, 0) FROM tasks WHERE id = $1",
-    )
-    .bind(task_id)
-    .fetch_one(db)
-    .await?;
+    let cost: f64 =
+        sqlx::query_scalar("SELECT COALESCE(total_cost_usd, 0) FROM tasks WHERE id = $1")
+            .bind(task_id)
+            .fetch_one(db)
+            .await?;
 
     if cost >= max_cost_usd {
         let msg = format!(
@@ -1032,7 +1180,7 @@ async fn check_cost_limit(
 /// Record a state transition in the task_state_transitions table.
 async fn record_state_transition(db: &PgPool, task_id: &str, from: Option<&str>, to: &str) {
     let _ = sqlx::query(
-        "INSERT INTO task_state_transitions (task_id, from_status, to_status) VALUES ($1, $2, $3)"
+        "INSERT INTO task_state_transitions (task_id, from_status, to_status) VALUES ($1, $2, $3)",
     )
     .bind(task_id)
     .bind(from)
@@ -1054,15 +1202,13 @@ async fn copy_images_to_agent(
         return Ok(vec![]);
     }
 
-    let _ = tx.send(format!("[STEP] Copying {} image(s) to agent container...", urls.len()));
+    let _ = tx.send(format!(
+        "[STEP] Copying {} image(s) to agent container...",
+        urls.len()
+    ));
 
     // Create uploads dir in agent
-    if let Err(e) = shell::agent_exec(
-        agent_name,
-        "mkdir -p /home/agent/uploads",
-        tx.clone(),
-    )
-    .await
+    if let Err(e) = shell::agent_exec(agent_name, "mkdir -p /home/agent/uploads", tx.clone()).await
     {
         let _ = tx.send(format!("[WARN] Failed to create uploads dir in agent: {e}"));
         return Ok(vec![]);
@@ -1120,8 +1266,10 @@ async fn agent_has_changes(agent_name: &str) -> Result<bool, AppError> {
     let ip = shell::agent_ip_public(agent_name)?;
     let output = tokio::process::Command::new("ssh")
         .args([
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
             &format!("agent@{ip}"),
             "cd /home/agent/repo && git add -A && git diff --cached --quiet; echo $?",
         ])
@@ -1144,9 +1292,8 @@ async fn commit_changes_in_agent(
         return Ok(false);
     }
     let escaped_prompt = prompt.replace('\'', "'\\''");
-    let commit_cmd = format!(
-        "cd /home/agent/repo && git add -A && git commit -m 'Claude: {escaped_prompt}'"
-    );
+    let commit_cmd =
+        format!("cd /home/agent/repo && git add -A && git commit -m 'Claude: {escaped_prompt}'");
     shell::agent_exec(agent_name, &commit_cmd, tx).await?;
     Ok(true)
 }
@@ -1157,20 +1304,23 @@ enum FollowUpOutcome {
 }
 
 async fn follow_up_loop(
-    config: &Config,
-    db: &PgPool,
-    task_id: &str,
-    short_id: &str,
+    ctx: &PipelineCtx<'_>,
     agent_name: &str,
-    repo: &str,
     branch_name: &str,
-    base_branch: &str,
     branch_pushed: &mut bool,
     preview_created: &mut bool,
-    git_id: &GitIdentity,
     created_by: &str,
     tx: &broadcast::Sender<String>,
 ) -> Result<FollowUpOutcome, AppError> {
+    let &PipelineCtx {
+        config,
+        db,
+        task_id,
+        short_id: _,
+        repo,
+        base_branch: _,
+        git_id: _,
+    } = ctx;
     let mut last_seen_id: i64 = 0;
 
     // Track conversation history for context (used as fallback if --continue fails)
@@ -1178,13 +1328,12 @@ async fn follow_up_loop(
 
     // If the task has a preview, inject a preview-logs helper script into the agent container
     // so Claude can fetch live preview output on demand during follow-ups.
-    let preview_slug: Option<String> = sqlx::query_scalar(
-        "SELECT preview_slug FROM tasks WHERE id = $1",
-    )
-    .bind(task_id)
-    .fetch_optional(db)
-    .await?
-    .flatten();
+    let preview_slug: Option<String> =
+        sqlx::query_scalar("SELECT preview_slug FROM tasks WHERE id = $1")
+            .bind(task_id)
+            .fetch_optional(db)
+            .await?
+            .flatten();
 
     let has_preview_tool = if let Some(ref slug) = preview_slug {
         match shell::agent_host_ip(agent_name) {
@@ -1213,7 +1362,9 @@ async fn follow_up_loop(
     };
 
     update_task_status(db, task_id, "awaiting_followup", None).await?;
-    let _ = tx.send("[STATUS] Waiting for follow-up messages (click 'Mark Done' to finish)...".to_string());
+    let _ = tx.send(
+        "[STATUS] Waiting for follow-up messages (click 'Mark Done' to finish)...".to_string(),
+    );
 
     loop {
         // Check for new messages IMMEDIATELY (no sleep before first check)
@@ -1252,8 +1403,13 @@ async fn follow_up_loop(
         let mut combined_parts: Vec<String> = Vec::new();
         for msg in &new_messages {
             let effective = augment_prompt_with_images(
-                config, agent_name, msg.image_url.as_deref(), &msg.content, tx,
-            ).await?;
+                config,
+                agent_name,
+                msg.image_url.as_deref(),
+                &msg.content,
+                tx,
+            )
+            .await?;
             combined_parts.push(effective);
             conversation_history.push(format!("{}: {}", msg.sender, msg.content));
         }
@@ -1270,7 +1426,12 @@ async fn follow_up_loop(
         if let Some(ref pol) = policy {
             if let Some(max_cost) = pol.max_cost_usd {
                 if check_cost_limit(db, task_id, max_cost, tx).await? {
-                    save_system_message(db, task_id, "Cost limit reached — this follow-up was blocked by policy.").await?;
+                    save_system_message(
+                        db,
+                        task_id,
+                        "Cost limit reached — this follow-up was blocked by policy.",
+                    )
+                    .await?;
                     update_task_status(db, task_id, "awaiting_followup", None).await?;
                     continue;
                 }
@@ -1282,17 +1443,43 @@ async fn follow_up_loop(
         update_task_status(db, task_id, "running_claude", None).await?;
         let _ = tx.send("[FOLLOWUP] Running Claude with follow-up...".to_string());
 
-        let result = match run_claude_continue(db, &config.secrets_encryption_key, created_by, agent_name, &combined_prompt, tx.clone(), policy.as_ref()).await {
+        let result = match run_claude_continue(
+            db,
+            &config.secrets_encryption_key,
+            created_by,
+            agent_name,
+            &combined_prompt,
+            tx.clone(),
+            policy.as_ref(),
+        )
+        .await
+        {
             Ok(r) => r,
             Err(e) => {
                 // Fallback: if --continue fails, use fresh session with full context
-                let _ = tx.send(format!("[WARN] --continue failed ({e}), falling back to fresh session..."));
-                let original_prompt = sqlx::query_scalar::<_, String>("SELECT prompt FROM tasks WHERE id = $1")
-                    .bind(task_id)
-                    .fetch_one(db)
-                    .await?;
-                let context_prompt = build_followup_prompt(&original_prompt, &conversation_history, &combined_prompt);
-                run_claude_streaming(db, &config.secrets_encryption_key, created_by, agent_name, &context_prompt, tx.clone(), policy.as_ref()).await?
+                let _ = tx.send(format!(
+                    "[WARN] --continue failed ({e}), falling back to fresh session..."
+                ));
+                let original_prompt =
+                    sqlx::query_scalar::<_, String>("SELECT prompt FROM tasks WHERE id = $1")
+                        .bind(task_id)
+                        .fetch_one(db)
+                        .await?;
+                let context_prompt = build_followup_prompt(
+                    &original_prompt,
+                    &conversation_history,
+                    &combined_prompt,
+                );
+                run_claude_streaming(
+                    db,
+                    &config.secrets_encryption_key,
+                    created_by,
+                    agent_name,
+                    &context_prompt,
+                    tx.clone(),
+                    policy.as_ref(),
+                )
+                .await?
             }
         };
         save_claude_response_as_message(db, task_id, &result.text).await?;
@@ -1305,7 +1492,15 @@ async fn follow_up_loop(
         let _ = commit_changes_in_agent(agent_name, &combined_parts[0], tx.clone()).await?;
 
         // Push and update preview
-        let pushed = push_and_preview(config, db, task_id, short_id, agent_name, repo, branch_name, base_branch, branch_pushed, preview_created, git_id, tx).await?;
+        let pushed = push_and_preview(
+            ctx,
+            agent_name,
+            branch_name,
+            branch_pushed,
+            preview_created,
+            tx,
+        )
+        .await?;
         if pushed {
             save_system_message(db, task_id, "Changes pushed and preview updated ✓").await?;
         }
@@ -1344,9 +1539,9 @@ fn build_followup_prompt(original_prompt: &str, history: &[String], new_message:
 /// in `scripts/collect_file_changes.py` and is embedded at compile time.
 async fn collect_file_changes(agent_name: &str, base_ref: &str) -> Result<FileChanges, AppError> {
     // Sanitize base_ref (should be like "origin/main" — never contains quotes)
-    let safe_base_ref = base_ref.replace('\'', "").replace('"', "");
-    let python_script = include_str!("../scripts/collect_file_changes.py")
-        .replace("__BASE_REF__", &safe_base_ref);
+    let safe_base_ref = base_ref.replace(['\'', '"'], "");
+    let python_script =
+        include_str!("../scripts/collect_file_changes.py").replace("__BASE_REF__", &safe_base_ref);
 
     let cmd = ["python3 -c '", python_script.trim(), "'"].concat();
     let output = shell::agent_exec_capture(agent_name, &cmd).await?;
@@ -1401,9 +1596,9 @@ async fn send_with_retries(
         }
     }
 
-    Err(AppError::Internal(
-        last_err.unwrap_or_else(|| format!("{operation} failed after retries")),
-    ))
+    Err(AppError::Internal(last_err.unwrap_or_else(|| {
+        format!("{operation} failed after retries")
+    })))
 }
 
 /// Create a branch on GitHub via REST API.
@@ -1550,19 +1745,22 @@ async fn sync_agent_to_remote(agent_name: &str, branch_name: &str) -> Result<(),
 }
 
 async fn push_and_preview(
-    config: &Config,
-    db: &PgPool,
-    task_id: &str,
-    short_id: &str,
+    ctx: &PipelineCtx<'_>,
     agent_name: &str,
-    repo: &str,
     branch_name: &str,
-    base_branch: &str,
     branch_pushed: &mut bool,
     preview_created: &mut bool,
-    git_id: &GitIdentity,
     tx: &broadcast::Sender<String>,
 ) -> Result<bool, AppError> {
+    let &PipelineCtx {
+        config,
+        db,
+        task_id,
+        short_id,
+        repo,
+        base_branch,
+        git_id,
+    } = ctx;
     // Determine base_ref for diff
     let base_ref = if *branch_pushed {
         format!("origin/{branch_name}")
@@ -1583,7 +1781,9 @@ async fn push_and_preview(
     save_system_message(db, task_id, "Deploying changes to preview...").await?;
 
     log_and_send(
-        db, task_id, tx,
+        db,
+        task_id,
+        tx,
         &format!(
             "[STEP] Pushing {} addition(s) and {} deletion(s) via GitHub API...",
             file_changes.additions.len(),
@@ -1602,7 +1802,12 @@ async fn push_and_preview(
         .to_string();
 
         create_github_branch(&git_id.token, repo, branch_name, &base_sha).await?;
-        log_and_send(db, task_id, tx, &format!("[STEP] Created branch {branch_name} on GitHub."));
+        log_and_send(
+            db,
+            task_id,
+            tx,
+            &format!("[STEP] Created branch {branch_name} on GitHub."),
+        );
         base_sha
     } else {
         shell::agent_exec_capture(
@@ -1627,10 +1832,20 @@ async fn push_and_preview(
 
     // Create verified commit via GitHub GraphQL API
     let oid = github_create_commit(
-        &git_id.token, repo, branch_name, &expected_oid, &file_changes, &commit_msg,
+        &git_id.token,
+        repo,
+        branch_name,
+        &expected_oid,
+        &file_changes,
+        &commit_msg,
     )
     .await?;
-    log_and_send(db, task_id, tx, &format!("[STEP] Created verified commit {oid}"));
+    log_and_send(
+        db,
+        task_id,
+        tx,
+        &format!("[STEP] Created verified commit {oid}"),
+    );
 
     // Sync local repo to match the API-created commit
     sync_agent_to_remote(agent_name, branch_name).await?;
@@ -1641,16 +1856,33 @@ async fn push_and_preview(
 
     if !*preview_created {
         update_task_status(db, task_id, "creating_preview", None).await?;
-        log_and_send(db, task_id, tx, &format!("[STEP] Creating preview '{preview_slug}'..."));
+        log_and_send(
+            db,
+            task_id,
+            tx,
+            &format!("[STEP] Creating preview '{preview_slug}'..."),
+        );
 
-        shell::create_preview(config, repo, branch_name, Some(&preview_slug), &git_id.token).await?;
+        shell::create_preview(
+            config,
+            repo,
+            branch_name,
+            Some(&preview_slug),
+            &git_id.token,
+        )
+        .await?;
 
         let preview_url = format!("https://{preview_slug}.{}", config.preview_domain);
         update_task_field(db, task_id, "preview_slug", &preview_slug).await?;
         update_task_field(db, task_id, "preview_url", &preview_url).await?;
         *preview_created = true;
     } else {
-        log_and_send(db, task_id, tx, &format!("[STEP] Updating preview '{preview_slug}'..."));
+        log_and_send(
+            db,
+            task_id,
+            tx,
+            &format!("[STEP] Updating preview '{preview_slug}'..."),
+        );
         let _ = shell::update_preview(config, &preview_slug, &git_id.token).await;
     }
 
@@ -1664,7 +1896,15 @@ async fn push_and_preview(
     let tx2 = tx.clone();
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-        take_screenshot(&config2, &db2, &task_id2, &preview_slug2, &preview_url2, &tx2).await;
+        take_screenshot(
+            &config2,
+            &db2,
+            &task_id2,
+            &preview_slug2,
+            &preview_url2,
+            &tx2,
+        )
+        .await;
     });
 
     Ok(true)
@@ -1728,11 +1968,9 @@ pub async fn list_repos(
     _user: AuthUser,
     State(state): State<crate::AppState>,
 ) -> Result<Json<Vec<String>>, AppError> {
-    let rows = sqlx::query_scalar::<_, String>(
-        "SELECT DISTINCT repo FROM tasks ORDER BY repo"
-    )
-    .fetch_all(&state.db)
-    .await?;
+    let rows = sqlx::query_scalar::<_, String>("SELECT DISTINCT repo FROM tasks ORDER BY repo")
+        .fetch_all(&state.db)
+        .await?;
 
     Ok(Json(rows))
 }
@@ -1745,7 +1983,14 @@ pub async fn list_branches(
     Path((owner, repo)): Path<(String, String)>,
 ) -> Result<Json<Vec<String>>, AppError> {
     let full_repo = format!("{owner}/{repo}");
-    check_repo_permission(&state.db, &user.0.sub, &full_repo, &user.0.role, &state.config.github_org).await?;
+    check_repo_permission(
+        &state.db,
+        &user.0.sub,
+        &full_repo,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
     let git_id = get_git_identity(&state.db, &user.0.sub).await?;
 
     let client = reqwest::Client::new();
@@ -1772,7 +2017,9 @@ pub async fn list_branches(
             )));
         }
 
-        let items: Vec<serde_json::Value> = resp.json().await
+        let items: Vec<serde_json::Value> = resp
+            .json()
+            .await
             .map_err(|e| AppError::Internal(format!("Failed to parse branches response: {e}")))?;
 
         if items.is_empty() {
@@ -1862,7 +2109,9 @@ pub async fn send_message(
 
     let has_images = req.image_urls.as_ref().is_some_and(|v| !v.is_empty());
     if req.content.trim().is_empty() && !has_images {
-        return Err(AppError::BadRequest("Message content cannot be empty".into()));
+        return Err(AppError::BadRequest(
+            "Message content cannot be empty".into(),
+        ));
     }
 
     let image_url_json = req
@@ -1959,12 +2208,7 @@ pub fn scrub_secrets(msg: &str, repo_secrets: &[(String, String)]) -> String {
     result
 }
 
-fn log_and_send(
-    db: &PgPool,
-    task_id: &str,
-    tx: &broadcast::Sender<String>,
-    msg: &str,
-) {
+fn log_and_send(db: &PgPool, task_id: &str, tx: &broadcast::Sender<String>, msg: &str) {
     let _ = tx.send(msg.to_string());
     // Fire-and-forget DB persist
     let db = db.clone();
@@ -1986,12 +2230,11 @@ async fn update_task_status(
     error: Option<&str>,
 ) -> Result<(), AppError> {
     // Get the current status and created_by for the state transition record / audit
-    let prev: Option<(String, Option<String>)> = sqlx::query_as(
-        "SELECT status, created_by FROM tasks WHERE id = $1"
-    )
-    .bind(task_id)
-    .fetch_optional(db)
-    .await?;
+    let prev: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT status, created_by FROM tasks WHERE id = $1")
+            .bind(task_id)
+            .fetch_optional(db)
+            .await?;
     let (current_status, created_by) = match prev {
         Some((s, c)) => (Some(s), c),
         None => (None, None),
@@ -2012,7 +2255,11 @@ async fn update_task_status(
     // Audit: task.completed / task.failed
     if status == "completed" || status == "failed" {
         let actor = created_by.as_deref().unwrap_or("system");
-        let event_type = if status == "completed" { "task.completed" } else { "task.failed" };
+        let event_type = if status == "completed" {
+            "task.completed"
+        } else {
+            "task.failed"
+        };
         let mut detail = serde_json::json!({ "status": status });
         if let Some(err) = error {
             detail["error"] = serde_json::Value::String(err.to_string());
@@ -2030,9 +2277,7 @@ async fn update_task_field(
     value: &str,
 ) -> Result<(), AppError> {
     // Safe because field is always a hardcoded string from our code
-    let query = format!(
-        "UPDATE tasks SET {field} = $1, updated_at = NOW() WHERE id = $2"
-    );
+    let query = format!("UPDATE tasks SET {field} = $1, updated_at = NOW() WHERE id = $2");
     sqlx::query(&query)
         .bind(value)
         .bind(task_id)
@@ -2069,9 +2314,10 @@ pub async fn reopen_task(
         )));
     }
 
-    let branch_name = task.branch_name.as_deref().ok_or_else(|| {
-        AppError::BadRequest("Task has no branch — cannot reopen".into())
-    })?;
+    let branch_name = task
+        .branch_name
+        .as_deref()
+        .ok_or_else(|| AppError::BadRequest("Task has no branch — cannot reopen".into()))?;
 
     let short_id = &id[..6];
 
@@ -2109,16 +2355,22 @@ pub async fn reopen_task(
     let created_by = user.0.sub.clone();
 
     tokio::spawn(async move {
-        let result = run_reopen_pipeline(
-            &config, &db, &task_id, &short, &repo, &branch, &base, has_preview, &git_id, &created_by, tx.clone(),
-        )
-        .await;
+        let ctx = PipelineCtx {
+            config: &config,
+            db: &db,
+            task_id: &task_id,
+            short_id: &short,
+            repo: &repo,
+            base_branch: &base,
+            git_id: &git_id,
+        };
+        let result = run_reopen_pipeline(&ctx, &branch, has_preview, &created_by, tx.clone()).await;
 
         if let Err(e) = &result {
             let _ = update_task_status(&db, &task_id, "failed", Some(&e.to_string())).await;
             let _ = tx.send(format!("[ERROR] Reopen failed: {e}"));
             if let Ok(Some(name)) = sqlx::query_scalar::<_, Option<String>>(
-                "SELECT agent_name FROM tasks WHERE id = $1"
+                "SELECT agent_name FROM tasks WHERE id = $1",
             )
             .bind(&task_id)
             .fetch_one(&db)
@@ -2249,28 +2501,30 @@ pub async fn update_task_name(
 }
 
 async fn run_reopen_pipeline(
-    config: &Config,
-    db: &PgPool,
-    task_id: &str,
-    short_id: &str,
-    repo: &str,
+    ctx: &PipelineCtx<'_>,
     branch_name: &str,
-    base_branch: &str,
     had_preview: bool,
-    git_id: &GitIdentity,
     created_by: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
+    let &PipelineCtx {
+        config,
+        db,
+        task_id,
+        short_id,
+        repo,
+        base_branch: _,
+        git_id,
+    } = ctx;
     // Check if the previous agent container is still alive (e.g. server crashed mid-run).
     // Look up the last-known agent_name from the DB.
-    let prev_agent = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT agent_name FROM tasks WHERE id = $1"
-    )
-    .bind(task_id)
-    .fetch_one(db)
-    .await
-    .ok()
-    .flatten();
+    let prev_agent =
+        sqlx::query_scalar::<_, Option<String>>("SELECT agent_name FROM tasks WHERE id = $1")
+            .bind(task_id)
+            .fetch_one(db)
+            .await
+            .ok()
+            .flatten();
 
     let container_exists = prev_agent
         .as_deref()
@@ -2279,24 +2533,47 @@ async fn run_reopen_pipeline(
 
     let agent_name = if container_exists {
         let name = prev_agent.unwrap();
-        log_and_send(db, task_id, &tx, &format!("[STEP] Reusing existing agent container '{name}'..."));
+        log_and_send(
+            db,
+            task_id,
+            &tx,
+            &format!("[STEP] Reusing existing agent container '{name}'..."),
+        );
         update_task_field(db, task_id, "agent_name", &name).await?;
         name
     } else {
         // Step 1: Create agent container
         let name = format!("task-{short_id}");
-        log_and_send(db, task_id, &tx, &format!("[STEP] Creating agent container '{name}' (reopen)..."));
+        log_and_send(
+            db,
+            task_id,
+            &tx,
+            &format!("[STEP] Creating agent container '{name}' (reopen)..."),
+        );
         let create_start = std::time::Instant::now();
         shell::create_agent(config, &name).await?;
         let create_ms = create_start.elapsed().as_millis();
-        log_and_send(db, task_id, &tx, &format!("[STEP] Agent '{name}' created in {create_ms}ms"));
+        log_and_send(
+            db,
+            task_id,
+            &tx,
+            &format!("[STEP] Agent '{name}' created in {create_ms}ms"),
+        );
         update_task_field(db, task_id, "agent_name", &name).await?;
 
         // Step 2: Clone repo and checkout existing branch
         update_task_status(db, task_id, "cloning", None).await?;
-        log_and_send(db, task_id, &tx, &format!("[STEP] Cloning {repo} and checking out existing branch {branch_name}..."));
+        log_and_send(
+            db,
+            task_id,
+            &tx,
+            &format!("[STEP] Cloning {repo} and checking out existing branch {branch_name}..."),
+        );
 
-        let clone_url = format!("https://x-access-token:{}@github.com/{repo}.git", git_id.token);
+        let clone_url = format!(
+            "https://x-access-token:{}@github.com/{repo}.git",
+            git_id.token
+        );
 
         let escaped_name = git_id.name.replace('\'', "'\\''");
         let escaped_email = git_id.email.replace('\'', "'\\''");
@@ -2308,9 +2585,15 @@ async fn run_reopen_pipeline(
         shell::agent_exec(&name, &clone_cmd, tx.clone()).await?;
 
         // Step 2b: Load and inject secrets
-        let repo_secrets = secrets::load_secrets_for_repo(db, &config.secrets_encryption_key, repo).await?;
+        let repo_secrets =
+            secrets::load_secrets_for_repo(db, &config.secrets_encryption_key, repo).await?;
         if !repo_secrets.is_empty() {
-            log_and_send(db, task_id, &tx, &format!("[STEP] Injecting {} secret(s)...", repo_secrets.len()));
+            log_and_send(
+                db,
+                task_id,
+                &tx,
+                &format!("[STEP] Injecting {} secret(s)...", repo_secrets.len()),
+            );
             write_secrets_env_file(&name, &repo_secrets, tx.clone()).await?;
         }
         name
@@ -2322,9 +2605,19 @@ async fn run_reopen_pipeline(
     // Apply network egress restrictions (if any)
     if let Some(ref pol) = policy {
         if let Some(ref egress) = pol.network_egress {
-            log_and_send(db, task_id, &tx, "[POLICY] Applying network egress restrictions...");
+            log_and_send(
+                db,
+                task_id,
+                &tx,
+                "[POLICY] Applying network egress restrictions...",
+            );
             if let Err(e) = shell::apply_egress_rules(&agent_name, egress).await {
-                log_and_send(db, task_id, &tx, &format!("[WARN] Failed to apply egress rules: {e}"));
+                log_and_send(
+                    db,
+                    task_id,
+                    &tx,
+                    &format!("[WARN] Failed to apply egress rules: {e}"),
+                );
             }
         }
     }
@@ -2333,7 +2626,16 @@ async fn run_reopen_pipeline(
     // branch_pushed starts as true since the branch already exists on GitHub
     let mut branch_pushed = true;
     let mut preview_created = had_preview;
-    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, &tx).await?;
+    follow_up_loop(
+        ctx,
+        &agent_name,
+        branch_name,
+        &mut branch_pushed,
+        &mut preview_created,
+        created_by,
+        &tx,
+    )
+    .await?;
 
     // Step 4: Destroy agent container
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
@@ -2424,16 +2726,19 @@ pub async fn recover_interrupted_tasks(
                 );
                 tokio::spawn(async move {
                     tracing::info!("Recovering awaiting_followup task {task_id}");
+                    let ctx = PipelineCtx {
+                        config: &cfg,
+                        db: &db2,
+                        task_id: &task_id,
+                        short_id: &short_id,
+                        repo: &repo,
+                        base_branch: &base,
+                        git_id: &git_id,
+                    };
                     let result = run_reopen_pipeline(
-                        &cfg,
-                        &db2,
-                        &task_id,
-                        &short_id,
-                        &repo,
+                        &ctx,
                         &branch_name,
-                        &base,
                         had_preview,
-                        &git_id,
                         &created_by,
                         tx.clone(),
                     )
@@ -2448,7 +2753,7 @@ pub async fn recover_interrupted_tasks(
                         .await;
                         let _ = tx.send(format!("[ERROR] Recovery failed: {e}"));
                         if let Ok(Some(name)) = sqlx::query_scalar::<_, Option<String>>(
-                            "SELECT agent_name FROM tasks WHERE id = $1"
+                            "SELECT agent_name FROM tasks WHERE id = $1",
                         )
                         .bind(&task_id)
                         .fetch_one(&db2)
@@ -2502,16 +2807,19 @@ pub async fn recover_interrupted_tasks(
                 );
                 tokio::spawn(async move {
                     tracing::info!("Recovering pending task {task_id}");
+                    let ctx = PipelineCtx {
+                        config: &cfg,
+                        db: &db2,
+                        task_id: &task_id,
+                        short_id: &short_id,
+                        repo: &repo,
+                        base_branch: &base,
+                        git_id: &git_id,
+                    };
                     let result = run_task_pipeline(
-                        &cfg,
-                        &db2,
-                        &task_id,
-                        &short_id,
+                        &ctx,
                         &prompt,
-                        &repo,
-                        &base,
                         image_url.as_deref(),
-                        &git_id,
                         None,
                         &created_by,
                         tx.clone(),
@@ -2527,7 +2835,7 @@ pub async fn recover_interrupted_tasks(
                         .await;
                         let _ = tx.send(format!("[ERROR] Recovery failed: {e}"));
                         if let Ok(Some(name)) = sqlx::query_scalar::<_, Option<String>>(
-                            "SELECT agent_name FROM tasks WHERE id = $1"
+                            "SELECT agent_name FROM tasks WHERE id = $1",
                         )
                         .bind(&task_id)
                         .fetch_one(&db2)
@@ -2573,14 +2881,15 @@ async fn generate_pr_body(
     let messages = sqlx::query_as::<_, TaskMessage>(
         "SELECT id, task_id, sender, content, \
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, image_url \
-         FROM task_messages WHERE task_id = $1 ORDER BY id"
+         FROM task_messages WHERE task_id = $1 ORDER BY id",
     )
     .bind(&task.id)
     .fetch_all(db)
     .await
     .unwrap_or_default();
 
-    let conversation = messages.iter()
+    let conversation = messages
+        .iter()
         .filter(|m| m.sender == "claude" || m.sender == "user")
         .map(|m| format!("[{}]: {}", m.sender, m.content))
         .collect::<Vec<_>>()
@@ -2604,7 +2913,8 @@ async fn generate_pr_body(
             let data: serde_json::Value = resp.json().await.unwrap_or_default();
             let files = data["files"].as_array();
             match files {
-                Some(files) => files.iter()
+                Some(files) => files
+                    .iter()
                     .map(|f| {
                         let name = f["filename"].as_str().unwrap_or("?");
                         let adds = f["additions"].as_i64().unwrap_or(0);
@@ -2643,11 +2953,21 @@ async fn generate_pr_body(
         .ok_or_else(|| AppError::Internal("No AI provider configured".into()))?;
 
     let mut env_args = vec![
-        format!("ANTHROPIC_API_KEY={}", if cfg.provider == "openrouter" { "" } else { &cfg.api_key }),
+        format!(
+            "ANTHROPIC_API_KEY={}",
+            if cfg.provider == "openrouter" {
+                ""
+            } else {
+                &cfg.api_key
+            }
+        ),
         "HOME=/tmp".to_string(),
     ];
     if cfg.provider == "openrouter" {
-        let model = cfg.model.as_deref().unwrap_or("anthropic/claude-sonnet-4.6");
+        let model = cfg
+            .model
+            .as_deref()
+            .unwrap_or("anthropic/claude-sonnet-4.6");
         env_args.push(format!("ANTHROPIC_AUTH_TOKEN={}", cfg.api_key));
         env_args.push("ANTHROPIC_BASE_URL=https://openrouter.ai/api".to_string());
         env_args.push(format!("ANTHROPIC_MODEL={model}"));
@@ -2703,27 +3023,40 @@ pub async fn create_pr(
     .ok_or_else(|| AppError::NotFound("Task not found".into()))?;
 
     if task.pr_url.is_some() {
-        return Err(AppError::BadRequest("PR already exists for this task".into()));
+        return Err(AppError::BadRequest(
+            "PR already exists for this task".into(),
+        ));
     }
 
-    let branch_name = task.branch_name.as_deref()
+    let branch_name = task
+        .branch_name
+        .as_deref()
         .ok_or_else(|| AppError::BadRequest("Task has no branch".into()))?;
 
     let git_id = get_git_identity(&state.db, &user.0.sub).await?;
 
     // Build PR title from task name or prompt
-    let title = task.name.as_deref()
+    let title = task
+        .name
+        .as_deref()
         .unwrap_or_else(|| &task.prompt)
         .chars()
         .take(72)
         .collect::<String>();
 
     // Build PR body: gather context and ask Claude to write the description
-    let body = generate_pr_body(&state.db, &state.config.secrets_encryption_key, &git_id.token, &task, &user.0.sub).await
-        .unwrap_or_else(|e| {
-            tracing::warn!("Failed to generate PR body via Claude: {e}, using fallback");
-            format!("## Task\n\n{}", task.prompt)
-        });
+    let body = generate_pr_body(
+        &state.db,
+        &state.config.secrets_encryption_key,
+        &git_id.token,
+        &task,
+        &user.0.sub,
+    )
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!("Failed to generate PR body via Claude: {e}, using fallback");
+        format!("## Task\n\n{}", task.prompt)
+    });
 
     // Create PR via GitHub API
     let client = reqwest::Client::new();
@@ -2750,7 +3083,9 @@ pub async fn create_pr(
         )));
     }
 
-    let pr_data: serde_json::Value = resp.json().await
+    let pr_data: serde_json::Value = resp
+        .json()
+        .await
         .map_err(|e| AppError::Internal(format!("Failed to parse PR response: {e}")))?;
 
     let pr_url = pr_data["html_url"].as_str().unwrap_or("").to_string();
@@ -2798,10 +3133,7 @@ pub async fn link_pr(
 ) -> Result<Json<Task>, AppError> {
     check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
     // Extract PR number from URL (e.g. https://github.com/owner/repo/pull/123)
-    let pr_number: Option<i32> = req.pr_url
-        .rsplit('/')
-        .next()
-        .and_then(|s| s.parse().ok());
+    let pr_number: Option<i32> = req.pr_url.rsplit('/').next().and_then(|s| s.parse().ok());
 
     sqlx::query("UPDATE tasks SET pr_url = $1, pr_number = $2, updated_at = NOW() WHERE id = $3")
         .bind(&req.pr_url)

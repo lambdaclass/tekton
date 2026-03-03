@@ -24,12 +24,8 @@ async fn handle_preview_logs(mut socket: WebSocket, state: AppState, slug: Strin
     let config = state.config.clone();
     let slug2 = slug.clone();
     let stream_handle = tokio::spawn(async move {
-        let _ = shell::run_cmd_streaming(
-            &config.preview_bin,
-            &["logs", &slug2, "--follow"],
-            tx,
-        )
-        .await;
+        let _ =
+            shell::run_cmd_streaming(&config.preview_bin, &["logs", &slug2, "--follow"], tx).await;
     });
 
     loop {

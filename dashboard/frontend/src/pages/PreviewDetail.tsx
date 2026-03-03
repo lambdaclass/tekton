@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ChevronLeft, ExternalLink } from 'lucide-react';
 import LogViewer from '@/components/LogViewer';
-import { connectPreviewLogs, getConfig } from '@/lib/api';
+import { getConfig } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -10,7 +10,6 @@ import { Badge } from '@/components/ui/badge';
 export default function PreviewDetail() {
   const { slug } = useParams<{ slug: string }>();
   const navigate = useNavigate();
-  const [ws, setWs] = useState<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
   const [previewDomain, setPreviewDomain] = useState<string | null>(null);
 
@@ -20,18 +19,7 @@ export default function PreviewDetail() {
     }).catch(() => {});
   }, []);
 
-  useEffect(() => {
-    if (!slug) return;
-
-    const socket = connectPreviewLogs(slug);
-    socket.addEventListener('open', () => setConnected(true));
-    socket.addEventListener('close', () => setConnected(false));
-    setWs(socket);
-
-    return () => {
-      socket.close();
-    };
-  }, [slug]);
+  const handleConnectionChange = useCallback((c: boolean) => setConnected(c), []);
 
   const previewUrl = slug && previewDomain ? `https://${slug}.${previewDomain}` : '';
 
@@ -59,7 +47,7 @@ export default function PreviewDetail() {
           <CardTitle className="text-base">Live Logs</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <LogViewer ws={ws} />
+          <LogViewer previewSlug={slug} onConnectionChange={handleConnectionChange} />
         </CardContent>
       </Card>
     </div>

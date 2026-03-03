@@ -61,6 +61,7 @@ export default function Tasks() {
     searchTimerRef.current = setTimeout(() => {
       setSearch(searchInput);
       setPage(1);
+      setSelectedIndex(-1);
     }, 400);
     return () => {
       if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
@@ -139,10 +140,7 @@ export default function Tasks() {
     }
   }, [selectedIndex]);
 
-  // Reset selection when tasks change
-  useEffect(() => {
-    setSelectedIndex(-1);
-  }, [search, statusFilter, page]);
+  // Selection resets are co-located with the state changes below
 
   const handlePromptChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setPrompt(e.target.value);
@@ -368,7 +366,7 @@ export default function Tasks() {
         </div>
         <select
           value={statusFilter}
-          onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
+          onChange={(e) => { setStatusFilter(e.target.value); setPage(1); setSelectedIndex(-1); }}
           className="h-9 rounded-md border border-input bg-background px-3 text-sm"
         >
           {STATUS_OPTIONS.map((s) => (
@@ -485,7 +483,7 @@ export default function Tasks() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            onClick={() => { setPage((p) => Math.max(1, p - 1)); setSelectedIndex(-1); }}
             disabled={page <= 1}
           >
             <ChevronLeft className="size-4" />
@@ -497,7 +495,7 @@ export default function Tasks() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            onClick={() => { setPage((p) => Math.min(totalPages, p + 1)); setSelectedIndex(-1); }}
             disabled={page >= totalPages}
           >
             Next

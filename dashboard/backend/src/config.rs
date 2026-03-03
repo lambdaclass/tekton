@@ -31,8 +31,7 @@ impl Config {
             github_client_secret: env::var("GITHUB_CLIENT_SECRET")?,
             github_redirect_uri: env::var("GITHUB_REDIRECT_URI")?,
             github_org: env::var("GITHUB_ORG")?,
-            preview_domain: env::var("PREVIEW_DOMAIN")
-                .unwrap_or_else(|_| "example.com".into()),
+            preview_domain: env::var("PREVIEW_DOMAIN").unwrap_or_else(|_| "example.com".into()),
             allowed_repos: env::var("ALLOWED_REPOS")
                 .unwrap_or_default()
                 .split(',')
