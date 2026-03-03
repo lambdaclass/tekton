@@ -393,7 +393,7 @@ function BudgetsSection() {
             <DialogHeader>
               <DialogTitle>Add Budget</DialogTitle>
               <DialogDescription>
-                Set a monthly spending limit. You will be alerted when usage reaches the threshold percentage.
+                Set a monthly spending limit. New tasks will be blocked once the limit is reached.
               </DialogDescription>
             </DialogHeader>
             <form onSubmit={handleCreate} className="space-y-4">
