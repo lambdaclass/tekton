@@ -193,6 +193,8 @@ export function parseImageUrls(raw: string | null | undefined): string[] {
     return [raw];
   }
 }
+export const getTaskDiff = (id: string) =>
+  apiFetch<{ diff: string }>(`/api/tasks/${id}/diff`);
 export const listRepos = () => apiFetch<string[]>('/api/repos');
 export const listBranches = (owner: string, repo: string) =>
   apiFetch<string[]>(`/api/repos/${owner}/${repo}/branches`);

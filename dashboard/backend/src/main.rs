@@ -79,6 +79,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/tasks/{id}/reopen", post(tasks::reopen_task))
         .route("/tasks/{id}/name", patch(tasks::update_task_name))
         .route("/tasks/{id}/actions", get(tasks::list_actions))
+        .route("/tasks/{id}/diff", get(tasks::get_task_diff))
         .route("/tasks/{id}/create-pr", post(tasks::create_pr))
         .route("/tasks/{id}/link-pr", post(tasks::link_pr))
         // Uploads
@@ -136,6 +137,14 @@ async fn main() -> anyhow::Result<()> {
             "/internal/preview-logs/{slug}",
             get(ws::internal_preview_logs),
         );
+
+    // Recover tasks that were in-progress before the server restarted
+    tasks::recover_interrupted_tasks(
+        state.config.clone(),
+        state.db.clone(),
+        state.task_channels.clone(),
+    )
+    .await;
 
     let app = Router::new()
         .nest("/api", api)
