@@ -7,6 +7,8 @@ import Tasks from './pages/Tasks';
 import TaskDetail from './pages/TaskDetail';
 import Admin from './pages/Admin';
 import Settings from './pages/Settings';
+import CostDashboard from './pages/CostDashboard';
+import AuditLog from './pages/AuditLog';
 
 export default function App() {
   return (
@@ -18,6 +20,8 @@ export default function App() {
         <Route path="/tasks" element={<Tasks />} />
         <Route path="/tasks/:id" element={<TaskDetail />} />
         <Route path="/admin" element={<Admin />} />
+        <Route path="/cost" element={<CostDashboard />} />
+        <Route path="/audit" element={<AuditLog />} />
         <Route path="/settings" element={<Settings />} />
       </Route>
     </Routes>

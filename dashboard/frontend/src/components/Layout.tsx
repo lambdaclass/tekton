@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getMe, logout, listTasks } from '@/lib/api';
-import { LayoutDashboard, Container, BrainCircuit, LogOut, Shield, SlidersHorizontal } from 'lucide-react';
+import { LayoutDashboard, Container, BrainCircuit, LogOut, Shield, SlidersHorizontal, DollarSign, ScrollText } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
 import {
   Sidebar,
@@ -169,18 +169,44 @@ export default function Layout() {
                   </SidebarMenuItem>
                 ))}
                 {user.role === 'admin' && (
-                  <SidebarMenuItem>
-                    <SidebarMenuButton
-                      asChild
-                      isActive={isActive('/admin')}
-                      tooltip="Admin"
-                    >
-                      <Link to="/admin">
-                        <Shield />
-                        <span>Admin</span>
-                      </Link>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
+                  <>
+                    <SidebarMenuItem>
+                      <SidebarMenuButton
+                        asChild
+                        isActive={isActive('/admin')}
+                        tooltip="Admin"
+                      >
+                        <Link to="/admin">
+                          <Shield />
+                          <span>Admin</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                    <SidebarMenuItem>
+                      <SidebarMenuButton
+                        asChild
+                        isActive={isActive('/cost')}
+                        tooltip="Cost"
+                      >
+                        <Link to="/cost">
+                          <DollarSign />
+                          <span>Cost</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                    <SidebarMenuItem>
+                      <SidebarMenuButton
+                        asChild
+                        isActive={isActive('/audit')}
+                        tooltip="Audit Log"
+                      >
+                        <Link to="/audit">
+                          <ScrollText />
+                          <span>Audit Log</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  </>
                 )}
               </SidebarMenu>
             </SidebarGroupContent>
@@ -213,7 +239,7 @@ export default function Layout() {
           <SidebarTrigger className="-ml-1" />
           <Separator orientation="vertical" className="mr-2 h-4" />
           <span className="text-sm text-muted-foreground">
-            {NAV_ITEMS.find((n) => isActive(n.to))?.label ?? (isActive('/admin') ? 'Admin' : '')}
+            {NAV_ITEMS.find((n) => isActive(n.to))?.label ?? (isActive('/admin') ? 'Admin' : isActive('/cost') ? 'Cost' : isActive('/audit') ? 'Audit Log' : '')}
           </span>
         </header>
         <main className="flex-1 p-6">
