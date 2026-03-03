@@ -1919,6 +1919,204 @@ async fn run_reopen_pipeline(
     Ok(())
 }
 
+pub async fn recover_interrupted_tasks(
+    config: Arc<Config>,
+    db: PgPool,
+    task_channels: TaskChannels,
+) {
+    let tasks = match sqlx::query_as::<_, Task>(
+        "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
+         preview_slug, preview_url, error_message, \
+         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         parent_task_id, created_by, screenshot_url, image_url, \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         FROM tasks WHERE status NOT IN ('completed', 'failed')",
+    )
+    .fetch_all(&db)
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!("Failed to query interrupted tasks: {e}");
+            return;
+        }
+    };
+
+    if tasks.is_empty() {
+        return;
+    }
+    tracing::info!("Recovering {} interrupted task(s)...", tasks.len());
+
+    for task in tasks {
+        match task.status.as_str() {
+            "awaiting_followup" => {
+                let Some(branch_name) = task.branch_name.clone() else {
+                    let _ = update_task_status(
+                        &db,
+                        &task.id,
+                        "failed",
+                        Some("Interrupted by server restart: missing branch name"),
+                    )
+                    .await;
+                    continue;
+                };
+                let Some(ref created_by) = task.created_by else {
+                    let _ = update_task_status(
+                        &db,
+                        &task.id,
+                        "failed",
+                        Some("Interrupted by server restart: missing created_by"),
+                    )
+                    .await;
+                    continue;
+                };
+                let git_id = match get_git_identity(&db, created_by).await {
+                    Ok(g) => g,
+                    Err(e) => {
+                        let _ = update_task_status(
+                            &db,
+                            &task.id,
+                            "failed",
+                            Some(&format!("Interrupted by server restart: {e}")),
+                        )
+                        .await;
+                        continue;
+                    }
+                };
+                let short_id = task.id[..6].to_string();
+                let had_preview = task.preview_url.is_some();
+                let (tx, _) = broadcast::channel(1024);
+                task_channels.insert(task.id.clone(), tx.clone());
+
+                let (cfg, db2, channels) = (config.clone(), db.clone(), task_channels.clone());
+                let (task_id, repo, base, created_by) = (
+                    task.id.clone(),
+                    task.repo.clone(),
+                    task.base_branch.clone(),
+                    created_by.clone(),
+                );
+                tokio::spawn(async move {
+                    tracing::info!("Recovering awaiting_followup task {task_id}");
+                    let result = run_reopen_pipeline(
+                        &cfg,
+                        &db2,
+                        &task_id,
+                        &short_id,
+                        &repo,
+                        &branch_name,
+                        &base,
+                        had_preview,
+                        &git_id,
+                        &created_by,
+                        tx.clone(),
+                    )
+                    .await;
+                    if let Err(e) = result {
+                        let _ = update_task_status(
+                            &db2,
+                            &task_id,
+                            "failed",
+                            Some(&format!("Recovery failed: {e}")),
+                        )
+                        .await;
+                        let _ = tx.send(format!("[ERROR] Recovery failed: {e}"));
+                        let _ = shell::destroy_agent(&cfg, &format!("a-{short_id}")).await;
+                    }
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                        channels.remove(&task_id);
+                    });
+                });
+            }
+            "pending" => {
+                let Some(ref created_by) = task.created_by else {
+                    let _ = update_task_status(
+                        &db,
+                        &task.id,
+                        "failed",
+                        Some("Interrupted by server restart: missing created_by"),
+                    )
+                    .await;
+                    continue;
+                };
+                let git_id = match get_git_identity(&db, created_by).await {
+                    Ok(g) => g,
+                    Err(e) => {
+                        let _ = update_task_status(
+                            &db,
+                            &task.id,
+                            "failed",
+                            Some(&format!("Interrupted by server restart: {e}")),
+                        )
+                        .await;
+                        continue;
+                    }
+                };
+                let short_id = task.id[..6].to_string();
+                let (tx, _) = broadcast::channel(1024);
+                task_channels.insert(task.id.clone(), tx.clone());
+
+                let (cfg, db2, channels) = (config.clone(), db.clone(), task_channels.clone());
+                let (task_id, prompt, repo, base, image_url, created_by) = (
+                    task.id.clone(),
+                    task.prompt.clone(),
+                    task.repo.clone(),
+                    task.base_branch.clone(),
+                    task.image_url.clone(),
+                    created_by.clone(),
+                );
+                tokio::spawn(async move {
+                    tracing::info!("Recovering pending task {task_id}");
+                    let result = run_task_pipeline(
+                        &cfg,
+                        &db2,
+                        &task_id,
+                        &short_id,
+                        &prompt,
+                        &repo,
+                        &base,
+                        image_url.as_deref(),
+                        &git_id,
+                        None,
+                        &created_by,
+                        tx.clone(),
+                    )
+                    .await;
+                    if let Err(e) = result {
+                        let _ = update_task_status(
+                            &db2,
+                            &task_id,
+                            "failed",
+                            Some(&format!("Recovery failed: {e}")),
+                        )
+                        .await;
+                        let _ = tx.send(format!("[ERROR] Recovery failed: {e}"));
+                        let _ = shell::destroy_agent(&cfg, &format!("a-{short_id}")).await;
+                    }
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                        channels.remove(&task_id);
+                    });
+                });
+            }
+            other => {
+                tracing::info!(
+                    "Task {} was interrupted in state '{other}', marking failed",
+                    task.id
+                );
+                let _ = update_task_status(
+                    &db,
+                    &task.id,
+                    "failed",
+                    Some("Interrupted by server restart. Use Reopen to continue."),
+                )
+                .await;
+            }
+        }
+    }
+}
+
 // ── PR Creation ──
 
 /// Generate a rich PR description using Claude, based on conversation history and diff.
