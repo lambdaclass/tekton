@@ -37,8 +37,8 @@ const OPENROUTER_MODELS = [
   { value: 'meta-llama/llama-3.3-70b-instruct', label: 'Llama 3.3 70B' },
   { value: 'deepseek/deepseek-r1', label: 'DeepSeek R1' },
   { value: 'moonshotai/kimi-k2', label: 'Kimi K2' },
-  { value: 'google/gemini-2.0-flash-001', label: 'Gemini 2.0 Flash 001 (free tier)' },
-  { value: 'nvidia/nemotron-3-nano-30b-a3b:free', label: 'Nemotron 3 Nano 30B (free tier)' },
+  { value: 'nvidia/nemotron-3-nano-30b-a3b:free', label: 'Nvidia Nemotron 3 Nano 30B (free)' },
+  { value: 'arcee-ai/trinity-large-preview:free', label: 'Arcee Trinity Large (free)' },
 ];
 
 export default function Settings() {
