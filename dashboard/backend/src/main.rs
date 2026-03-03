@@ -124,6 +124,14 @@ async fn main() -> anyhow::Result<()> {
             get(ws::internal_preview_logs),
         );
 
+    // Recover tasks that were in-progress before the server restarted
+    tasks::recover_interrupted_tasks(
+        state.config.clone(),
+        state.db.clone(),
+        state.task_channels.clone(),
+    )
+    .await;
+
     let app = Router::new()
         .nest("/api", api)
         .merge(internal)
