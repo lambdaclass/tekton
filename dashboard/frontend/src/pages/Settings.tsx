@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getAiSettings, setAiSettings, deleteAiSettings } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -27,6 +27,18 @@ const PROVIDERS = [
 
 type ProviderValue = (typeof PROVIDERS)[number]['value'];
 
+const OPENROUTER_MODELS = [
+  { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (recommended)' },
+  { value: 'anthropic/claude-opus-4-6', label: 'Claude Opus 4.6' },
+  { value: 'openai/gpt-4o', label: 'GPT-4o' },
+  { value: 'openai/o3', label: 'o3' },
+  { value: 'google/gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
+  { value: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+  { value: 'meta-llama/llama-3.3-70b-instruct', label: 'Llama 3.3 70B' },
+  { value: 'deepseek/deepseek-r1', label: 'DeepSeek R1' },
+  { value: 'moonshotai/kimi-k2', label: 'Kimi K2' },
+];
+
 export default function Settings() {
   const queryClient = useQueryClient();
   const { data: settings, isLoading } = useQuery({
@@ -35,10 +47,17 @@ export default function Settings() {
   });
 
   const [selectedProvider, setSelectedProvider] = useState<ProviderValue>('anthropic');
+  const [selectedModel, setSelectedModel] = useState(OPENROUTER_MODELS[0].value);
   const [apiKey, setApiKey] = useState('');
 
+  useEffect(() => {
+    if (settings?.provider === 'openrouter' && settings.model) {
+      setSelectedModel(settings.model);
+    }
+  }, [settings]);
+
   const saveMutation = useMutation({
-    mutationFn: (data: { provider: string; api_key: string }) => setAiSettings(data),
+    mutationFn: (data: { provider: string; api_key: string; model?: string }) => setAiSettings(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['ai-settings'] });
       setApiKey('');
@@ -59,12 +78,21 @@ export default function Settings() {
   const currentProvider = PROVIDERS.find((p) => p.value === selectedProvider)!;
 
   const handleSave = () => {
-    if (!apiKey.trim()) {
+    if (!apiKey.trim() && !settings?.has_api_key) {
       toast.error('API key cannot be empty');
       return;
     }
-    saveMutation.mutate({ provider: selectedProvider, api_key: apiKey.trim() });
+    saveMutation.mutate({
+      provider: selectedProvider,
+      api_key: apiKey.trim(),
+      model: selectedProvider === 'openrouter' ? selectedModel : undefined,
+    });
   };
+
+  const connectedModelLabel =
+    settings?.provider === 'openrouter' && settings.model
+      ? (OPENROUTER_MODELS.find((m) => m.value === settings.model)?.label ?? settings.model)
+      : null;
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -90,6 +118,9 @@ export default function Settings() {
                       {PROVIDERS.find((p) => p.value === settings.provider)?.label ??
                         settings.provider}
                     </span>
+                    {connectedModelLabel && (
+                      <span className="text-muted-foreground ml-2">· {connectedModelLabel}</span>
+                    )}
                     <span className="text-muted-foreground ml-2">(API key stored)</span>
                   </div>
                   <Button
@@ -137,6 +168,24 @@ export default function Settings() {
                   ))}
                 </div>
               </div>
+
+              {selectedProvider === 'openrouter' && (
+                <div className="space-y-2">
+                  <Label htmlFor="model-select">Model</Label>
+                  <select
+                    id="model-select"
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    {OPENROUTER_MODELS.map((m) => (
+                      <option key={m.value} value={m.value}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <div className="space-y-2">
                 <Label htmlFor="api-key">

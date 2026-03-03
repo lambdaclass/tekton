@@ -572,17 +572,26 @@ async fn run_task_pipeline(
 }
 
 /// Build the shell export fragment that sets AI credentials for a user.
+/// Returns (env_export_string, model_flag) where model_flag is e.g.
+/// `"--model anthropic/claude-sonnet-4-6"` for OpenRouter (which requires
+/// provider-prefixed model names) and `""` for Anthropic direct.
 async fn build_claude_auth_env(
     db: &PgPool,
     encryption_key: &str,
     created_by: &str,
-) -> Result<String, AppError> {
+) -> Result<(String, String), AppError> {
     match settings::get_user_ai_config(db, encryption_key, created_by).await? {
-        Some(cfg) if cfg.provider == "openrouter" => Ok(format!(
-            "export ANTHROPIC_BASE_URL='https://openrouter.ai/api/v1' ANTHROPIC_API_KEY='{}'",
-            cfg.api_key
-        )),
-        Some(cfg) => Ok(format!("export ANTHROPIC_API_KEY='{}'", cfg.api_key)),
+        Some(cfg) if cfg.provider == "openrouter" => {
+            let model = cfg.model.as_deref().unwrap_or("anthropic/claude-sonnet-4-6");
+            Ok((
+                format!(
+                    "export ANTHROPIC_BASE_URL='https://openrouter.ai/api/v1' ANTHROPIC_API_KEY='{}'",
+                    cfg.api_key
+                ),
+                format!("--model {model}"),
+            ))
+        }
+        Some(cfg) => Ok((format!("export ANTHROPIC_API_KEY='{}'", cfg.api_key), String::new())),
         None => Err(AppError::Internal(
             "No AI provider configured. Go to Settings → AI Provider to connect your account."
                 .into(),
@@ -622,12 +631,16 @@ async fn generate_task_name(
 
     let mut cmd_args = vec!["-u".to_string(), "nobody".to_string(), "env".to_string()];
     cmd_args.extend(env_args);
-    cmd_args.extend([
+    let mut claude_args = vec![
         "claude".to_string(),
         "--dangerously-skip-permissions".to_string(),
-        "-p".to_string(),
-        naming_prompt,
-    ]);
+    ];
+    if cfg.provider == "openrouter" {
+        let model = cfg.model.as_deref().unwrap_or("anthropic/claude-sonnet-4-6");
+        claude_args.extend(["--model".to_string(), model.to_string()]);
+    }
+    claude_args.extend(["-p".to_string(), naming_prompt]);
+    cmd_args.extend(claude_args);
 
     let output = tokio::process::Command::new("sudo")
         .args(&cmd_args)
@@ -681,10 +694,10 @@ async fn run_claude_streaming(
     prompt: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<shell::ClaudeStreamResult, AppError> {
-    let auth_env = build_claude_auth_env(db, encryption_key, created_by).await?;
+    let (auth_env, model_flag) = build_claude_auth_env(db, encryption_key, created_by).await?;
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
-        "source /home/agent/.env.sh 2>/dev/null ; {auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose -p '{escaped_prompt}'"
+        "source /home/agent/.env.sh 2>/dev/null ; {auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose {model_flag} -p '{escaped_prompt}'"
     );
     shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
 }
@@ -698,12 +711,12 @@ async fn run_claude_continue(
     prompt: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<shell::ClaudeStreamResult, AppError> {
-    let auth_env = build_claude_auth_env(db, encryption_key, created_by).await?;
+    let (auth_env, model_flag) = build_claude_auth_env(db, encryption_key, created_by).await?;
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
         "source /home/agent/.env.sh 2>/dev/null ; {auth_env} && cd /home/agent/repo && \
          claude --dangerously-skip-permissions --output-format stream-json --verbose \
-         --continue -p '{escaped_prompt}'"
+         {model_flag} --continue -p '{escaped_prompt}'"
     );
     shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
 }
@@ -2000,12 +2013,16 @@ async fn generate_pr_body(
 
     let mut cmd_args = vec!["-u".to_string(), "nobody".to_string(), "env".to_string()];
     cmd_args.extend(env_args);
-    cmd_args.extend([
+    let mut claude_args = vec![
         "claude".to_string(),
         "--dangerously-skip-permissions".to_string(),
-        "-p".to_string(),
-        context.clone(),
-    ]);
+    ];
+    if cfg.provider == "openrouter" {
+        let model = cfg.model.as_deref().unwrap_or("anthropic/claude-sonnet-4-6");
+        claude_args.extend(["--model".to_string(), model.to_string()]);
+    }
+    claude_args.extend(["-p".to_string(), context.clone()]);
+    cmd_args.extend(claude_args);
 
     let output = tokio::process::Command::new("sudo")
         .args(&cmd_args)

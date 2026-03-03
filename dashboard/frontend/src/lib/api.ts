@@ -246,9 +246,9 @@ export const deletePolicy = (id: number) =>
 
 // AI Settings
 export const getAiSettings = () =>
-  apiFetch<{ provider: string | null; has_api_key: boolean }>('/api/settings/ai');
-export const setAiSettings = (data: { provider: string; api_key: string }) =>
-  apiFetch<{ provider: string | null; has_api_key: boolean }>('/api/settings/ai', {
+  apiFetch<{ provider: string | null; has_api_key: boolean; model: string | null }>('/api/settings/ai');
+export const setAiSettings = (data: { provider: string; api_key: string; model?: string }) =>
+  apiFetch<{ provider: string | null; has_api_key: boolean; model: string | null }>('/api/settings/ai', {
     method: 'PUT',
     body: JSON.stringify(data),
   });
