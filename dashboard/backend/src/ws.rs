@@ -1,8 +1,11 @@
+use std::net::SocketAddr;
+
 use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{Path, State, WebSocketUpgrade};
+use axum::extract::{ConnectInfo, Path, State, WebSocketUpgrade};
 use axum::response::Response;
 use tokio::sync::broadcast;
 
+use crate::error::AppError;
 use crate::shell;
 use crate::AppState;
 
@@ -56,6 +59,27 @@ async fn handle_preview_logs(mut socket: WebSocket, state: AppState, slug: Strin
     }
 
     stream_handle.abort();
+}
+
+/// GET /internal/preview-logs/{slug}
+/// Localhost/agent-container-only endpoint: returns the last 100 log lines for a preview.
+pub async fn internal_preview_logs(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Path(slug): Path<String>,
+) -> Result<String, AppError> {
+    let ip = addr.ip();
+    let allowed = ip.is_loopback()
+        || matches!(ip, std::net::IpAddr::V4(v4) if {
+            let o = v4.octets();
+            o[0] == 10 && o[1] == 100
+        });
+    if !allowed {
+        return Err(AppError::Forbidden(
+            "This endpoint is only accessible from localhost or agent containers".into(),
+        ));
+    }
+    shell::get_preview_logs(&state.config, &slug, 100).await
 }
 
 /// WebSocket endpoint for streaming Claude task output.

@@ -117,6 +117,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/internal/secrets/{owner}/{repo}",
             get(secrets::internal_list_secrets),
+        )
+        .route(
+            "/internal/preview-logs/{slug}",
+            get(ws::internal_preview_logs),
         );
 
     let app = Router::new()

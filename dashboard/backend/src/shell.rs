@@ -215,6 +215,36 @@ pub fn agent_ip_public(name: &str) -> Result<String, AppError> {
     agent_ip(name)
 }
 
+/// Get the host-side veth IP for an agent container from its tracking file.
+pub fn agent_host_ip(name: &str) -> Result<String, AppError> {
+    let path = format!("/var/lib/claude-agents/{name}");
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| AppError::Internal(format!("Cannot read agent tracking file {path}: {e}")))?;
+    // Format: "slot host_ip container_ip"
+    content
+        .split_whitespace()
+        .nth(1)
+        .map(String::from)
+        .ok_or_else(|| AppError::Internal(format!("Bad format in agent tracking file {path}")))
+}
+
+/// Fetch the last `max_lines` lines of logs from a preview container.
+pub async fn get_preview_logs(config: &Config, slug: &str, max_lines: usize) -> Result<String, AppError> {
+    let output = tokio::process::Command::new(&config.preview_bin)
+        .args(["logs", slug])
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to run preview logs: {e}")))?;
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let lines: Vec<&str> = text.lines().collect();
+    let tail = if lines.len() > max_lines {
+        &lines[lines.len() - max_lines..]
+    } else {
+        &lines[..]
+    };
+    Ok(tail.join("\n"))
+}
+
 /// Get the container IP for an agent from its tracking file.
 fn agent_ip(name: &str) -> Result<String, AppError> {
     let path = format!("/var/lib/claude-agents/{name}");
