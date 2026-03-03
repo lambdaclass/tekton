@@ -870,7 +870,7 @@ async fn persist_actions(db: &PgPool, task_id: &str, actions: &[shell::RawAction
     }
 }
 
-/// Check all tool_use actions against the policy and log violations/passes.
+/// Check all tool_use actions against the policy and log violations only.
 async fn check_policy_violations(
     db: &PgPool,
     task_id: &str,
@@ -888,7 +888,6 @@ async fn check_policy_violations(
         };
 
         if let Some(reason) = policies::check_tool_denied(policy, tool_name) {
-            // Log policy violation
             let summary = format!("POLICY VIOLATION: {} — {}", tool_name, reason);
             let _ = sqlx::query(
                 "INSERT INTO task_actions (task_id, action_type, tool_name, tool_input, summary) \
@@ -902,17 +901,6 @@ async fn check_policy_violations(
             .await;
             let _ = tx.send(format!("[POLICY] {summary}"));
             tracing::warn!("Policy violation in task {task_id}: {summary}");
-        } else {
-            // Log policy check pass
-            let _ = sqlx::query(
-                "INSERT INTO task_actions (task_id, action_type, tool_name, summary) \
-                 VALUES ($1, 'policy_check', $2, $3)",
-            )
-            .bind(task_id)
-            .bind(tool_name)
-            .bind(&format!("Tool '{}' allowed by policy", tool_name))
-            .execute(db)
-            .await;
         }
     }
 }
