@@ -563,20 +563,29 @@ async fn run_task_pipeline(
         Ok(r) => r,
         Err(e) => {
             // If a policy with denied tools is active, the CLI may exit non-zero because
-            // it cannot fulfil the request. Surface that clearly instead of a raw SSH error.
+            // it cannot fulfil the request. Don't fail the task — notify the user and
+            // fall through to the follow-up loop so they can try a different prompt.
             if let Some(ref pol) = policy {
                 let denied = get_denied_tools(pol);
                 if !denied.is_empty() {
                     let msg = format!(
-                        "Claude failed — this may be because the repo policy blocks these tools: {}. \
-                         The task asked for functionality that requires a blocked tool.",
+                        "Claude could not complete the request — the repo policy blocks these tools: {}.",
                         denied.join(", ")
                     );
                     log_and_send(db, task_id, &tx, &format!("[POLICY] {msg}"));
-                    return Err(AppError::Internal(msg));
+                    save_system_message(db, task_id, &msg).await?;
+                    // Skip to commit/push/follow-up loop with an empty result
+                    shell::ClaudeStreamResult {
+                        text: String::new(),
+                        actions: Vec::new(),
+                        usage: shell::TokenUsage { input_tokens: 0, output_tokens: 0, cost_usd: 0.0 },
+                    }
+                } else {
+                    return Err(e);
                 }
+            } else {
+                return Err(e);
             }
-            return Err(e);
         }
     };
     save_claude_response_as_message(db, task_id, &result.text).await?;
@@ -586,11 +595,12 @@ async fn run_task_pipeline(
     }
     increment_token_usage(db, task_id, &result.usage).await;
 
-    // Check cost limit after initial run (can't undo this call, but we can prevent follow-ups)
+    // Check cost limit after initial run — just log a warning, follow-ups will be
+    // individually rejected by the check inside the follow-up loop.
     if let Some(ref pol) = policy {
         if let Some(max_cost) = pol.max_cost_usd {
             if check_cost_limit(db, task_id, max_cost, &tx).await? {
-                log_and_send(db, task_id, &tx, "[POLICY] Cost limit exceeded after initial run — follow-ups will be blocked.");
+                save_system_message(db, task_id, "Cost limit reached — further follow-ups will be rejected by policy.").await?;
             }
         }
     }
@@ -1187,7 +1197,7 @@ async fn follow_up_loop(
         if let Some(pol) = policy {
             if let Some(max_cost) = pol.max_cost_usd {
                 if check_cost_limit(db, task_id, max_cost, tx).await? {
-                    save_system_message(db, task_id, "Cost limit reached — this follow-up was blocked by policy. You can still mark the task as done.").await?;
+                    save_system_message(db, task_id, "Cost limit reached — this follow-up was blocked by policy.").await?;
                     update_task_status(db, task_id, "awaiting_followup", None).await?;
                     continue;
                 }
