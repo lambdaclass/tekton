@@ -136,6 +136,17 @@ pub async fn create_secret(
     .fetch_one(&state.db)
     .await?;
 
+    // Audit: admin.secret_create
+    crate::audit::log_event(
+        &state.db,
+        "admin.secret_create",
+        &admin.0.sub,
+        Some(&req.repo),
+        serde_json::json!({ "name": &req.name }),
+        None,
+    )
+    .await;
+
     Ok(Json(entry))
 }
 
@@ -145,6 +156,14 @@ pub async fn delete_secret(
     State(state): State<crate::AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // Fetch secret metadata before deleting so we can log it
+    let secret_info = sqlx::query_as::<_, (String, String)>(
+        "SELECT repo, name FROM secrets WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?;
+
     let result = sqlx::query("DELETE FROM secrets WHERE id = $1")
         .bind(id)
         .execute(&state.db)
@@ -152,6 +171,19 @@ pub async fn delete_secret(
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("Secret not found".into()));
+    }
+
+    // Audit: admin.secret_delete
+    if let Some((repo, name)) = secret_info {
+        crate::audit::log_event(
+            &state.db,
+            "admin.secret_delete",
+            &_admin.0.sub,
+            Some(&repo),
+            serde_json::json!({ "name": name, "secret_id": id }),
+            None,
+        )
+        .await;
     }
 
     Ok(Json(serde_json::json!({ "deleted": true })))

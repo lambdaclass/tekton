@@ -155,6 +155,17 @@ pub async fn put_ai_settings(
         .await?;
     }
 
+    // Audit: admin.ai_settings_update
+    crate::audit::log_event(
+        &state.db,
+        "admin.ai_settings_update",
+        &user.0.sub,
+        None,
+        serde_json::json!({ "provider": &req.provider }),
+        None,
+    )
+    .await;
+
     Ok(Json(AiSettingsResponse {
         provider: Some(req.provider),
         has_api_key: true,
@@ -168,5 +179,17 @@ pub async fn delete_ai_settings(
     State(state): State<crate::AppState>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     clear_user_ai_config(&state.db, &user.0.sub).await?;
+
+    // Audit: admin.ai_settings_delete
+    crate::audit::log_event(
+        &state.db,
+        "admin.ai_settings_delete",
+        &user.0.sub,
+        None,
+        serde_json::json!({}),
+        None,
+    )
+    .await;
+
     Ok(Json(serde_json::json!({ "deleted": true })))
 }

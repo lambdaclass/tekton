@@ -1,5 +1,7 @@
+mod audit;
 mod auth;
 mod config;
+mod cost;
 mod db;
 mod error;
 mod models;
@@ -112,6 +114,18 @@ async fn main() -> anyhow::Result<()> {
             "/admin/org-policies/{id}",
             delete(policies::delete_org_policy),
         )
+        // Admin: Cost
+        .route("/admin/cost/summary", get(cost::cost_summary))
+        .route("/admin/cost/by-user", get(cost::cost_by_user))
+        .route("/admin/cost/by-repo", get(cost::cost_by_repo))
+        .route("/admin/cost/trends", get(cost::cost_trends))
+        // Admin: Budgets
+        .route("/admin/budgets", get(cost::list_budgets))
+        .route("/admin/budgets", post(cost::create_budget))
+        .route("/admin/budgets/{id}", put(cost::update_budget))
+        .route("/admin/budgets/{id}", delete(cost::delete_budget))
+        // Admin: Audit Log
+        .route("/admin/audit-log", get(audit::list_audit_log))
         // Settings
         .route("/settings/ai", get(settings::get_ai_settings))
         .route("/settings/ai", put(settings::put_ai_settings))

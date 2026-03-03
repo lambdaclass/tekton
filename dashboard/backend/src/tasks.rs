@@ -220,7 +220,7 @@ pub async fn list_tasks(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks {where_clause} ORDER BY created_at DESC LIMIT ${bind_idx} OFFSET ${next_idx}",
         bind_idx = bind_idx,
         next_idx = bind_idx + 1,
@@ -252,7 +252,7 @@ pub async fn get_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -281,7 +281,7 @@ pub async fn get_subtasks(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE parent_task_id = $1 ORDER BY created_at ASC"
     )
     .bind(&id)
@@ -307,6 +307,9 @@ pub async fn create_task(
 
     // Check per-user repo permission
     check_repo_permission(&state.db, &user.0.sub, &req.repo, &user.0.role, &state.config.github_org).await?;
+
+    // Check budget limits before creating the task
+    crate::cost::check_budget(&state.db, &user.0.sub, &state.config.github_org).await?;
 
     // Validate parent_task_id if provided
     if let Some(ref parent_id) = req.parent_task_id {
@@ -350,13 +353,24 @@ pub async fn create_task(
     // Record initial state transition
     record_state_transition(&state.db, &id, None, "pending").await;
 
+    // Audit: task.created
+    crate::audit::log_event(
+        &state.db,
+        "task.created",
+        &created_by,
+        Some(&id),
+        serde_json::json!({ "repo": &req.repo, "created_by": &created_by }),
+        None,
+    )
+    .await;
+
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -365,6 +379,16 @@ pub async fn create_task(
 
     // Get the user's git identity (GitHub token, name, email)
     let git_id = get_git_identity(&state.db, &created_by).await?;
+
+    // Save preview_slug and preview_url to the DB right away so the frontend can show the link
+    let preview_slug = format!("t-{short_id}");
+    let preview_url = format!("https://{preview_slug}.{}", state.config.preview_domain);
+    sqlx::query("UPDATE tasks SET preview_slug = $1, preview_url = $2 WHERE id = $3")
+        .bind(&preview_slug)
+        .bind(&preview_url)
+        .bind(&id)
+        .execute(&state.db)
+        .await?;
 
     // Create broadcast channel for this task
     let (tx, _) = broadcast::channel(1024);
@@ -383,7 +407,6 @@ pub async fn create_task(
     let channels = state.task_channels.clone();
 
     tokio::spawn(async move {
-        let agent_name = format!("a-{short}");
         let result = run_task_pipeline(
             &config, &db, &task_id, &short, &prompt, &repo, &base, image_url_json2.as_deref(), &git_id, custom_branch, &created_by, tx.clone(),
         )
@@ -393,7 +416,15 @@ pub async fn create_task(
             let _ = update_task_status(&db, &task_id, "failed", Some(&e.to_string())).await;
             let _ = tx.send(format!("[ERROR] Task failed: {e}"));
             // Clean up agent container on failure
-            let _ = shell::destroy_agent(&config, &agent_name).await;
+            if let Ok(Some(name)) = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT agent_name FROM tasks WHERE id = $1"
+            )
+            .bind(&task_id)
+            .fetch_one(&db)
+            .await
+            {
+                let _ = shell::destroy_agent(&config, &name).await;
+            }
         }
 
         // Clean up channel after a delay so late WS subscribers can still read
@@ -422,8 +453,6 @@ async fn run_task_pipeline(
     created_by: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
-    let agent_name = format!("a-{short_id}");
-
     // Generate a short name for the task using Claude
     let task_name = match generate_task_name(db, &config.secrets_encryption_key, created_by, prompt).await {
         Ok(name) if !name.is_empty() => {
@@ -474,10 +503,17 @@ async fn run_task_pipeline(
         );
     }
 
+    // Record pipeline start time for compute_seconds tracking
+    let pipeline_start = std::time::Instant::now();
+
     // Step 1: Create agent container
+    let agent_name = format!("task-{short_id}");
     update_task_status(db, task_id, "creating_agent", None).await?;
     log_and_send(db, task_id, &tx, &format!("[STEP] Creating agent container '{agent_name}'..."));
+    let create_start = std::time::Instant::now();
     shell::create_agent(config, &agent_name).await?;
+    let create_ms = create_start.elapsed().as_millis();
+    log_and_send(db, task_id, &tx, &format!("[STEP] Agent '{agent_name}' created in {create_ms}ms"));
     update_task_field(db, task_id, "agent_name", &agent_name).await?;
 
     // Step 2: Clone repo and create branch
@@ -495,6 +531,33 @@ async fn run_task_pipeline(
     );
     shell::agent_exec(&agent_name, &clone_cmd, tx.clone()).await?;
     update_task_field(db, task_id, "branch_name", &branch_name).await?;
+
+    // Step 2a: Push the empty branch to GitHub, then start the preview on it.
+    // The branch has the same commit as base_branch — no code changes yet.
+    let base_sha = shell::agent_exec_capture(
+        &agent_name,
+        &format!("cd /home/agent/repo && git rev-parse 'origin/{base_branch}'"),
+    )
+    .await?
+    .trim()
+    .to_string();
+    create_github_branch(&git_id.token, repo, &branch_name, &base_sha).await?;
+    log_and_send(db, task_id, &tx, &format!("[STEP] Pushed branch '{branch_name}' to GitHub"));
+
+    // Prewarm preview: create it on the feature branch so it's already on the right
+    // branch when the agent finishes. Runs in background while Claude works.
+    {
+        let config2 = config.clone();
+        let repo2 = repo.to_string();
+        let branch2 = branch_name.clone();
+        let slug = format!("t-{short_id}");
+        let token = git_id.token.clone();
+        tokio::spawn(async move {
+            if let Err(e) = shell::create_preview(&config2, &repo2, &branch2, Some(&slug), &token).await {
+                tracing::warn!("Preview prewarm failed for {slug}: {e}");
+            }
+        });
+    }
 
     // Step 2b: Load and inject secrets
     let repo_secrets = secrets::load_secrets_for_repo(db, &config.secrets_encryption_key, repo).await?;
@@ -609,8 +672,8 @@ async fn run_task_pipeline(
     // the user will see the question in chat and respond via the follow-up loop)
     let _ = commit_changes_in_agent(&agent_name, prompt, tx.clone()).await?;
 
-    // Step 3c: Push and create preview
-    let mut preview_created = false;
+    // Step 3c: Push changes and update preview
+    let mut preview_created = true;
     let mut branch_pushed = false;
     let pushed = push_and_preview(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, &tx).await?;
     if pushed {
@@ -620,9 +683,17 @@ async fn run_task_pipeline(
     // Step 4: Follow-up loop
     follow_up_loop(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, &tx).await?;
 
-    // Step 5: Destroy agent
+    // Step 5: Destroy agent container
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
     let _ = shell::destroy_agent(config, &agent_name).await;
+
+    // Record compute time (wall-clock seconds from agent creation to destruction)
+    let compute_secs = pipeline_start.elapsed().as_secs() as i32;
+    let _ = sqlx::query("UPDATE tasks SET compute_seconds = $1 WHERE id = $2")
+        .bind(compute_secs)
+        .bind(task_id)
+        .execute(db)
+        .await;
 
     // Done
     let preview_url = format!("https://t-{short_id}.{}", config.preview_domain);
@@ -1377,8 +1448,12 @@ async fn create_github_branch(
     })
     .await?;
 
-    if !resp.status().is_success() {
-        let status = resp.status();
+    let status = resp.status();
+    if !status.is_success() {
+        // 422 = branch already exists, which is fine (e.g. we created it early for preview prewarm)
+        if status.as_u16() == 422 {
+            return Ok(());
+        }
         let body = resp.text().await.unwrap_or_default();
         return Err(AppError::Internal(format!(
             "GitHub create branch failed ({status}): {body}"
@@ -1835,6 +1910,17 @@ pub async fn send_message(
     .fetch_one(&state.db)
     .await?;
 
+    // Audit: task.message_sent
+    crate::audit::log_event(
+        &state.db,
+        "task.message_sent",
+        &user.0.sub,
+        Some(&id),
+        serde_json::json!({ "message_id": message.id }),
+        None,
+    )
+    .await;
+
     Ok(Json(message))
 }
 
@@ -1917,13 +2003,17 @@ async fn update_task_status(
     status: &str,
     error: Option<&str>,
 ) -> Result<(), AppError> {
-    // Get the current status for the state transition record
-    let current_status = sqlx::query_scalar::<_, String>(
-        "SELECT status FROM tasks WHERE id = $1"
+    // Get the current status and created_by for the state transition record / audit
+    let prev: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT status, created_by FROM tasks WHERE id = $1"
     )
     .bind(task_id)
     .fetch_optional(db)
     .await?;
+    let (current_status, created_by) = match prev {
+        Some((s, c)) => (Some(s), c),
+        None => (None, None),
+    };
 
     sqlx::query(
         "UPDATE tasks SET status = $1, error_message = $2, updated_at = NOW() WHERE id = $3",
@@ -1936,6 +2026,17 @@ async fn update_task_status(
 
     // Record state transition
     record_state_transition(db, task_id, current_status.as_deref(), status).await;
+
+    // Audit: task.completed / task.failed
+    if status == "completed" || status == "failed" {
+        let actor = created_by.as_deref().unwrap_or("system");
+        let event_type = if status == "completed" { "task.completed" } else { "task.failed" };
+        let mut detail = serde_json::json!({ "status": status });
+        if let Some(err) = error {
+            detail["error"] = serde_json::Value::String(err.to_string());
+        }
+        crate::audit::log_event(db, event_type, actor, Some(task_id), detail, None).await;
+    }
 
     Ok(())
 }
@@ -1971,7 +2072,7 @@ pub async fn reopen_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -1998,6 +2099,17 @@ pub async fn reopen_task(
     // Reset status and error
     update_task_status(&state.db, &id, "creating_agent", None).await?;
 
+    // Audit: task.reopened
+    crate::audit::log_event(
+        &state.db,
+        "task.reopened",
+        &user.0.sub,
+        Some(&id),
+        serde_json::json!({ "previous_status": &task.status }),
+        None,
+    )
+    .await;
+
     // Create broadcast channel
     let (tx, _) = broadcast::channel(1024);
     state.task_channels.insert(id.clone(), tx.clone());
@@ -2015,7 +2127,6 @@ pub async fn reopen_task(
     let created_by = user.0.sub.clone();
 
     tokio::spawn(async move {
-        let agent_name = format!("a-{short}");
         let result = run_reopen_pipeline(
             &config, &db, &task_id, &short, &repo, &branch, &base, has_preview, &git_id, &created_by, tx.clone(),
         )
@@ -2024,7 +2135,15 @@ pub async fn reopen_task(
         if let Err(e) = &result {
             let _ = update_task_status(&db, &task_id, "failed", Some(&e.to_string())).await;
             let _ = tx.send(format!("[ERROR] Reopen failed: {e}"));
-            let _ = shell::destroy_agent(&config, &agent_name).await;
+            if let Ok(Some(name)) = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT agent_name FROM tasks WHERE id = $1"
+            )
+            .bind(&task_id)
+            .fetch_one(&db)
+            .await
+            {
+                let _ = shell::destroy_agent(&config, &name).await;
+            }
         }
 
         let channels2 = channels;
@@ -2041,7 +2160,7 @@ pub async fn reopen_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2063,7 +2182,7 @@ pub async fn get_task_diff(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1",
     )
     .bind(&id)
@@ -2107,7 +2226,7 @@ pub async fn update_task_name(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2121,13 +2240,24 @@ pub async fn update_task_name(
         .execute(&state.db)
         .await?;
 
+    // Audit: task.renamed
+    crate::audit::log_event(
+        &state.db,
+        "task.renamed",
+        &user.0.sub,
+        Some(&id),
+        serde_json::json!({ "new_name": &req.name }),
+        None,
+    )
+    .await;
+
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2149,20 +2279,36 @@ async fn run_reopen_pipeline(
     created_by: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
-    let agent_name = format!("a-{short_id}");
+    // Check if the previous agent container is still alive (e.g. server crashed mid-run).
+    // Look up the last-known agent_name from the DB.
+    let prev_agent = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT agent_name FROM tasks WHERE id = $1"
+    )
+    .bind(task_id)
+    .fetch_one(db)
+    .await
+    .ok()
+    .flatten();
 
-    // If the container is still alive (e.g. server crashed mid-run), reuse it so Claude's
-    // --continue conversation history is preserved. Otherwise create a fresh one.
-    let container_exists = shell::agent_ip_public(&agent_name).is_ok();
+    let container_exists = prev_agent
+        .as_deref()
+        .map(|n| shell::agent_ip_public(n).is_ok())
+        .unwrap_or(false);
 
-    if container_exists {
-        log_and_send(db, task_id, &tx, &format!("[STEP] Reusing existing agent container '{agent_name}'..."));
-        update_task_field(db, task_id, "agent_name", &agent_name).await?;
+    let agent_name = if container_exists {
+        let name = prev_agent.unwrap();
+        log_and_send(db, task_id, &tx, &format!("[STEP] Reusing existing agent container '{name}'..."));
+        update_task_field(db, task_id, "agent_name", &name).await?;
+        name
     } else {
         // Step 1: Create agent container
-        log_and_send(db, task_id, &tx, &format!("[STEP] Creating agent container '{agent_name}' (reopen)..."));
-        shell::create_agent(config, &agent_name).await?;
-        update_task_field(db, task_id, "agent_name", &agent_name).await?;
+        let name = format!("task-{short_id}");
+        log_and_send(db, task_id, &tx, &format!("[STEP] Creating agent container '{name}' (reopen)..."));
+        let create_start = std::time::Instant::now();
+        shell::create_agent(config, &name).await?;
+        let create_ms = create_start.elapsed().as_millis();
+        log_and_send(db, task_id, &tx, &format!("[STEP] Agent '{name}' created in {create_ms}ms"));
+        update_task_field(db, task_id, "agent_name", &name).await?;
 
         // Step 2: Clone repo and checkout existing branch
         update_task_status(db, task_id, "cloning", None).await?;
@@ -2177,15 +2323,16 @@ async fn run_reopen_pipeline(
              cd repo && git checkout '{branch_name}' && \
              git config user.name '{escaped_name}' && git config user.email '{escaped_email}'"
         );
-        shell::agent_exec(&agent_name, &clone_cmd, tx.clone()).await?;
+        shell::agent_exec(&name, &clone_cmd, tx.clone()).await?;
 
         // Step 2b: Load and inject secrets
         let repo_secrets = secrets::load_secrets_for_repo(db, &config.secrets_encryption_key, repo).await?;
         if !repo_secrets.is_empty() {
             log_and_send(db, task_id, &tx, &format!("[STEP] Injecting {} secret(s)...", repo_secrets.len()));
-            write_secrets_env_file(&agent_name, &repo_secrets, tx.clone()).await?;
+            write_secrets_env_file(&name, &repo_secrets, tx.clone()).await?;
         }
-    }
+        name
+    };
 
     // Load effective policy for enforcement during follow-ups
     let policy = policies::load_effective_policy(db, repo).await?;
@@ -2206,7 +2353,7 @@ async fn run_reopen_pipeline(
     let mut preview_created = had_preview;
     follow_up_loop(config, db, task_id, short_id, &agent_name, repo, branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, &tx).await?;
 
-    // Step 4: Destroy agent
+    // Step 4: Destroy agent container
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
     let _ = shell::destroy_agent(config, &agent_name).await;
 
@@ -2227,7 +2374,7 @@ pub async fn recover_interrupted_tasks(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE status NOT IN ('completed', 'failed')",
     )
     .fetch_all(&db)
@@ -2318,7 +2465,15 @@ pub async fn recover_interrupted_tasks(
                         )
                         .await;
                         let _ = tx.send(format!("[ERROR] Recovery failed: {e}"));
-                        let _ = shell::destroy_agent(&cfg, &format!("a-{short_id}")).await;
+                        if let Ok(Some(name)) = sqlx::query_scalar::<_, Option<String>>(
+                            "SELECT agent_name FROM tasks WHERE id = $1"
+                        )
+                        .bind(&task_id)
+                        .fetch_one(&db2)
+                        .await
+                        {
+                            let _ = shell::destroy_agent(&cfg, &name).await;
+                        }
                     }
                     tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -2389,7 +2544,15 @@ pub async fn recover_interrupted_tasks(
                         )
                         .await;
                         let _ = tx.send(format!("[ERROR] Recovery failed: {e}"));
-                        let _ = shell::destroy_agent(&cfg, &format!("a-{short_id}")).await;
+                        if let Ok(Some(name)) = sqlx::query_scalar::<_, Option<String>>(
+                            "SELECT agent_name FROM tasks WHERE id = $1"
+                        )
+                        .bind(&task_id)
+                        .fetch_one(&db2)
+                        .await
+                        {
+                            let _ = shell::destroy_agent(&cfg, &name).await;
+                        }
                     }
                     tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -2549,7 +2712,7 @@ pub async fn create_pr(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2618,13 +2781,24 @@ pub async fn create_pr(
         .execute(&state.db)
         .await?;
 
+    // Audit: task.pr_created
+    crate::audit::log_event(
+        &state.db,
+        "task.pr_created",
+        &user.0.sub,
+        Some(&id),
+        serde_json::json!({ "pr_url": &pr_url, "pr_number": pr_number }),
+        None,
+    )
+    .await;
+
     let updated_task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2654,13 +2828,24 @@ pub async fn link_pr(
         .execute(&state.db)
         .await?;
 
+    // Audit: task.pr_linked
+    crate::audit::log_event(
+        &state.db,
+        "task.pr_linked",
+        &user.0.sub,
+        Some(&id),
+        serde_json::json!({ "pr_url": &req.pr_url }),
+        None,
+    )
+    .await;
+
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
