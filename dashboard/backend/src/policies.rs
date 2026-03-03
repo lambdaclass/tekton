@@ -67,6 +67,17 @@ pub async fn create_policy(
     .fetch_one(&state.db)
     .await?;
 
+    // Audit: admin.policy_create
+    crate::audit::log_event(
+        &state.db,
+        "admin.policy_create",
+        &admin.0.sub,
+        Some(&req.repo),
+        serde_json::json!({ "policy_id": policy.id }),
+        None,
+    )
+    .await;
+
     Ok(Json(policy))
 }
 
@@ -139,7 +150,19 @@ pub async fn update_policy(
     let policy = query.fetch_optional(&state.db).await?;
 
     match policy {
-        Some(p) => Ok(Json(p)),
+        Some(p) => {
+            // Audit: admin.policy_update
+            crate::audit::log_event(
+                &state.db,
+                "admin.policy_update",
+                &_admin.0.sub,
+                Some(&p.repo),
+                serde_json::json!({ "policy_id": p.id }),
+                None,
+            )
+            .await;
+            Ok(Json(p))
+        }
         None => Err(AppError::NotFound("Policy not found".into())),
     }
 }
@@ -150,6 +173,13 @@ pub async fn delete_policy(
     State(state): State<crate::AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // Fetch policy repo before deleting so we can log it
+    let policy_repo: Option<String> =
+        sqlx::query_scalar("SELECT repo FROM repo_policies WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?;
+
     let result = sqlx::query("DELETE FROM repo_policies WHERE id = $1")
         .bind(id)
         .execute(&state.db)
@@ -158,6 +188,17 @@ pub async fn delete_policy(
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("Policy not found".into()));
     }
+
+    // Audit: admin.policy_delete
+    crate::audit::log_event(
+        &state.db,
+        "admin.policy_delete",
+        &_admin.0.sub,
+        policy_repo.as_deref(),
+        serde_json::json!({ "policy_id": id }),
+        None,
+    )
+    .await;
 
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
