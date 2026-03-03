@@ -1540,8 +1540,8 @@ fn build_followup_prompt(original_prompt: &str, history: &[String], new_message:
 async fn collect_file_changes(agent_name: &str, base_ref: &str) -> Result<FileChanges, AppError> {
     // Sanitize base_ref (should be like "origin/main" — never contains quotes)
     let safe_base_ref = base_ref.replace(['\'', '"'], "");
-    let python_script = include_str!("../scripts/collect_file_changes.py")
-        .replace("__BASE_REF__", &safe_base_ref);
+    let python_script =
+        include_str!("../scripts/collect_file_changes.py").replace("__BASE_REF__", &safe_base_ref);
 
     let cmd = ["python3 -c '", python_script.trim(), "'"].concat();
     let output = shell::agent_exec_capture(agent_name, &cmd).await?;
