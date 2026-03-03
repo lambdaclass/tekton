@@ -1910,6 +1910,17 @@ pub async fn send_message(
     .fetch_one(&state.db)
     .await?;
 
+    // Audit: task.message_sent
+    crate::audit::log_event(
+        &state.db,
+        "task.message_sent",
+        &user.0.sub,
+        Some(&id),
+        serde_json::json!({ "message_id": message.id }),
+        None,
+    )
+    .await;
+
     Ok(Json(message))
 }
 
@@ -1992,13 +2003,17 @@ async fn update_task_status(
     status: &str,
     error: Option<&str>,
 ) -> Result<(), AppError> {
-    // Get the current status for the state transition record
-    let current_status = sqlx::query_scalar::<_, String>(
-        "SELECT status FROM tasks WHERE id = $1"
+    // Get the current status and created_by for the state transition record / audit
+    let prev: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT status, created_by FROM tasks WHERE id = $1"
     )
     .bind(task_id)
     .fetch_optional(db)
     .await?;
+    let (current_status, created_by) = match prev {
+        Some((s, c)) => (Some(s), c),
+        None => (None, None),
+    };
 
     sqlx::query(
         "UPDATE tasks SET status = $1, error_message = $2, updated_at = NOW() WHERE id = $3",
@@ -2011,6 +2026,17 @@ async fn update_task_status(
 
     // Record state transition
     record_state_transition(db, task_id, current_status.as_deref(), status).await;
+
+    // Audit: task.completed / task.failed
+    if status == "completed" || status == "failed" {
+        let actor = created_by.as_deref().unwrap_or("system");
+        let event_type = if status == "completed" { "task.completed" } else { "task.failed" };
+        let mut detail = serde_json::json!({ "status": status });
+        if let Some(err) = error {
+            detail["error"] = serde_json::Value::String(err.to_string());
+        }
+        crate::audit::log_event(db, event_type, actor, Some(task_id), detail, None).await;
+    }
 
     Ok(())
 }
@@ -2072,6 +2098,17 @@ pub async fn reopen_task(
 
     // Reset status and error
     update_task_status(&state.db, &id, "creating_agent", None).await?;
+
+    // Audit: task.reopened
+    crate::audit::log_event(
+        &state.db,
+        "task.reopened",
+        &user.0.sub,
+        Some(&id),
+        serde_json::json!({ "previous_status": &task.status }),
+        None,
+    )
+    .await;
 
     // Create broadcast channel
     let (tx, _) = broadcast::channel(1024);
@@ -2202,6 +2239,17 @@ pub async fn update_task_name(
         .bind(&id)
         .execute(&state.db)
         .await?;
+
+    // Audit: task.renamed
+    crate::audit::log_event(
+        &state.db,
+        "task.renamed",
+        &user.0.sub,
+        Some(&id),
+        serde_json::json!({ "new_name": &req.name }),
+        None,
+    )
+    .await;
 
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
@@ -2733,6 +2781,17 @@ pub async fn create_pr(
         .execute(&state.db)
         .await?;
 
+    // Audit: task.pr_created
+    crate::audit::log_event(
+        &state.db,
+        "task.pr_created",
+        &user.0.sub,
+        Some(&id),
+        serde_json::json!({ "pr_url": &pr_url, "pr_number": pr_number }),
+        None,
+    )
+    .await;
+
     let updated_task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
@@ -2768,6 +2827,17 @@ pub async fn link_pr(
         .bind(&id)
         .execute(&state.db)
         .await?;
+
+    // Audit: task.pr_linked
+    crate::audit::log_event(
+        &state.db,
+        "task.pr_linked",
+        &user.0.sub,
+        Some(&id),
+        serde_json::json!({ "pr_url": &req.pr_url }),
+        None,
+    )
+    .await;
 
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \

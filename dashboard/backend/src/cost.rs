@@ -211,6 +211,17 @@ pub async fn create_budget(
     .fetch_one(&state.db)
     .await?;
 
+    // Audit: admin.budget_create
+    crate::audit::log_event(
+        &state.db,
+        "admin.budget_create",
+        &admin.0.sub,
+        Some(&req.scope),
+        serde_json::json!({ "budget_id": budget.id, "scope_type": &req.scope_type, "monthly_limit_usd": req.monthly_limit_usd }),
+        None,
+    )
+    .await;
+
     Ok(Json(budget))
 }
 
@@ -261,7 +272,19 @@ pub async fn update_budget(
     let budget = query.fetch_optional(&state.db).await?;
 
     match budget {
-        Some(b) => Ok(Json(b)),
+        Some(b) => {
+            // Audit: admin.budget_update
+            crate::audit::log_event(
+                &state.db,
+                "admin.budget_update",
+                &_admin.0.sub,
+                Some(&b.scope),
+                serde_json::json!({ "budget_id": b.id }),
+                None,
+            )
+            .await;
+            Ok(Json(b))
+        }
         None => Err(AppError::NotFound("Budget not found".into())),
     }
 }
@@ -272,6 +295,13 @@ pub async fn delete_budget(
     State(state): State<crate::AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // Fetch scope before deleting so we can log it
+    let budget_scope: Option<String> =
+        sqlx::query_scalar("SELECT scope FROM budgets WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?;
+
     let result = sqlx::query("DELETE FROM budgets WHERE id = $1")
         .bind(id)
         .execute(&state.db)
@@ -280,6 +310,17 @@ pub async fn delete_budget(
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("Budget not found".into()));
     }
+
+    // Audit: admin.budget_delete
+    crate::audit::log_event(
+        &state.db,
+        "admin.budget_delete",
+        &_admin.0.sub,
+        budget_scope.as_deref(),
+        serde_json::json!({ "budget_id": id }),
+        None,
+    )
+    .await;
 
     Ok(Json(serde_json::json!({ "deleted": true })))
 }

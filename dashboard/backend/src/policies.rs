@@ -397,6 +397,17 @@ pub async fn create_org_policy(
     .fetch_one(&state.db)
     .await?;
 
+    // Audit: admin.org_policy_create
+    crate::audit::log_event(
+        &state.db,
+        "admin.org_policy_create",
+        &admin.0.sub,
+        Some(&req.org),
+        serde_json::json!({ "policy_id": policy.id }),
+        None,
+    )
+    .await;
+
     Ok(Json(policy))
 }
 
@@ -465,7 +476,19 @@ pub async fn update_org_policy(
     let policy = query.fetch_optional(&state.db).await?;
 
     match policy {
-        Some(p) => Ok(Json(p)),
+        Some(p) => {
+            // Audit: admin.org_policy_update
+            crate::audit::log_event(
+                &state.db,
+                "admin.org_policy_update",
+                &_admin.0.sub,
+                Some(&p.org),
+                serde_json::json!({ "policy_id": p.id }),
+                None,
+            )
+            .await;
+            Ok(Json(p))
+        }
         None => Err(AppError::NotFound("Org policy not found".into())),
     }
 }
@@ -476,6 +499,13 @@ pub async fn delete_org_policy(
     State(state): State<crate::AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // Fetch org before deleting so we can log it
+    let policy_org: Option<String> =
+        sqlx::query_scalar("SELECT org FROM org_policies WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?;
+
     let result = sqlx::query("DELETE FROM org_policies WHERE id = $1")
         .bind(id)
         .execute(&state.db)
@@ -484,6 +514,17 @@ pub async fn delete_org_policy(
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("Org policy not found".into()));
     }
+
+    // Audit: admin.org_policy_delete
+    crate::audit::log_event(
+        &state.db,
+        "admin.org_policy_delete",
+        &_admin.0.sub,
+        policy_org.as_deref(),
+        serde_json::json!({ "policy_id": id }),
+        None,
+    )
+    .await;
 
     Ok(Json(serde_json::json!({ "deleted": true })))
 }

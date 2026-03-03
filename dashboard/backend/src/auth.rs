@@ -448,5 +448,16 @@ pub async fn set_user_repos(
         .await?;
     }
 
+    // Audit: admin.user_repos_changed
+    crate::audit::log_event(
+        &state.db,
+        "admin.user_repos_changed",
+        &_claims.sub,
+        Some(&login),
+        serde_json::json!({ "repos": &req.repos }),
+        None,
+    )
+    .await;
+
     Ok(axum::Json(req.repos))
 }
