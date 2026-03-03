@@ -585,7 +585,7 @@ async fn build_claude_auth_env(
             let model = cfg.model.as_deref().unwrap_or("anthropic/claude-sonnet-4.6");
             Ok((
                 format!(
-                    "export ANTHROPIC_BASE_URL='https://openrouter.ai/api/v1' ANTHROPIC_API_KEY='{}' ANTHROPIC_MODEL='{}'",
+                    "export ANTHROPIC_BASE_URL='https://openrouter.ai/api' ANTHROPIC_AUTH_TOKEN='{}' ANTHROPIC_API_KEY='' ANTHROPIC_MODEL='{}'",
                     cfg.api_key, model
                 ),
                 String::new(),
@@ -622,12 +622,13 @@ async fn generate_task_name(
     );
 
     let mut env_args = vec![
-        format!("ANTHROPIC_API_KEY={}", cfg.api_key),
+        format!("ANTHROPIC_API_KEY={}", if cfg.provider == "openrouter" { "" } else { &cfg.api_key }),
         "HOME=/tmp".to_string(),
     ];
     if cfg.provider == "openrouter" {
         let model = cfg.model.as_deref().unwrap_or("anthropic/claude-sonnet-4.6");
-        env_args.push("ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1".to_string());
+        env_args.push(format!("ANTHROPIC_AUTH_TOKEN={}", cfg.api_key));
+        env_args.push("ANTHROPIC_BASE_URL=https://openrouter.ai/api".to_string());
         env_args.push(format!("ANTHROPIC_MODEL={model}"));
     }
 
@@ -2002,12 +2003,13 @@ async fn generate_pr_body(
         .ok_or_else(|| AppError::Internal("No AI provider configured".into()))?;
 
     let mut env_args = vec![
-        format!("ANTHROPIC_API_KEY={}", cfg.api_key),
+        format!("ANTHROPIC_API_KEY={}", if cfg.provider == "openrouter" { "" } else { &cfg.api_key }),
         "HOME=/tmp".to_string(),
     ];
     if cfg.provider == "openrouter" {
         let model = cfg.model.as_deref().unwrap_or("anthropic/claude-sonnet-4.6");
-        env_args.push("ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1".to_string());
+        env_args.push(format!("ANTHROPIC_AUTH_TOKEN={}", cfg.api_key));
+        env_args.push("ANTHROPIC_BASE_URL=https://openrouter.ai/api".to_string());
         env_args.push(format!("ANTHROPIC_MODEL={model}"));
     }
 
