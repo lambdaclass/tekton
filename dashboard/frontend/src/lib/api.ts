@@ -246,6 +246,103 @@ export const updatePolicy = (id: number, data: { protected_branches?: string[]; 
 export const deletePolicy = (id: number) =>
   apiFetch<{ deleted: boolean }>(`/api/admin/policies/${id}`, { method: 'DELETE' });
 
+// Cost tracking
+export interface CostSummary {
+  total_cost_usd: number;
+  total_tasks: number;
+  avg_cost_per_task: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+}
+export interface CostTrend {
+  date: string;
+  cost_usd: number;
+  tasks: number;
+}
+export interface CostByUser {
+  user: string;
+  tasks: number;
+  input_tokens: number;
+  output_tokens: number;
+  estimated_cost_usd: number;
+  compute_time_seconds: number;
+}
+export interface CostByRepo {
+  repo: string;
+  tasks: number;
+  input_tokens: number;
+  output_tokens: number;
+  estimated_cost_usd: number;
+  compute_time_seconds: number;
+}
+export interface Budget {
+  id: number;
+  scope_type: string;
+  scope_value: string;
+  monthly_limit_usd: number;
+  alert_threshold_pct: number;
+  created_by: string | null;
+  created_at: string;
+}
+export const getCostSummary = (days?: number) => {
+  const qs = days ? `?days=${days}` : '';
+  return apiFetch<CostSummary>(`/api/admin/cost/summary${qs}`);
+};
+export const getCostTrends = (days?: number) => {
+  const qs = days ? `?days=${days}` : '';
+  return apiFetch<CostTrend[]>(`/api/admin/cost/trends${qs}`);
+};
+export const getCostByUser = (days?: number) => {
+  const qs = days ? `?days=${days}` : '';
+  return apiFetch<CostByUser[]>(`/api/admin/cost/by-user${qs}`);
+};
+export const getCostByRepo = (days?: number) => {
+  const qs = days ? `?days=${days}` : '';
+  return apiFetch<CostByRepo[]>(`/api/admin/cost/by-repo${qs}`);
+};
+export const listBudgets = () => apiFetch<Budget[]>('/api/admin/budgets');
+export const createBudget = (data: { scope_type: string; scope_value: string; monthly_limit_usd: number; alert_threshold_pct: number }) =>
+  apiFetch<Budget>('/api/admin/budgets', { method: 'POST', body: JSON.stringify(data) });
+export const deleteBudget = (id: number) =>
+  apiFetch<{ deleted: boolean }>(`/api/admin/budgets/${id}`, { method: 'DELETE' });
+
+// Audit log
+export interface AuditLogEntry {
+  id: number;
+  event_type: string;
+  actor: string;
+  target: string | null;
+  detail: Record<string, unknown> | null;
+  created_at: string;
+}
+export interface PaginatedAuditLog {
+  entries: AuditLogEntry[];
+  total: number;
+  page: number;
+  per_page: number;
+}
+export interface AuditLogParams {
+  event_type?: string;
+  actor?: string;
+  target?: string;
+  start_date?: string;
+  end_date?: string;
+  page?: number;
+  per_page?: number;
+}
+export const getAuditLog = (params?: AuditLogParams) => {
+  const sp = new URLSearchParams();
+  if (params?.event_type) sp.set('event_type', params.event_type);
+  if (params?.actor) sp.set('actor', params.actor);
+  if (params?.target) sp.set('target', params.target);
+  if (params?.start_date) sp.set('start_date', params.start_date);
+  if (params?.end_date) sp.set('end_date', params.end_date);
+  if (params?.page) sp.set('page', String(params.page));
+  if (params?.per_page) sp.set('per_page', String(params.per_page));
+  const qs = sp.toString();
+  return apiFetch<PaginatedAuditLog>(`/api/admin/audit-log${qs ? `?${qs}` : ''}`);
+};
+
 // AI Settings
 export const getAiSettings = () =>
   apiFetch<{ provider: string | null; has_api_key: boolean; model: string | null }>('/api/settings/ai');
