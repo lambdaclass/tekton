@@ -1,5 +1,6 @@
 use axum::extract::{Path, State};
 use axum::Json;
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 use crate::auth::AdminUser;
@@ -8,6 +9,136 @@ use crate::models::{
     CreateOrgPolicyRequest, CreateRepoPolicyRequest, OrgPolicy, RepoPolicy,
     UpdateOrgPolicyRequest, UpdateRepoPolicyRequest,
 };
+
+// ── Policy Presets ──
+
+#[derive(Debug, Serialize, Clone)]
+pub struct PolicyPreset {
+    pub name: String,
+    pub description: String,
+    pub protected_branches: Vec<String>,
+    pub allowed_tools: Option<serde_json::Value>,
+    pub network_egress: Option<serde_json::Value>,
+    pub max_cost_usd: Option<f64>,
+    pub require_approval_above_usd: Option<f64>,
+}
+
+fn builtin_presets() -> Vec<PolicyPreset> {
+    vec![
+        PolicyPreset {
+            name: "default-safe".into(),
+            description: "Balanced safety: protects main/master, denies Bash, $50 cost cap".into(),
+            protected_branches: vec!["main".into(), "master".into()],
+            allowed_tools: Some(serde_json::json!({ "deny": ["Bash"] })),
+            network_egress: None,
+            max_cost_usd: Some(50.0),
+            require_approval_above_usd: None,
+        },
+        PolicyPreset {
+            name: "strict".into(),
+            description: "Maximum safety: broad branch protection, shell denied, network allowlist, low cost cap with approval".into(),
+            protected_branches: vec![
+                "main".into(),
+                "master".into(),
+                "develop".into(),
+                "release/*".into(),
+            ],
+            allowed_tools: Some(serde_json::json!({ "deny": ["Bash"] })),
+            network_egress: Some(serde_json::json!({
+                "allow": ["github.com", "npmjs.org", "pypi.org", "crates.io"]
+            })),
+            max_cost_usd: Some(25.0),
+            require_approval_above_usd: Some(10.0),
+        },
+        PolicyPreset {
+            name: "permissive".into(),
+            description: "Minimal restrictions: protects main only, no tool or network limits".into(),
+            protected_branches: vec!["main".into()],
+            allowed_tools: None,
+            network_egress: None,
+            max_cost_usd: None,
+            require_approval_above_usd: None,
+        },
+    ]
+}
+
+/// GET /api/admin/policy-presets
+pub async fn list_presets(
+    _admin: AdminUser,
+) -> Result<Json<Vec<PolicyPreset>>, AppError> {
+    Ok(Json(builtin_presets()))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ApplyPresetRequest {
+    pub preset: String,
+    pub repo: Option<String>,
+    pub org: Option<String>,
+}
+
+/// POST /api/admin/policies/from-preset
+pub async fn apply_preset(
+    admin: AdminUser,
+    State(state): State<crate::AppState>,
+    Json(req): Json<ApplyPresetRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let preset = builtin_presets()
+        .into_iter()
+        .find(|p| p.name == req.preset)
+        .ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "Unknown preset '{}'. Available: default-safe, strict, permissive",
+                req.preset
+            ))
+        })?;
+
+    if req.repo.is_none() && req.org.is_none() {
+        return Err(AppError::BadRequest(
+            "Must specify either 'repo' or 'org' (or both)".into(),
+        ));
+    }
+
+    let mut results = serde_json::Map::new();
+
+    if let Some(ref repo) = req.repo {
+        let repo_policy = create_policy(
+            AdminUser(admin.0.clone()),
+            State(state.clone()),
+            Json(CreateRepoPolicyRequest {
+                repo: repo.clone(),
+                protected_branches: Some(preset.protected_branches.clone()),
+                allowed_tools: preset.allowed_tools.clone(),
+                network_egress: preset.network_egress.clone(),
+                max_cost_usd: preset.max_cost_usd,
+                require_approval_above_usd: preset.require_approval_above_usd,
+            }),
+        )
+        .await?;
+        results.insert("repo_policy".into(), serde_json::to_value(&repo_policy.0).unwrap());
+    }
+
+    if let Some(ref org) = req.org {
+        let org_policy = create_org_policy(
+            AdminUser(admin.0.clone()),
+            State(state.clone()),
+            Json(CreateOrgPolicyRequest {
+                org: org.clone(),
+                protected_branches: Some(preset.protected_branches.clone()),
+                allowed_tools: preset.allowed_tools.clone(),
+                network_egress: preset.network_egress.clone(),
+                max_cost_usd: preset.max_cost_usd,
+                require_approval_above_usd: preset.require_approval_above_usd,
+            }),
+        )
+        .await?;
+        results.insert("org_policy".into(), serde_json::to_value(&org_policy.0).unwrap());
+    }
+
+    results.insert("preset".into(), serde_json::Value::String(req.preset));
+    Ok(Json(serde_json::Value::Object(results)))
+}
+
+// ── Repo Policy CRUD ──
 
 /// GET /api/admin/policies
 pub async fn list_policies(

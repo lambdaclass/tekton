@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 // ── Auth ──
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: String, // github_login
     pub name: String,
