@@ -15,7 +15,6 @@ import {
   createOrgPolicy,
   deleteOrgPolicy,
   listPresets,
-  applyPreset,
   getMe,
 } from '@/lib/api';
 import type { PolicyPreset } from '@/lib/api';
