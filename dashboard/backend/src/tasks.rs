@@ -1183,12 +1183,13 @@ async fn follow_up_loop(
             );
         }
 
-        // Check cost limit before running follow-up
+        // Check cost limit before running follow-up — reject this message but keep the task open
         if let Some(pol) = policy {
             if let Some(max_cost) = pol.max_cost_usd {
                 if check_cost_limit(db, task_id, max_cost, tx).await? {
-                    save_system_message(db, task_id, "Cost limit reached — follow-up blocked by policy.").await?;
-                    return Ok(FollowUpOutcome::Done);
+                    save_system_message(db, task_id, "Cost limit reached — this follow-up was blocked by policy. You can still mark the task as done.").await?;
+                    update_task_status(db, task_id, "awaiting_followup", None).await?;
+                    continue;
                 }
             }
         }
