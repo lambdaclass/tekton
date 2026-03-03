@@ -28,11 +28,11 @@ const PROVIDERS = [
 type ProviderValue = (typeof PROVIDERS)[number]['value'];
 
 const OPENROUTER_MODELS = [
-  { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (recommended)' },
-  { value: 'anthropic/claude-opus-4-6', label: 'Claude Opus 4.6' },
+  { value: 'anthropic/claude-sonnet-4.6', label: 'Claude Sonnet 4.6 (recommended)' },
+  { value: 'anthropic/claude-opus-4.6', label: 'Claude Opus 4.6' },
   { value: 'openai/gpt-4o', label: 'GPT-4o' },
   { value: 'openai/o3', label: 'o3' },
-  { value: 'google/gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
+  { value: 'google/gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
   { value: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
   { value: 'meta-llama/llama-3.3-70b-instruct', label: 'Llama 3.3 70B' },
   { value: 'deepseek/deepseek-r1', label: 'DeepSeek R1' },
