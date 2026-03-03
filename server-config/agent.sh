@@ -224,12 +224,12 @@ cmd_help() {
     echo -e "${BOLD}Usage:${NC} agent <command> [args]"
     echo ""
     echo -e "${BOLD}Commands:${NC}"
-    echo "  create <name>    Create and start a new agent container"
-    echo "  destroy <name>   Stop and remove an agent container"
-    echo "  list             List all agent containers"
-    echo "  ssh <name>       SSH into an agent container"
-    echo "  build            Pre-build the agent system closure"
-    echo "  help             Show this help"
+    echo "  create <name>      Create and start a new agent container"
+    echo "  destroy <name>     Stop and remove an agent container"
+    echo "  list               List all agent containers"
+    echo "  ssh <name>         SSH into an agent container"
+    echo "  build              Pre-build the agent system closure"
+    echo "  help               Show this help"
     echo ""
     echo -e "${BOLD}Examples:${NC}"
     echo "  agent build              # pre-build (optional, done automatically)"
@@ -243,11 +243,11 @@ command="${1:-help}"
 shift || true
 
 case "$command" in
-    create)  cmd_create "$@" ;;
-    destroy) cmd_destroy "$@" ;;
-    list)    cmd_list ;;
-    ssh)     cmd_ssh "$@" ;;
-    build)   cmd_build ;;
+    create)       cmd_create "$@" ;;
+    destroy)      cmd_destroy "$@" ;;
+    list)         cmd_list ;;
+    ssh)          cmd_ssh "$@" ;;
+    build)        cmd_build ;;
     help|--help|-h) cmd_help ;;
     *)       fatal "Unknown command: $command. Run 'agent help' for usage." ;;
 esac

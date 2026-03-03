@@ -99,6 +99,7 @@ pub struct Task {
     pub name: Option<String>,
     pub pr_url: Option<String>,
     pub pr_number: Option<i32>,
+    pub compute_seconds: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -269,6 +270,75 @@ pub struct UpdateOrgPolicyRequest {
     pub network_egress: Option<serde_json::Value>,
     pub max_cost_usd: Option<f64>,
     pub require_approval_above_usd: Option<f64>,
+}
+
+// ── Cost & Budgets ──
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct CostSummaryRow {
+    pub group_key: String,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_compute_seconds: i64,
+    pub cost_usd: f64,
+}
+
+
+#[derive(Debug, Deserialize)]
+pub struct CostByQuery {
+    pub user: Option<String>,
+    pub repo: Option<String>,
+    pub period: Option<String>,
+    pub days: Option<i32>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct DailyCostRow {
+    pub day: String,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_compute_seconds: i64,
+    pub cost_usd: f64,
+    pub task_count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct Budget {
+    pub id: i64,
+    pub scope: String,
+    pub scope_type: String,
+    pub monthly_limit_usd: f64,
+    pub alert_threshold_pct: i32,
+    pub created_by: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateBudgetRequest {
+    pub scope: String,
+    pub scope_type: String,
+    pub monthly_limit_usd: f64,
+    pub alert_threshold_pct: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateBudgetRequest {
+    pub monthly_limit_usd: Option<f64>,
+    pub alert_threshold_pct: Option<i32>,
+}
+
+// ── Audit Log ──
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct AuditLogEntry {
+    pub id: i64,
+    pub event_type: String,
+    pub actor: String,
+    pub target: Option<String>,
+    pub detail: Option<serde_json::Value>,
+    pub ip_address: Option<String>,
+    pub created_at: String,
 }
 
 // ── Paginated response ──

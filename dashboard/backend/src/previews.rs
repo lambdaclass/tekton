@@ -50,6 +50,17 @@ pub async fn create_preview(
     )
     .await?;
 
+    // Audit: preview.created
+    crate::audit::log_event(
+        &state.db,
+        "preview.created",
+        &user.0.sub,
+        req.slug.as_deref(),
+        serde_json::json!({ "repo": &req.repo, "branch": &req.branch }),
+        None,
+    )
+    .await;
+
     Ok(Json(serde_json::json!({
         "message": "Preview creation started",
         "output": output.trim(),
@@ -62,6 +73,18 @@ pub async fn destroy_preview(
     Path(slug): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let output = shell::destroy_preview(&state.config, &slug).await?;
+
+    // Audit: preview.destroyed
+    crate::audit::log_event(
+        &state.db,
+        "preview.destroyed",
+        &_user.0.sub,
+        Some(&slug),
+        serde_json::json!({}),
+        None,
+    )
+    .await;
+
     Ok(Json(serde_json::json!({
         "message": "Preview destroyed",
         "output": output.trim(),
@@ -75,6 +98,18 @@ pub async fn update_preview(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let github_token = get_github_token(&state, &user.0.sub).await?;
     let output = shell::update_preview(&state.config, &slug, &github_token).await?;
+
+    // Audit: preview.updated
+    crate::audit::log_event(
+        &state.db,
+        "preview.updated",
+        &user.0.sub,
+        Some(&slug),
+        serde_json::json!({}),
+        None,
+    )
+    .await;
+
     Ok(Json(serde_json::json!({
         "message": "Preview update triggered",
         "output": output.trim(),

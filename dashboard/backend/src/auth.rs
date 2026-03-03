@@ -15,6 +15,15 @@ use crate::AppState;
 const COOKIE_NAME: &str = "dashboard_session";
 const JWT_EXPIRY_SECS: usize = 86400 * 7; // 7 days
 
+/// Try to decode the JWT from the session cookie. Returns None on any failure.
+fn extract_user_from_jar(jar: &CookieJar, state: &AppState) -> Option<Claims> {
+    let token = jar.get(COOKIE_NAME)?.value();
+    let key = DecodingKey::from_secret(state.config.jwt_secret.as_bytes());
+    decode::<Claims>(token, &key, &Validation::default())
+        .ok()
+        .map(|data| data.claims)
+}
+
 // ── Extractor: authenticated user ──
 
 pub struct AuthUser(pub Claims);
@@ -170,10 +179,36 @@ pub async fn callback(
         .secure(true)
         .max_age(time::Duration::days(7));
 
+    // Audit: auth.login
+    crate::audit::log_event(
+        &state.db,
+        "auth.login",
+        &claims.sub,
+        None,
+        serde_json::json!({ "role": &claims.role }),
+        None,
+    )
+    .await;
+
     Ok((jar.add(cookie), Redirect::temporary("/")))
 }
 
-pub async fn logout(jar: CookieJar) -> (CookieJar, Redirect) {
+pub async fn logout(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> (CookieJar, Redirect) {
+    // Try to extract the user from the cookie for audit logging
+    if let Some(claims) = extract_user_from_jar(&jar, &state) {
+        crate::audit::log_event(
+            &state.db,
+            "auth.logout",
+            &claims.sub,
+            None,
+            serde_json::json!({}),
+            None,
+        )
+        .await;
+    }
     let cookie = Cookie::build((COOKIE_NAME, ""))
         .path("/")
         .max_age(time::Duration::ZERO);
@@ -344,6 +379,17 @@ pub async fn set_user_role(
         return Err(AppError::NotFound(format!("User '{login}' not found")));
     }
 
+    // Audit: admin.role_change
+    crate::audit::log_event(
+        &state.db,
+        "admin.role_change",
+        &_claims.sub,
+        Some(&login),
+        serde_json::json!({ "new_role": &req.role }),
+        None,
+    )
+    .await;
+
     Ok(axum::Json(serde_json::json!({
         "login": login,
         "role": req.role,
@@ -401,6 +447,17 @@ pub async fn set_user_repos(
         .execute(&state.db)
         .await?;
     }
+
+    // Audit: admin.user_repos_changed
+    crate::audit::log_event(
+        &state.db,
+        "admin.user_repos_changed",
+        &_claims.sub,
+        Some(&login),
+        serde_json::json!({ "repos": &req.repos }),
+        None,
+    )
+    .await;
 
     Ok(axum::Json(req.repos))
 }

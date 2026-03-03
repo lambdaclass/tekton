@@ -221,5 +221,58 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
         let _ = sqlx::query(col_sql).execute(pool).await;
     }
 
+    // Create audit_log table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS audit_log (
+            id BIGSERIAL PRIMARY KEY,
+            event_type TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            target TEXT,
+            detail JSONB,
+            ip_address TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Indexes for audit_log queries
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_audit_log_event_type_created \
+         ON audit_log (event_type, created_at)",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_audit_log_actor_created \
+         ON audit_log (actor, created_at)",
+    )
+    .execute(pool)
+    .await;
+
+    // Add compute_seconds column to tasks table
+    let _ = sqlx::query(
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS compute_seconds INTEGER",
+    )
+    .execute(pool)
+    .await;
+
+    // Create budgets table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS budgets (
+            id BIGSERIAL PRIMARY KEY,
+            scope TEXT NOT NULL,
+            scope_type TEXT NOT NULL CHECK (scope_type IN ('user', 'org')),
+            monthly_limit_usd DOUBLE PRECISION NOT NULL,
+            alert_threshold_pct INTEGER NOT NULL DEFAULT 80,
+            created_by TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(scope, scope_type)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }
