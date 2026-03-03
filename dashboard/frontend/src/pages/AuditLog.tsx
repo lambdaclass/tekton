@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Navigate } from 'react-router-dom';
+import { Navigate, Link } from 'react-router-dom';
 import { getMe, getAuditLog } from '@/lib/api';
 import type { AuditLogEntry } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -261,7 +261,15 @@ function AuditRow({
           </Badge>
         </td>
         <td className="py-2 pr-4 font-mono">{entry.actor}</td>
-        <td className="py-2 pr-4 font-mono">{entry.target ?? '-'}</td>
+        <td className="py-2 pr-4 font-mono">
+          {entry.target && entry.event_type.startsWith('task.') ? (
+            <Link to={`/tasks/${entry.target}`} className="text-blue-500 hover:underline">
+              {entry.target}
+            </Link>
+          ) : (
+            entry.target ?? '-'
+          )}
+        </td>
         <td className="py-2">
           {entry.detail ? (
             <Button variant="ghost" size="sm" onClick={onToggle} className="h-7 px-2">
