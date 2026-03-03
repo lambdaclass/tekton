@@ -1,17 +1,18 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ChevronLeft, RotateCcw, GitPullRequest, ExternalLink } from 'lucide-react';
+import { ChevronLeft, RotateCcw, GitPullRequest, ExternalLink, ShieldAlert } from 'lucide-react';
 import LogViewer from '@/components/LogViewer';
 import TaskChat from '@/components/TaskChat';
 import DiffViewer from '@/components/DiffViewer';
-import { getTask, listSubtasks, getMe, parseImageUrls, reopenTask, createPR, getTaskDiff } from '@/lib/api';
+import { getTask, listSubtasks, listTaskActions, getMe, parseImageUrls, reopenTask, createPR, getTaskDiff } from '@/lib/api';
+import type { TaskAction } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { statusVariant } from '@/lib/status';
-import { formatTokenCost } from '@/lib/utils';
+import { formatCost } from '@/lib/utils';
 
 const CHAT_STATUSES = ['awaiting_followup', 'running_claude', 'pushing', 'creating_preview'];
 
@@ -38,12 +39,20 @@ export default function TaskDetail() {
     queryFn: getMe,
   });
 
+  const { data: actions } = useQuery({
+    queryKey: ['task-actions', id],
+    queryFn: () => listTaskActions(id!),
+    enabled: !!id,
+    refetchInterval: 5000,
+  });
+
   const { data: diffData } = useQuery({
     queryKey: ['task-diff', id],
     queryFn: () => getTaskDiff(id!),
     enabled: !!task?.branch_name,
     staleTime: 30_000,
   });
+
 
   const onConnectionChange = useCallback((c: boolean) => setConnected(c), []);
 
@@ -189,9 +198,11 @@ export default function TaskDetail() {
                   <p>
                     {(task.total_input_tokens ?? 0).toLocaleString()} in / {(task.total_output_tokens ?? 0).toLocaleString()} out
                   </p>
-                  <p className="text-muted-foreground">
-                    {formatTokenCost(task.total_input_tokens ?? 0, task.total_output_tokens ?? 0)}
-                  </p>
+                  {task.total_cost_usd ? (
+                    <p className="text-muted-foreground">
+                      {formatCost(task.total_cost_usd)}
+                    </p>
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -285,6 +296,8 @@ export default function TaskDetail() {
         </Card>
       )}
 
+      <PolicyActionsSection actions={actions} />
+
       <div className="space-y-6">
         <Card>
           <CardHeader className="py-3">
@@ -314,6 +327,32 @@ export default function TaskDetail() {
             </CardContent>
           </Card>
         )}
+      </div>
+    </div>
+  );
+}
+
+function PolicyActionsSection({ actions }: { actions: TaskAction[] | undefined }) {
+  if (!actions) return null;
+
+  const violations = actions.filter((a) => a.action_type === 'policy_violation');
+  if (violations.length === 0) return null;
+
+  return (
+    <div className="mb-6 flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+      <ShieldAlert className="size-4 mt-0.5 shrink-0" />
+      <div>
+        <span className="font-medium">
+          {violations.length} policy violation{violations.length > 1 ? 's' : ''} detected
+        </span>
+        <ul className="mt-1 space-y-0.5 text-xs opacity-80">
+          {violations.map((v) => (
+            <li key={v.id}>
+              {v.tool_name && <span className="font-medium">{v.tool_name}</span>}
+              {v.summary && <span> — {v.summary.replace(/^POLICY VIOLATION:\s*\S+\s*—\s*/, '')}</span>}
+            </li>
+          ))}
+        </ul>
       </div>
     </div>
   );

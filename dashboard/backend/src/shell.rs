@@ -22,6 +22,8 @@ pub struct RawAction {
 pub struct TokenUsage {
     pub input_tokens: i64,
     pub output_tokens: i64,
+    /// Cost reported by the Claude CLI (from the `result` event's `total_cost_usd` field).
+    pub cost_usd: f64,
 }
 
 /// Return value from Claude streaming: text output, structured actions, and token usage.
@@ -207,6 +209,8 @@ pub async fn create_agent(config: &Config, name: &str) -> Result<String, AppErro
 }
 
 pub async fn destroy_agent(config: &Config, name: &str) -> Result<String, AppError> {
+    // Clean up any egress rules before destroying the container
+    let _ = remove_egress_rules(name).await;
     run_cmd(&config.agent_bin, &["destroy", name]).await
 }
 
@@ -241,6 +245,86 @@ pub async fn pool_status(config: &Config) -> Result<String, AppError> {
 /// Run an arbitrary agent command with the given arguments.
 pub async fn run_agent_cmd(config: &Config, args: &[&str]) -> Result<String, AppError> {
     run_cmd(&config.agent_bin, args).await
+}
+
+/// Apply network egress restrictions to an agent container using iptables FORWARD rules.
+///
+/// The rules are applied to the FORWARD chain for traffic from the container's IP.
+/// We use a dedicated chain named "AGENT-{name}" for easy cleanup.
+/// Always allows: DNS (53/udp, 53/tcp), traffic to host veth IP (for API access).
+pub async fn apply_egress_rules(
+    name: &str,
+    egress_policy: &serde_json::Value,
+) -> Result<(), AppError> {
+    let container_ip = agent_ip(name)?;
+    let host_ip = agent_host_ip(name)?;
+    let chain_name = format!("AGENT-{name}");
+
+    // Create a dedicated iptables chain for this agent
+    let mut cmds = vec![
+        format!("iptables -N {chain_name} 2>/dev/null || iptables -F {chain_name}"),
+        // Always allow DNS
+        format!("iptables -A {chain_name} -p udp --dport 53 -j ACCEPT"),
+        format!("iptables -A {chain_name} -p tcp --dport 53 -j ACCEPT"),
+        // Always allow traffic to the host veth IP (for dashboard API, postgres, etc.)
+        format!("iptables -A {chain_name} -d {host_ip} -j ACCEPT"),
+        // Always allow established/related connections
+        format!("iptables -A {chain_name} -m state --state ESTABLISHED,RELATED -j ACCEPT"),
+    ];
+
+    if let Some(allow_list) = egress_policy.get("allow").and_then(|v| v.as_array()) {
+        // Allow-list mode: resolve each domain and add ACCEPT rules, then DROP all else
+        let domains: Vec<&str> = allow_list.iter().filter_map(|v| v.as_str()).collect();
+        for domain in &domains {
+            // Use the domain directly — iptables can resolve hostnames
+            cmds.push(format!(
+                "iptables -A {chain_name} -d {domain} -j ACCEPT"
+            ));
+        }
+        // Drop everything else
+        cmds.push(format!("iptables -A {chain_name} -j DROP"));
+    } else if let Some(deny_list) = egress_policy.get("deny").and_then(|v| v.as_array()) {
+        // Deny-list mode: block specific domains, allow everything else
+        let domains: Vec<&str> = deny_list.iter().filter_map(|v| v.as_str()).collect();
+        for domain in &domains {
+            cmds.push(format!(
+                "iptables -A {chain_name} -d {domain} -j DROP"
+            ));
+        }
+        // Accept everything else (implicit by falling through to FORWARD default)
+        cmds.push(format!("iptables -A {chain_name} -j ACCEPT"));
+    } else {
+        // No restrictions, just accept all
+        cmds.push(format!("iptables -A {chain_name} -j ACCEPT"));
+    }
+
+    // Jump from FORWARD to our chain for traffic from this container
+    cmds.push(format!(
+        "iptables -I FORWARD -s {container_ip} -j {chain_name}"
+    ));
+
+    let script = cmds.join(" && ");
+    run_cmd("bash", &["-c", &script]).await?;
+    Ok(())
+}
+
+/// Remove network egress rules for an agent container.
+pub async fn remove_egress_rules(name: &str) -> Result<(), AppError> {
+    let container_ip = match agent_ip(name) {
+        Ok(ip) => ip,
+        Err(_) => return Ok(()), // Agent tracking file already gone, nothing to clean
+    };
+    let chain_name = format!("AGENT-{name}");
+
+    // Remove the FORWARD jump rule, flush and delete the chain
+    let script = format!(
+        "iptables -D FORWARD -s {container_ip} -j {chain_name} 2>/dev/null; \
+         iptables -F {chain_name} 2>/dev/null; \
+         iptables -X {chain_name} 2>/dev/null; \
+         true"
+    );
+    run_cmd("bash", &["-c", &script]).await?;
+    Ok(())
 }
 
 /// Get the container IP for an agent from its tracking file (public for use in tasks.rs).
@@ -397,11 +481,12 @@ pub async fn agent_exec_claude_streaming(
             if let Some(action) = extract_action(&line) {
                 actions_clone.lock().await.push(action);
             }
-            // Extract token usage from result events
+            // Extract token usage and cost from result events
             if let Some(u) = extract_token_usage(&line) {
                 let mut usage = usage_clone.lock().await;
                 usage.input_tokens += u.input_tokens;
                 usage.output_tokens += u.output_tokens;
+                usage.cost_usd += u.cost_usd;
             }
             if let Some(formatted) = format_claude_event(&line) {
                 let _ = tx.send(formatted);
@@ -409,6 +494,8 @@ pub async fn agent_exec_claude_streaming(
         }
     });
 
+    let stderr_lines = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let stderr_lines_clone = stderr_lines.clone();
     let stderr_handle = tokio::spawn(async move {
         let reader = BufReader::new(stderr);
         let mut lines = reader.lines();
@@ -417,6 +504,7 @@ pub async fn agent_exec_claude_streaming(
             if line.contains("Warning: Permanently added") {
                 continue;
             }
+            stderr_lines_clone.lock().await.push(line.clone());
             let _ = tx2.send(line);
         }
     });
@@ -430,8 +518,14 @@ pub async fn agent_exec_claude_streaming(
         .map_err(|e| AppError::Internal(format!("Failed to wait on ssh: {e}")))?;
 
     if !status.success() {
+        let stderr_output = stderr_lines.lock().await.join("\n");
+        let detail = if stderr_output.is_empty() {
+            String::new()
+        } else {
+            format!(": {stderr_output}")
+        };
         return Err(AppError::Internal(format!(
-            "Claude streaming exited with status {status}"
+            "Claude streaming exited with status {status}{detail}"
         )));
     }
 
@@ -523,7 +617,7 @@ fn extract_action(line: &str) -> Option<RawAction> {
     }
 }
 
-/// Extract token usage from a Claude stream-json "result" event.
+/// Extract token usage and cost from a Claude stream-json "result" event.
 fn extract_token_usage(line: &str) -> Option<TokenUsage> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     if v.get("type")?.as_str()? != "result" {
@@ -531,12 +625,14 @@ fn extract_token_usage(line: &str) -> Option<TokenUsage> {
     }
     let input = v.pointer("/usage/input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
     let output = v.pointer("/usage/output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-    if input == 0 && output == 0 {
+    let cost = v.get("total_cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    if input == 0 && output == 0 && cost == 0.0 {
         return None;
     }
     Some(TokenUsage {
         input_tokens: input,
         output_tokens: output,
+        cost_usd: cost,
     })
 }
 

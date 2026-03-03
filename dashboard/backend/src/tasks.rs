@@ -220,7 +220,7 @@ pub async fn list_tasks(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks {where_clause} ORDER BY created_at DESC LIMIT ${bind_idx} OFFSET ${next_idx}",
         bind_idx = bind_idx,
         next_idx = bind_idx + 1,
@@ -252,7 +252,7 @@ pub async fn get_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -281,7 +281,7 @@ pub async fn get_subtasks(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE parent_task_id = $1 ORDER BY created_at ASC"
     )
     .bind(&id)
@@ -370,7 +370,7 @@ pub async fn create_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -478,8 +478,8 @@ async fn run_task_pipeline(
         }
     };
 
-    // Load repo policy (if any) for branch protection and tool constraints
-    let policy = policies::load_policy_for_repo(db, repo).await?;
+    // Load effective policy (org + repo merged) for branch protection and tool constraints
+    let policy = policies::load_effective_policy(db, repo).await?;
     if let Some(ref pol) = policy {
         // Verify the feature branch name doesn't collide with a protected branch
         if pol.protected_branches.contains(&branch_name) {
@@ -529,6 +529,16 @@ async fn run_task_pipeline(
         write_secrets_env_file(&agent_name, &repo_secrets, tx.clone()).await?;
     }
 
+    // Step 2c: Apply network egress restrictions (if any)
+    if let Some(ref pol) = policy {
+        if let Some(ref egress) = pol.network_egress {
+            log_and_send(db, task_id, &tx, "[POLICY] Applying network egress restrictions...");
+            if let Err(e) = shell::apply_egress_rules(&agent_name, egress).await {
+                log_and_send(db, task_id, &tx, &format!("[WARN] Failed to apply egress rules: {e}"));
+            }
+        }
+    }
+
     // Step 3: Copy images and run Claude (streaming)
     let mut effective_prompt = augment_prompt_with_images(config, &agent_name, image_url_json, prompt, &tx).await?;
 
@@ -564,11 +574,62 @@ async fn run_task_pipeline(
     }
 
     update_task_status(db, task_id, "running_claude", None).await?;
+    // Log which tools are blocked before running Claude so it's visible in the agent logs
+    if let Some(ref pol) = policy {
+        let denied = get_denied_tools(pol);
+        if !denied.is_empty() {
+            log_and_send(db, task_id, &tx, &format!(
+                "[POLICY] Blocked tools: {}. Claude will not have access to these.",
+                denied.join(", ")
+            ));
+        }
+    }
     log_and_send(db, task_id, &tx, "[STEP] Running Claude...");
-    let result = run_claude_streaming(db, &config.secrets_encryption_key, created_by, &agent_name, &effective_prompt, tx.clone()).await?;
+    let result = match run_claude_streaming(db, &config.secrets_encryption_key, created_by, &agent_name, &effective_prompt, tx.clone(), policy.as_ref()).await {
+        Ok(r) => r,
+        Err(e) => {
+            // If a policy with denied tools is active, the CLI may exit non-zero because
+            // it cannot fulfil the request. Don't fail the task — notify the user and
+            // fall through to the follow-up loop so they can try a different prompt.
+            if let Some(ref pol) = policy {
+                let denied = get_denied_tools(pol);
+                if !denied.is_empty() {
+                    let msg = format!(
+                        "Claude could not complete the request — the repo policy blocks these tools: {}.",
+                        denied.join(", ")
+                    );
+                    log_and_send(db, task_id, &tx, &format!("[POLICY] {msg}"));
+                    save_system_message(db, task_id, &msg).await?;
+                    // Skip to commit/push/follow-up loop with an empty result
+                    shell::ClaudeStreamResult {
+                        text: String::new(),
+                        actions: Vec::new(),
+                        usage: shell::TokenUsage { input_tokens: 0, output_tokens: 0, cost_usd: 0.0 },
+                    }
+                } else {
+                    return Err(e);
+                }
+            } else {
+                return Err(e);
+            }
+        }
+    };
     save_claude_response_as_message(db, task_id, &result.text).await?;
     persist_actions(db, task_id, &result.actions).await;
+    if let Some(ref pol) = policy {
+        check_policy_violations(db, task_id, &result.actions, pol, &tx).await;
+    }
     increment_token_usage(db, task_id, &result.usage).await;
+
+    // Check cost limit after initial run — just log a warning, follow-ups will be
+    // individually rejected by the check inside the follow-up loop.
+    if let Some(ref pol) = policy {
+        if let Some(max_cost) = pol.max_cost_usd {
+            if check_cost_limit(db, task_id, max_cost, &tx).await? {
+                save_system_message(db, task_id, "Cost limit reached — further follow-ups will be rejected by policy.").await?;
+            }
+        }
+    }
 
     // Step 3b: Commit any changes (if Claude asked a question and made none, that's fine —
     // the user will see the question in chat and respond via the follow-up loop)
@@ -719,6 +780,46 @@ fn slugify_for_branch(name: &str) -> String {
     result.trim_end_matches('-').to_string()
 }
 
+/// Extract the list of denied tool names from a policy.
+fn get_denied_tools(policy: &crate::models::RepoPolicy) -> Vec<String> {
+    let tools = match &policy.allowed_tools {
+        Some(t) => t,
+        None => return Vec::new(),
+    };
+    if let Some(deny) = tools.get("deny").and_then(|v| v.as_array()) {
+        deny.iter().filter_map(|v| v.as_str()).map(String::from).collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Build a `--disallowedTools` CLI flag from the policy's deny list.
+/// Returns an empty string if there is no policy or no denied tools.
+fn build_disallowed_tools_flag(policy: Option<&crate::models::RepoPolicy>) -> String {
+    let pol = match policy {
+        Some(p) => p,
+        None => return String::new(),
+    };
+    let tools = match &pol.allowed_tools {
+        Some(t) => t,
+        None => return String::new(),
+    };
+
+    let mut denied: Vec<&str> = Vec::new();
+
+    // Explicit deny list
+    if let Some(deny) = tools.get("deny").and_then(|v| v.as_array()) {
+        denied.extend(deny.iter().filter_map(|v| v.as_str()));
+    }
+
+    if denied.is_empty() {
+        return String::new();
+    }
+
+    // The Claude CLI accepts: --disallowedTools "Tool1,Tool2"
+    format!("--disallowedTools '{}'", denied.join(","))
+}
+
 async fn run_claude_streaming(
     db: &PgPool,
     encryption_key: &str,
@@ -726,11 +827,13 @@ async fn run_claude_streaming(
     agent_name: &str,
     prompt: &str,
     tx: broadcast::Sender<String>,
+    policy: Option<&crate::models::RepoPolicy>,
 ) -> Result<shell::ClaudeStreamResult, AppError> {
     let (auth_env, model_flag) = build_claude_auth_env(db, encryption_key, created_by).await?;
+    let disallowed_flag = build_disallowed_tools_flag(policy);
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
-        "source /home/agent/.env.sh 2>/dev/null ; {auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose {model_flag} -p '{escaped_prompt}'"
+        "source /home/agent/.env.sh 2>/dev/null ; {auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose {model_flag} {disallowed_flag} -p '{escaped_prompt}'"
     );
     shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
 }
@@ -743,13 +846,15 @@ async fn run_claude_continue(
     agent_name: &str,
     prompt: &str,
     tx: broadcast::Sender<String>,
+    policy: Option<&crate::models::RepoPolicy>,
 ) -> Result<shell::ClaudeStreamResult, AppError> {
     let (auth_env, model_flag) = build_claude_auth_env(db, encryption_key, created_by).await?;
+    let disallowed_flag = build_disallowed_tools_flag(policy);
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
         "source /home/agent/.env.sh 2>/dev/null ; {auth_env} && cd /home/agent/repo && \
          claude --dangerously-skip-permissions --output-format stream-json --verbose \
-         {model_flag} --continue -p '{escaped_prompt}'"
+         {model_flag} {disallowed_flag} --continue -p '{escaped_prompt}'"
     );
     shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
 }
@@ -802,23 +907,89 @@ async fn persist_actions(db: &PgPool, task_id: &str, actions: &[shell::RawAction
     }
 }
 
-/// Increment the task's cumulative token usage counters.
+/// Check all tool_use actions against the policy and log violations only.
+async fn check_policy_violations(
+    db: &PgPool,
+    task_id: &str,
+    actions: &[shell::RawAction],
+    policy: &crate::models::RepoPolicy,
+    tx: &broadcast::Sender<String>,
+) {
+    for action in actions {
+        if action.action_type != "tool_use" {
+            continue;
+        }
+        let tool_name = match &action.tool_name {
+            Some(n) => n,
+            None => continue,
+        };
+
+        if let Some(reason) = policies::check_tool_denied(policy, tool_name) {
+            let summary = format!("POLICY VIOLATION: {} — {}", tool_name, reason);
+            let _ = sqlx::query(
+                "INSERT INTO task_actions (task_id, action_type, tool_name, tool_input, summary) \
+                 VALUES ($1, 'policy_violation', $2, $3, $4)",
+            )
+            .bind(task_id)
+            .bind(tool_name)
+            .bind(&action.tool_input)
+            .bind(&summary)
+            .execute(db)
+            .await;
+            let _ = tx.send(format!("[POLICY] {summary}"));
+            tracing::warn!("Policy violation in task {task_id}: {summary}");
+        }
+    }
+}
+
+/// Increment the task's cumulative token usage counters and cost.
 async fn increment_token_usage(db: &PgPool, task_id: &str, usage: &shell::TokenUsage) {
-    if usage.input_tokens == 0 && usage.output_tokens == 0 {
+    if usage.input_tokens == 0 && usage.output_tokens == 0 && usage.cost_usd == 0.0 {
         return;
     }
     let _ = sqlx::query(
         "UPDATE tasks SET \
          total_input_tokens = COALESCE(total_input_tokens, 0) + $1, \
          total_output_tokens = COALESCE(total_output_tokens, 0) + $2, \
+         total_cost_usd = COALESCE(total_cost_usd, 0) + $3, \
          updated_at = NOW() \
-         WHERE id = $3"
+         WHERE id = $4"
     )
     .bind(usage.input_tokens)
     .bind(usage.output_tokens)
+    .bind(usage.cost_usd)
     .bind(task_id)
     .execute(db)
     .await;
+}
+
+/// Check whether the task has exceeded its cost limit.
+/// Uses the real cost reported by the Claude CLI (stored in total_cost_usd).
+/// Returns `true` if the limit has been reached or exceeded.
+async fn check_cost_limit(
+    db: &PgPool,
+    task_id: &str,
+    max_cost_usd: f64,
+    tx: &broadcast::Sender<String>,
+) -> Result<bool, AppError> {
+    let cost: f64 = sqlx::query_scalar(
+        "SELECT COALESCE(total_cost_usd, 0) FROM tasks WHERE id = $1",
+    )
+    .bind(task_id)
+    .fetch_one(db)
+    .await?;
+
+    if cost >= max_cost_usd {
+        let msg = format!(
+            "[POLICY] Cost limit reached: ${:.4} spent >= ${:.4} limit",
+            cost, max_cost_usd,
+        );
+        tracing::warn!("Task {task_id}: {msg}");
+        let _ = tx.send(msg);
+        return Ok(true);
+    }
+
+    Ok(false)
 }
 
 /// Record a state transition in the task_state_transitions table.
@@ -1037,6 +1208,9 @@ async fn follow_up_loop(
             return Ok(FollowUpOutcome::Done);
         }
 
+        // Reload policy from DB each iteration so changes (add/remove/edit) take effect immediately
+        let policy = policies::load_effective_policy(db, repo).await?;
+
         // Batch all pending messages into one prompt
         let mut combined_parts: Vec<String> = Vec::new();
         for msg in &new_messages {
@@ -1055,12 +1229,23 @@ async fn follow_up_loop(
             );
         }
 
+        // Check cost limit before running follow-up — reject this message but keep the task open
+        if let Some(ref pol) = policy {
+            if let Some(max_cost) = pol.max_cost_usd {
+                if check_cost_limit(db, task_id, max_cost, tx).await? {
+                    save_system_message(db, task_id, "Cost limit reached — this follow-up was blocked by policy.").await?;
+                    update_task_status(db, task_id, "awaiting_followup", None).await?;
+                    continue;
+                }
+            }
+        }
+
         // Run Claude with --continue to maintain conversation context
         save_system_message(db, task_id, "Running Claude with your follow-up...").await?;
         update_task_status(db, task_id, "running_claude", None).await?;
         let _ = tx.send("[FOLLOWUP] Running Claude with follow-up...".to_string());
 
-        let result = match run_claude_continue(db, &config.secrets_encryption_key, created_by, agent_name, &combined_prompt, tx.clone()).await {
+        let result = match run_claude_continue(db, &config.secrets_encryption_key, created_by, agent_name, &combined_prompt, tx.clone(), policy.as_ref()).await {
             Ok(r) => r,
             Err(e) => {
                 // Fallback: if --continue fails, use fresh session with full context
@@ -1070,11 +1255,14 @@ async fn follow_up_loop(
                     .fetch_one(db)
                     .await?;
                 let context_prompt = build_followup_prompt(&original_prompt, &conversation_history, &combined_prompt);
-                run_claude_streaming(db, &config.secrets_encryption_key, created_by, agent_name, &context_prompt, tx.clone()).await?
+                run_claude_streaming(db, &config.secrets_encryption_key, created_by, agent_name, &context_prompt, tx.clone(), policy.as_ref()).await?
             }
         };
         save_claude_response_as_message(db, task_id, &result.text).await?;
         persist_actions(db, task_id, &result.actions).await;
+        if let Some(ref pol) = policy {
+            check_policy_violations(db, task_id, &result.actions, pol, tx).await;
+        }
         increment_token_usage(db, task_id, &result.usage).await;
 
         let _ = commit_changes_in_agent(agent_name, &combined_parts[0], tx.clone()).await?;
@@ -1817,7 +2005,7 @@ pub async fn reopen_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -1894,7 +2082,7 @@ pub async fn reopen_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -1916,7 +2104,7 @@ pub async fn get_task_diff(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1",
     )
     .bind(&id)
@@ -1960,7 +2148,7 @@ pub async fn update_task_name(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -1980,7 +2168,7 @@ pub async fn update_task_name(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2056,6 +2244,19 @@ async fn run_reopen_pipeline(
         name
     };
 
+    // Load effective policy for enforcement during follow-ups
+    let policy = policies::load_effective_policy(db, repo).await?;
+
+    // Apply network egress restrictions (if any)
+    if let Some(ref pol) = policy {
+        if let Some(ref egress) = pol.network_egress {
+            log_and_send(db, task_id, &tx, "[POLICY] Applying network egress restrictions...");
+            if let Err(e) = shell::apply_egress_rules(&agent_name, egress).await {
+                log_and_send(db, task_id, &tx, &format!("[WARN] Failed to apply egress rules: {e}"));
+            }
+        }
+    }
+
     // Step 3: Go straight into follow-up loop
     // branch_pushed starts as true since the branch already exists on GitHub
     let mut branch_pushed = true;
@@ -2083,7 +2284,7 @@ pub async fn recover_interrupted_tasks(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE status NOT IN ('completed', 'failed')",
     )
     .fetch_all(&db)
@@ -2421,7 +2622,7 @@ pub async fn create_pr(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2496,7 +2697,7 @@ pub async fn create_pr(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2532,7 +2733,7 @@ pub async fn link_pr(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)

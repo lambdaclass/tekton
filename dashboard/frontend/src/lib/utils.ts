@@ -22,8 +22,8 @@ export function timeAgo(dateStr: string): string {
   return `${months}mo ago`;
 }
 
-export function formatTokenCost(inputTokens: number, outputTokens: number): string {
-  const cost = (inputTokens * 3 + outputTokens * 15) / 1_000_000;
-  if (cost < 0.01) return "<$0.01";
-  return `$${cost.toFixed(2)}`;
+export function formatCost(totalCostUsd: number | null | undefined): string {
+  if (totalCostUsd == null || totalCostUsd === 0) return "";
+  if (totalCostUsd < 0.01) return "<$0.01";
+  return `$${totalCostUsd.toFixed(2)}`;
 }
