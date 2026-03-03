@@ -32,7 +32,11 @@ pub async fn get_user_ai_config(
     match row {
         Some((Some(provider), Some(encrypted_key), model)) => {
             let api_key = decrypt_secret(encryption_key, &encrypted_key)?;
-            Ok(Some(UserAiConfig { provider, api_key, model }))
+            Ok(Some(UserAiConfig {
+                provider,
+                api_key,
+                model,
+            }))
         }
         _ => Ok(None),
     }
@@ -135,14 +139,12 @@ pub async fn put_ai_settings(
 
     if api_key.is_empty() {
         // No new key supplied — only update provider and model, keep existing key.
-        sqlx::query(
-            "UPDATE users SET ai_provider = $1, ai_model = $2 WHERE github_login = $3",
-        )
-        .bind(&req.provider)
-        .bind(req.model.as_deref())
-        .bind(&user.0.sub)
-        .execute(&state.db)
-        .await?;
+        sqlx::query("UPDATE users SET ai_provider = $1, ai_model = $2 WHERE github_login = $3")
+            .bind(&req.provider)
+            .bind(req.model.as_deref())
+            .bind(&user.0.sub)
+            .execute(&state.db)
+            .await?;
     } else {
         set_user_ai_config(
             &state.db,

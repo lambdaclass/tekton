@@ -6,8 +6,8 @@ use sqlx::PgPool;
 use crate::auth::AdminUser;
 use crate::error::AppError;
 use crate::models::{
-    CreateOrgPolicyRequest, CreateRepoPolicyRequest, OrgPolicy, RepoPolicy,
-    UpdateOrgPolicyRequest, UpdateRepoPolicyRequest,
+    CreateOrgPolicyRequest, CreateRepoPolicyRequest, OrgPolicy, RepoPolicy, UpdateOrgPolicyRequest,
+    UpdateRepoPolicyRequest,
 };
 
 // ── Policy Presets ──
@@ -63,9 +63,7 @@ fn builtin_presets() -> Vec<PolicyPreset> {
 }
 
 /// GET /api/admin/policy-presets
-pub async fn list_presets(
-    _admin: AdminUser,
-) -> Result<Json<Vec<PolicyPreset>>, AppError> {
+pub async fn list_presets(_admin: AdminUser) -> Result<Json<Vec<PolicyPreset>>, AppError> {
     Ok(Json(builtin_presets()))
 }
 
@@ -114,7 +112,10 @@ pub async fn apply_preset(
             }),
         )
         .await?;
-        results.insert("repo_policy".into(), serde_json::to_value(&repo_policy.0).unwrap());
+        results.insert(
+            "repo_policy".into(),
+            serde_json::to_value(&repo_policy.0).unwrap(),
+        );
     }
 
     if let Some(ref org) = req.org {
@@ -131,7 +132,10 @@ pub async fn apply_preset(
             }),
         )
         .await?;
-        results.insert("org_policy".into(), serde_json::to_value(&org_policy.0).unwrap());
+        results.insert(
+            "org_policy".into(),
+            serde_json::to_value(&org_policy.0).unwrap(),
+        );
     }
 
     results.insert("preset".into(), serde_json::Value::String(req.preset));
@@ -532,10 +536,7 @@ pub async fn delete_org_policy(
 // ── Helpers for pipeline use ──
 
 /// Load the policy for a specific repo, if one exists.
-pub async fn load_policy_for_repo(
-    db: &PgPool,
-    repo: &str,
-) -> Result<Option<RepoPolicy>, AppError> {
+pub async fn load_policy_for_repo(db: &PgPool, repo: &str) -> Result<Option<RepoPolicy>, AppError> {
     let policy = sqlx::query_as::<_, RepoPolicy>(
         "SELECT id, repo, protected_branches, allowed_tools, network_egress, \
          max_cost_usd, require_approval_above_usd, created_by, \
@@ -550,10 +551,7 @@ pub async fn load_policy_for_repo(
 }
 
 /// Load the org-level policy by extracting the org (owner) from "owner/repo".
-pub async fn load_policy_for_org(
-    db: &PgPool,
-    repo: &str,
-) -> Result<Option<OrgPolicy>, AppError> {
+pub async fn load_policy_for_org(db: &PgPool, repo: &str) -> Result<Option<OrgPolicy>, AppError> {
     let org = repo.split('/').next().unwrap_or(repo);
     let policy = sqlx::query_as::<_, OrgPolicy>(&format!(
         "SELECT {ORG_POLICY_COLUMNS} FROM org_policies WHERE org = $1"
@@ -631,13 +629,8 @@ pub fn check_tool_denied(policy: &RepoPolicy, tool_name: &str) -> Option<String>
     // Check allow list (if present, anything not on the list is denied)
     if let Some(allow) = tools.get("allow").and_then(|v| v.as_array()) {
         let allowed: Vec<&str> = allow.iter().filter_map(|v| v.as_str()).collect();
-        if !allowed.is_empty()
-            && !allowed.iter().any(|a| a.eq_ignore_ascii_case(tool_name))
-        {
-            return Some(format!(
-                "Tool '{}' is not on the allow list",
-                tool_name
-            ));
+        if !allowed.is_empty() && !allowed.iter().any(|a| a.eq_ignore_ascii_case(tool_name)) {
+            return Some(format!("Tool '{}' is not on the allow list", tool_name));
         }
     }
 

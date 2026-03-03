@@ -23,12 +23,6 @@ pub struct SetUserRoleRequest {
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
-pub struct UserRepoPermission {
-    pub github_login: String,
-    pub repo: String,
-}
-
-#[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct SecretEntry {
     pub id: i64,
     pub repo: String,
@@ -161,17 +155,6 @@ pub struct TaskAction {
     pub created_at: String,
 }
 
-// ── Task State Transitions ──
-
-#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
-pub struct TaskStateTransition {
-    pub id: i64,
-    pub task_id: String,
-    pub from_status: Option<String>,
-    pub to_status: String,
-    pub created_at: String,
-}
-
 // ── Query params ──
 
 #[derive(Debug, Deserialize)]
@@ -188,18 +171,6 @@ pub struct ListTasksQuery {
 pub struct ListMessagesQuery {
     pub limit: Option<i64>,
     pub before_id: Option<i64>,
-}
-
-// ── Classify ──
-
-#[derive(Debug, Deserialize)]
-pub struct ClassifyRequest {
-    pub prompt: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ClassifyResponse {
-    pub repo: String,
 }
 
 // ── Repo Policies ──
@@ -283,11 +254,8 @@ pub struct CostSummaryRow {
     pub cost_usd: f64,
 }
 
-
 #[derive(Debug, Deserialize)]
 pub struct CostByQuery {
-    pub user: Option<String>,
-    pub repo: Option<String>,
     pub period: Option<String>,
     pub days: Option<i32>,
 }

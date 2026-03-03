@@ -5,8 +5,7 @@ use sqlx::PgPool;
 use crate::auth::AdminUser;
 use crate::error::AppError;
 use crate::models::{
-    Budget, CostByQuery, CostSummaryRow, CreateBudgetRequest, DailyCostRow,
-    UpdateBudgetRequest,
+    Budget, CostByQuery, CostSummaryRow, CreateBudgetRequest, DailyCostRow, UpdateBudgetRequest,
 };
 
 /// Parse days from either `days` (integer) or `period` (e.g. "7d", "30d", "90d"). Default 30.
@@ -339,8 +338,7 @@ pub async fn check_budget(db: &PgPool, github_login: &str, org: &str) -> Result<
                 github_login, spent, budget.monthly_limit_usd
             )));
         }
-        let threshold_usd =
-            budget.monthly_limit_usd * (budget.alert_threshold_pct as f64 / 100.0);
+        let threshold_usd = budget.monthly_limit_usd * (budget.alert_threshold_pct as f64 / 100.0);
         if spent >= threshold_usd {
             tracing::warn!(
                 "Budget alert: user '{}' has spent ${:.2} of ${:.2} monthly limit ({}% threshold reached)",
@@ -392,10 +390,7 @@ async fn load_budget(
     Ok(budget)
 }
 
-async fn current_month_cost_for_user(
-    db: &PgPool,
-    github_login: &str,
-) -> Result<f64, AppError> {
+async fn current_month_cost_for_user(db: &PgPool, github_login: &str) -> Result<f64, AppError> {
     let row: (f64,) = sqlx::query_as(
         "SELECT COALESCE(SUM(total_cost_usd), 0)::DOUBLE PRECISION \
          FROM tasks \
@@ -408,9 +403,7 @@ async fn current_month_cost_for_user(
     Ok(row.0)
 }
 
-async fn current_month_cost_for_org(
-    db: &PgPool,
-) -> Result<f64, AppError> {
+async fn current_month_cost_for_org(db: &PgPool) -> Result<f64, AppError> {
     let row: (f64,) = sqlx::query_as(
         "SELECT COALESCE(SUM(total_cost_usd), 0)::DOUBLE PRECISION \
          FROM tasks \

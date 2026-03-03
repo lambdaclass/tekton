@@ -157,12 +157,11 @@ pub async fn delete_secret(
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     // Fetch secret metadata before deleting so we can log it
-    let secret_info = sqlx::query_as::<_, (String, String)>(
-        "SELECT repo, name FROM secrets WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await?;
+    let secret_info =
+        sqlx::query_as::<_, (String, String)>("SELECT repo, name FROM secrets WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?;
 
     let result = sqlx::query("DELETE FROM secrets WHERE id = $1")
         .bind(id)

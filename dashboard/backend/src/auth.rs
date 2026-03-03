@@ -42,9 +42,7 @@ impl FromRequestParts<AppState> for AuthUser {
         let token = jar
             .get(COOKIE_NAME)
             .map(|c| c.value().to_string())
-            .ok_or_else(|| {
-                (StatusCode::UNAUTHORIZED, "Not authenticated").into_response()
-            })?;
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "Not authenticated").into_response())?;
 
         let key = DecodingKey::from_secret(state.config.jwt_secret.as_bytes());
         let data = decode::<Claims>(&token, &key, &Validation::default())
@@ -122,19 +120,13 @@ pub async fn callback(
     }
 
     // Upsert into users table
-    let name = user_info
-        .name
-        .unwrap_or_else(|| user_info.login.clone());
+    let name = user_info.name.unwrap_or_else(|| user_info.login.clone());
 
     // Determine role for new users: first user ever gets 'admin', others get 'member'
     let user_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
         .fetch_one(&state.db)
         .await?;
-    let role_for_new_user = if user_count.0 == 0 {
-        "admin"
-    } else {
-        "member"
-    };
+    let role_for_new_user = if user_count.0 == 0 { "admin" } else { "member" };
 
     sqlx::query(
         "INSERT INTO users (github_login, name, email, github_token, role)
@@ -154,11 +146,10 @@ pub async fn callback(
     .await?;
 
     // Fetch the user's current role (preserved on conflict, so we read it back)
-    let (role,): (String,) =
-        sqlx::query_as("SELECT role FROM users WHERE github_login = $1")
-            .bind(&user_info.login)
-            .fetch_one(&state.db)
-            .await?;
+    let (role,): (String,) = sqlx::query_as("SELECT role FROM users WHERE github_login = $1")
+        .bind(&user_info.login)
+        .fetch_one(&state.db)
+        .await?;
 
     // Issue JWT
     let exp = chrono::Utc::now().timestamp() as usize + JWT_EXPIRY_SECS;
@@ -193,10 +184,7 @@ pub async fn callback(
     Ok((jar.add(cookie), Redirect::temporary("/")))
 }
 
-pub async fn logout(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> (CookieJar, Redirect) {
+pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> (CookieJar, Redirect) {
     // Try to extract the user from the cookie for audit logging
     if let Some(claims) = extract_user_from_jar(&jar, &state) {
         crate::audit::log_event(
@@ -336,11 +324,10 @@ pub async fn list_users(
     AdminUser(_claims): AdminUser,
     State(state): State<AppState>,
 ) -> Result<axum::Json<Vec<serde_json::Value>>, AppError> {
-    let rows: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT github_login, name, role FROM users ORDER BY created_at ASC",
-    )
-    .fetch_all(&state.db)
-    .await?;
+    let rows: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT github_login, name, role FROM users ORDER BY created_at ASC")
+            .fetch_all(&state.db)
+            .await?;
 
     let users: Vec<serde_json::Value> = rows
         .into_iter()
@@ -369,11 +356,12 @@ pub async fn set_user_role(
         )));
     }
 
-    let result = sqlx::query("UPDATE users SET role = $1, updated_at = NOW() WHERE github_login = $2")
-        .bind(&req.role)
-        .bind(&login)
-        .execute(&state.db)
-        .await?;
+    let result =
+        sqlx::query("UPDATE users SET role = $1, updated_at = NOW() WHERE github_login = $2")
+            .bind(&req.role)
+            .bind(&login)
+            .execute(&state.db)
+            .await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound(format!("User '{login}' not found")));
@@ -423,11 +411,10 @@ pub async fn set_user_repos(
     axum::Json(req): axum::Json<SetUserReposRequest>,
 ) -> Result<axum::Json<Vec<String>>, AppError> {
     // Verify user exists
-    let exists: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM users WHERE github_login = $1")
-            .bind(&login)
-            .fetch_one(&state.db)
-            .await?;
+    let exists: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users WHERE github_login = $1")
+        .bind(&login)
+        .fetch_one(&state.db)
+        .await?;
     if exists.0 == 0 {
         return Err(AppError::NotFound(format!("User '{login}' not found")));
     }
@@ -439,13 +426,11 @@ pub async fn set_user_repos(
         .await?;
 
     for repo in &req.repos {
-        sqlx::query(
-            "INSERT INTO user_repo_permissions (github_login, repo) VALUES ($1, $2)",
-        )
-        .bind(&login)
-        .bind(repo)
-        .execute(&state.db)
-        .await?;
+        sqlx::query("INSERT INTO user_repo_permissions (github_login, repo) VALUES ($1, $2)")
+            .bind(&login)
+            .bind(repo)
+            .execute(&state.db)
+            .await?;
     }
 
     // Audit: admin.user_repos_changed
