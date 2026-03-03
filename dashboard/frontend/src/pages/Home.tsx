@@ -41,7 +41,7 @@ export default function Home() {
             <CardHeader>
               <div className="flex items-center gap-3">
                 <BrainCircuit className="size-5 text-muted-foreground" />
-                <CardTitle>Claude Tasks</CardTitle>
+                <CardTitle>Tasks</CardTitle>
                 {tasks && (
                   <span className="ml-auto text-sm tabular-nums text-muted-foreground">
                     {tasks.total}
@@ -49,7 +49,7 @@ export default function Home() {
                 )}
               </div>
               <CardDescription>
-                Submit coding tasks to Claude. Monitor progress and view live output.
+                Submit coding tasks to your AI agent. Monitor progress and view live output.
               </CardDescription>
             </CardHeader>
           </Card>

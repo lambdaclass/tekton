@@ -11,7 +11,6 @@ set -euo pipefail
 #   - Repo cloned at /opt/src/ (done by setup.sh)
 #   - Secret files uploaded to /var/secrets/ (done by setup.sh):
 #     - cloudflare-origin.pem, cloudflare-origin-key.pem
-#     - github-pat (if GitHub PAT was provided)
 #
 # Usage:
 #   cd /opt/src && ./server-setup.sh
@@ -138,28 +137,6 @@ echo ""
 prompt GITHUB_CLIENT_ID "GitHub OAuth App Client ID"
 prompt_secret GITHUB_CLIENT_SECRET "GitHub OAuth App Client Secret"
 prompt GITHUB_ORG "GitHub organization (users must be members to login)"
-echo ""
-
-echo -e "${BOLD}--- GitHub Personal Access Token ---${NC}"
-echo "Create at: GitHub > Settings > Developer settings > Personal access tokens > Tokens (classic)"
-echo "Required scope: repo (full control of private repositories)"
-echo ""
-if [[ -n "${GITHUB_PAT:-}" ]]; then
-    echo -e "${BOLD}GitHub Personal Access Token${NC}: ${GREEN}****${GITHUB_PAT: -4}${NC} (from env)"
-else
-    GITHUB_PAT_DEFAULT=""
-    if [[ -f /var/secrets/github-pat ]]; then
-        GITHUB_PAT_DEFAULT=$(cat /var/secrets/github-pat)
-        success "GitHub PAT found at /var/secrets/github-pat (uploaded by setup.sh)"
-    fi
-    if [[ -n "$GITHUB_PAT_DEFAULT" ]]; then
-        echo -ne "${BOLD}GitHub Personal Access Token${NC} [****${GITHUB_PAT_DEFAULT: -4}]: "
-        read -r GITHUB_PAT_INPUT
-        GITHUB_PAT="${GITHUB_PAT_INPUT:-$GITHUB_PAT_DEFAULT}"
-    else
-        prompt GITHUB_PAT "GitHub Personal Access Token"
-    fi
-fi
 echo ""
 
 echo -e "${BOLD}--- Webhook Secret ---${NC}"
@@ -307,7 +284,6 @@ echo "  Disk 1:         $DISK_DEVICE_1"
 echo "  Domain:         $DOMAIN"
 echo "  GitHub Org:     $GITHUB_ORG"
 echo "  GitHub Client:  ${GITHUB_CLIENT_ID:0:20}..."
-echo "  GitHub PAT:     ****${GITHUB_PAT: -4}"
 echo "  Allowed repos:  ${ALLOWED_REPOS:-<all>}"
 echo ""
 
@@ -414,7 +390,6 @@ success "dashboard.env written."
 
 info "Writing preview.env..."
 cat > /var/secrets/preview.env << ENVEOF
-GITHUB_TOKEN=${GITHUB_PAT}
 GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
 PREVIEW_DOMAIN=${DOMAIN}
 WEBHOOK_PORT=3100
@@ -555,35 +530,7 @@ else
 fi
 
 # =============================================================================
-# Step 11: Claude setup token
-# =============================================================================
-header "Step 11: Claude Authentication"
-
-if [[ -n "${CLAUDE_SETUP_TOKEN:-}" ]]; then
-    success "Claude setup token provided (from env)."
-else
-    echo -e "${BOLD}Claude Code requires an OAuth token for agent containers.${NC}"
-    echo -e "Generate one by running ${CYAN}claude setup-token${NC} on your local machine."
-    echo ""
-    echo -en "${BOLD}Claude setup token (leave blank to set up later):${NC} "
-    read -r CLAUDE_SETUP_TOKEN
-fi
-
-if [[ -n "${CLAUDE_SETUP_TOKEN:-}" ]]; then
-    mkdir -p /var/secrets/claude
-    echo "$CLAUDE_SETUP_TOKEN" > /var/secrets/claude/oauth_token
-    chmod 600 /var/secrets/claude/oauth_token
-    success "Token written to /var/secrets/claude/oauth_token"
-else
-    warn "No token provided. Set it up later:"
-    echo "  1. Run 'claude setup-token' on your local machine"
-    echo "  2. Paste the token:"
-    echo "     echo 'sk-ant-oat01-...' > /var/secrets/claude/oauth_token"
-    echo "     chmod 600 /var/secrets/claude/oauth_token"
-fi
-
-# =============================================================================
-# Step 12: Summary
+# Step 11: Summary
 # =============================================================================
 header "Setup Complete!"
 
@@ -602,20 +549,11 @@ echo "  URL:     https://webhook.${DOMAIN}/webhook/github"
 echo "  Secret:  $GITHUB_WEBHOOK_SECRET"
 echo "  Events:  Pull requests"
 echo ""
-echo -e "${BOLD}Quick Start:${NC}"
+echo -e "${BOLD}Next Steps:${NC}"
 echo ""
-echo -e "  ${CYAN}# Create an agent container${NC}"
-echo "  agent create myagent"
-echo ""
-echo -e "  ${CYAN}# SSH into the agent${NC}"
-echo "  ssh agent@<container-ip>"
-echo ""
-echo -e "  ${CYAN}# Run Claude${NC}"
-echo "  claude"
-echo ""
-echo -e "  ${CYAN}# List and destroy agents${NC}"
-echo "  agent list"
-echo "  agent destroy myagent"
+echo -e "  1. Log into the dashboard and go to ${CYAN}Settings → AI Provider${NC}"
+echo "     to configure your Anthropic or OpenRouter API key."
+echo "     Each user must do this before running tasks."
 echo ""
 echo -e "${BOLD}Ongoing deploys:${NC}"
 echo "  From your local machine: ./deploy.sh $SERVER_IP"

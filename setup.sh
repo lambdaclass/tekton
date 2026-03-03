@@ -384,17 +384,6 @@ gather_info() {
         fi
     fi
 
-    if [[ -n "${GITHUB_PAT:-}" ]]; then
-        success "GitHub PAT provided (from env)."
-    else
-        GITHUB_PAT=""
-        echo -en "${BOLD}Enter GitHub Personal Access Token (leave blank to set up later):${NC} "
-        read -r GITHUB_PAT
-        if [[ -n "$GITHUB_PAT" ]]; then
-            success "GitHub PAT provided."
-        fi
-    fi
-
     # --- Summary ---
     header "Configuration Summary"
     echo -e "  ${BOLD}Server IP:${NC}     $SERVER_IP"
@@ -408,10 +397,6 @@ gather_info() {
     echo -e "  ${BOLD}SSH Key:${NC}       ${SSH_KEY:0:50}..."
     local secrets_summary=""
     [[ -n "$ORIGIN_CERT_PATH" ]] && secrets_summary="Cloudflare cert"
-    if [[ -n "$GITHUB_PAT" ]]; then
-        [[ -n "$secrets_summary" ]] && secrets_summary="$secrets_summary, "
-        secrets_summary="${secrets_summary}GitHub PAT"
-    fi
     echo -e "  ${BOLD}Secrets:${NC}       ${secrets_summary:-none}"
     echo ""
 
@@ -578,11 +563,6 @@ setup_server() {
         success "Cloudflare Origin CA cert + key uploaded."
     fi
 
-    if [[ -n "$GITHUB_PAT" ]]; then
-        info "Uploading GitHub Personal Access Token..."
-        ssh $ssh_opts root@"$SERVER_IP" "echo '$GITHUB_PAT' > /var/secrets/github-pat && chmod 600 /var/secrets/github-pat"
-        success "GitHub PAT uploaded."
-    fi
 
     # Run server-setup.sh interactively
     info "Starting interactive server setup..."

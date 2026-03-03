@@ -15,6 +15,7 @@ use crate::models::{
 };
 use crate::policies;
 use crate::secrets;
+use crate::settings;
 use crate::shell;
 
 /// Delegate to auth module's check_repo_permission.
@@ -324,7 +325,7 @@ pub async fn create_task(
     let id = Uuid::new_v4().to_string();
     let short_id = &id[..6];
     let base_branch = req.base_branch.as_deref().unwrap_or("main");
-    let created_by = &user.0.sub;
+    let created_by = user.0.sub.clone();
 
     let image_url_json = req
         .image_urls
@@ -341,7 +342,7 @@ pub async fn create_task(
     .bind(&req.repo)
     .bind(base_branch)
     .bind(&req.parent_task_id)
-    .bind(created_by)
+    .bind(&created_by)
     .bind(&image_url_json)
     .execute(&state.db)
     .await?;
@@ -363,7 +364,7 @@ pub async fn create_task(
     .await?;
 
     // Get the user's git identity (GitHub token, name, email)
-    let git_id = get_git_identity(&state.db, created_by).await?;
+    let git_id = get_git_identity(&state.db, &created_by).await?;
 
     // Create broadcast channel for this task
     let (tx, _) = broadcast::channel(1024);
@@ -384,7 +385,7 @@ pub async fn create_task(
     tokio::spawn(async move {
         let agent_name = format!("a-{short}");
         let result = run_task_pipeline(
-            &config, &db, &task_id, &short, &prompt, &repo, &base, image_url_json2.as_deref(), &git_id, custom_branch, tx.clone(),
+            &config, &db, &task_id, &short, &prompt, &repo, &base, image_url_json2.as_deref(), &git_id, custom_branch, &created_by, tx.clone(),
         )
         .await;
 
@@ -418,12 +419,13 @@ async fn run_task_pipeline(
     image_url_json: Option<&str>,
     git_id: &GitIdentity,
     custom_branch_name: Option<String>,
+    created_by: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
     let agent_name = format!("a-{short_id}");
 
     // Generate a short name for the task using Claude
-    let task_name = match generate_task_name(prompt).await {
+    let task_name = match generate_task_name(db, &config.secrets_encryption_key, created_by, prompt).await {
         Ok(name) if !name.is_empty() => {
             tracing::info!("Generated task name for {task_id}: {name}");
             name
@@ -537,7 +539,7 @@ async fn run_task_pipeline(
 
     update_task_status(db, task_id, "running_claude", None).await?;
     log_and_send(db, task_id, &tx, "[STEP] Running Claude...");
-    let result = run_claude_streaming(&agent_name, &effective_prompt, tx.clone()).await?;
+    let result = run_claude_streaming(db, &config.secrets_encryption_key, created_by, &agent_name, &effective_prompt, tx.clone()).await?;
     save_claude_response_as_message(db, task_id, &result.text).await?;
     persist_actions(db, task_id, &result.actions).await;
     increment_token_usage(db, task_id, &result.usage).await;
@@ -555,7 +557,7 @@ async fn run_task_pipeline(
     }
 
     // Step 4: Follow-up loop
-    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, &tx).await?;
+    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, &tx).await?;
 
     // Step 5: Destroy agent
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
@@ -569,35 +571,78 @@ async fn run_task_pipeline(
     Ok(())
 }
 
-async fn read_claude_oauth_token() -> Result<String, AppError> {
-    tokio::fs::read_to_string("/var/secrets/claude/oauth_token")
-        .await
-        .map(|s| s.trim().to_string())
-        .map_err(|e| AppError::Internal(format!(
-            "Failed to read Claude OAuth token from /var/secrets/claude/oauth_token: {e}"
-        )))
+/// Build the shell export fragment that sets AI credentials for a user.
+/// Returns (env_export_string, model_flag) where model_flag is always `""`.
+/// Model selection uses ANTHROPIC_MODEL env var rather than --model flag to
+/// avoid the Claude CLI's client-side validation against Anthropic-only names.
+async fn build_claude_auth_env(
+    db: &PgPool,
+    encryption_key: &str,
+    created_by: &str,
+) -> Result<(String, String), AppError> {
+    match settings::get_user_ai_config(db, encryption_key, created_by).await? {
+        Some(cfg) if cfg.provider == "openrouter" => {
+            let model = cfg.model.as_deref().unwrap_or("anthropic/claude-sonnet-4.6");
+            Ok((
+                format!(
+                    "export ANTHROPIC_BASE_URL='https://openrouter.ai/api' ANTHROPIC_AUTH_TOKEN='{}' ANTHROPIC_API_KEY='' ANTHROPIC_MODEL='{}'",
+                    cfg.api_key, model
+                ),
+                String::new(),
+            ))
+        }
+        Some(cfg) => Ok((format!("export ANTHROPIC_API_KEY='{}'", cfg.api_key), String::new())),
+        None => Err(AppError::Internal(
+            "No AI provider configured. Go to Settings → AI Provider to connect your account."
+                .into(),
+        )),
+    }
 }
 
 /// Generate a short task name from the prompt using Claude CLI.
 /// Runs as a non-root user since claude --dangerously-skip-permissions refuses root.
-async fn generate_task_name(prompt: &str) -> Result<String, AppError> {
-    let oauth_token = read_claude_oauth_token().await?;
+/// Returns Err if the user has no AI config — the call site falls back gracefully.
+async fn generate_task_name(
+    db: &PgPool,
+    encryption_key: &str,
+    created_by: &str,
+    prompt: &str,
+) -> Result<String, AppError> {
+    let cfg = settings::get_user_ai_config(db, encryption_key, created_by)
+        .await?
+        .ok_or_else(|| {
+            AppError::Internal(
+                "No AI provider configured for task name generation".into(),
+            )
+        })?;
+
     let naming_prompt = format!(
         "Generate a very short name (3-5 words, no quotes, no punctuation) that summarizes this coding task. \
          Reply with ONLY the name, nothing else.\n\nTask: {}", prompt
     );
 
+    let mut env_args = vec![
+        format!("ANTHROPIC_API_KEY={}", if cfg.provider == "openrouter" { "" } else { &cfg.api_key }),
+        "HOME=/tmp".to_string(),
+    ];
+    if cfg.provider == "openrouter" {
+        let model = cfg.model.as_deref().unwrap_or("anthropic/claude-sonnet-4.6");
+        env_args.push(format!("ANTHROPIC_AUTH_TOKEN={}", cfg.api_key));
+        env_args.push("ANTHROPIC_BASE_URL=https://openrouter.ai/api".to_string());
+        env_args.push(format!("ANTHROPIC_MODEL={model}"));
+    }
+
+    let mut cmd_args = vec!["-u".to_string(), "nobody".to_string(), "env".to_string()];
+    cmd_args.extend(env_args);
+    let mut claude_args = vec![
+        "claude".to_string(),
+        "--dangerously-skip-permissions".to_string(),
+    ];
+    claude_args.extend(["-p".to_string(), naming_prompt]);
+    cmd_args.extend(claude_args);
+
     let output = tokio::process::Command::new("sudo")
-        .args([
-            "-u", "nobody",
-            "env",
-            &format!("CLAUDE_CODE_OAUTH_TOKEN={oauth_token}"),
-            "HOME=/tmp",
-            "claude",
-            "--dangerously-skip-permissions",
-            "-p",
-            &naming_prompt,
-        ])
+        .args(&cmd_args)
         .output()
         .await
         .map_err(|e| AppError::Internal(format!("Failed to run claude for naming: {e}")))?;
@@ -641,30 +686,36 @@ fn slugify_for_branch(name: &str) -> String {
 }
 
 async fn run_claude_streaming(
+    db: &PgPool,
+    encryption_key: &str,
+    created_by: &str,
     agent_name: &str,
     prompt: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<shell::ClaudeStreamResult, AppError> {
-    let oauth_token = read_claude_oauth_token().await?;
+    let (auth_env, model_flag) = build_claude_auth_env(db, encryption_key, created_by).await?;
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
-        "source /home/agent/.env.sh 2>/dev/null ; export CLAUDE_CODE_OAUTH_TOKEN='{oauth_token}' && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose -p '{escaped_prompt}'"
+        "source /home/agent/.env.sh 2>/dev/null ; {auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose {model_flag} -p '{escaped_prompt}'"
     );
     shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
 }
 
 /// Run Claude with --continue to maintain conversation context for follow-ups.
 async fn run_claude_continue(
+    db: &PgPool,
+    encryption_key: &str,
+    created_by: &str,
     agent_name: &str,
     prompt: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<shell::ClaudeStreamResult, AppError> {
-    let oauth_token = read_claude_oauth_token().await?;
+    let (auth_env, model_flag) = build_claude_auth_env(db, encryption_key, created_by).await?;
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
-        "source /home/agent/.env.sh 2>/dev/null ; export CLAUDE_CODE_OAUTH_TOKEN='{oauth_token}' && cd /home/agent/repo && \
+        "source /home/agent/.env.sh 2>/dev/null ; {auth_env} && cd /home/agent/repo && \
          claude --dangerously-skip-permissions --output-format stream-json --verbose \
-         --continue -p '{escaped_prompt}'"
+         {model_flag} --continue -p '{escaped_prompt}'"
     );
     shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
 }
@@ -875,6 +926,7 @@ async fn follow_up_loop(
     branch_pushed: &mut bool,
     preview_created: &mut bool,
     git_id: &GitIdentity,
+    created_by: &str,
     tx: &broadcast::Sender<String>,
 ) -> Result<FollowUpOutcome, AppError> {
     let mut last_seen_id: i64 = 0;
@@ -931,7 +983,7 @@ async fn follow_up_loop(
         update_task_status(db, task_id, "running_claude", None).await?;
         let _ = tx.send("[FOLLOWUP] Running Claude with follow-up...".to_string());
 
-        let result = match run_claude_continue(agent_name, &combined_prompt, tx.clone()).await {
+        let result = match run_claude_continue(db, &config.secrets_encryption_key, created_by, agent_name, &combined_prompt, tx.clone()).await {
             Ok(r) => r,
             Err(e) => {
                 // Fallback: if --continue fails, use fresh session with full context
@@ -941,7 +993,7 @@ async fn follow_up_loop(
                     .fetch_one(db)
                     .await?;
                 let context_prompt = build_followup_prompt(&original_prompt, &conversation_history, &combined_prompt);
-                run_claude_streaming(agent_name, &context_prompt, tx.clone()).await?
+                run_claude_streaming(db, &config.secrets_encryption_key, created_by, agent_name, &context_prompt, tx.clone()).await?
             }
         };
         save_claude_response_as_message(db, task_id, &result.text).await?;
@@ -1303,7 +1355,7 @@ async fn push_and_preview(
         update_task_status(db, task_id, "creating_preview", None).await?;
         log_and_send(db, task_id, tx, &format!("[STEP] Creating preview '{preview_slug}'..."));
 
-        shell::create_preview(config, repo, branch_name, Some(&preview_slug)).await?;
+        shell::create_preview(config, repo, branch_name, Some(&preview_slug), &git_id.token).await?;
 
         let preview_url = format!("https://{preview_slug}.{}", config.preview_domain);
         update_task_field(db, task_id, "preview_slug", &preview_slug).await?;
@@ -1311,7 +1363,7 @@ async fn push_and_preview(
         *preview_created = true;
     } else {
         log_and_send(db, task_id, tx, &format!("[STEP] Updating preview '{preview_slug}'..."));
-        let _ = shell::update_preview(config, &preview_slug).await;
+        let _ = shell::update_preview(config, &preview_slug, &git_id.token).await;
     }
 
     // Screenshot (fire-and-forget so it doesn't block the follow-up loop)
@@ -1729,11 +1781,12 @@ pub async fn reopen_task(
     let base = task.base_branch.clone();
     let has_preview = task.preview_url.is_some();
     let channels = state.task_channels.clone();
+    let created_by = user.0.sub.clone();
 
     tokio::spawn(async move {
         let agent_name = format!("a-{short}");
         let result = run_reopen_pipeline(
-            &config, &db, &task_id, &short, &repo, &branch, &base, has_preview, &git_id, tx.clone(),
+            &config, &db, &task_id, &short, &repo, &branch, &base, has_preview, &git_id, &created_by, tx.clone(),
         )
         .await;
 
@@ -1818,6 +1871,7 @@ async fn run_reopen_pipeline(
     base_branch: &str,
     had_preview: bool,
     git_id: &GitIdentity,
+    created_by: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
     let agent_name = format!("a-{short_id}");
@@ -1853,7 +1907,7 @@ async fn run_reopen_pipeline(
     // branch_pushed starts as true since the branch already exists on GitHub
     let mut branch_pushed = true;
     let mut preview_created = had_preview;
-    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, &tx).await?;
+    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, &tx).await?;
 
     // Step 4: Destroy agent
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
@@ -1870,8 +1924,10 @@ async fn run_reopen_pipeline(
 /// Generate a rich PR description using Claude, based on conversation history and diff.
 async fn generate_pr_body(
     db: &PgPool,
+    encryption_key: &str,
     github_token: &str,
     task: &Task,
+    created_by: &str,
 ) -> Result<String, AppError> {
     // 1. Fetch conversation messages
     let messages = sqlx::query_as::<_, TaskMessage>(
@@ -1942,19 +1998,32 @@ async fn generate_pr_body(
     );
 
     // 4. Call Claude to generate the description
-    let oauth_token = read_claude_oauth_token().await?;
+    let cfg = settings::get_user_ai_config(db, encryption_key, created_by)
+        .await?
+        .ok_or_else(|| AppError::Internal("No AI provider configured".into()))?;
+
+    let mut env_args = vec![
+        format!("ANTHROPIC_API_KEY={}", if cfg.provider == "openrouter" { "" } else { &cfg.api_key }),
+        "HOME=/tmp".to_string(),
+    ];
+    if cfg.provider == "openrouter" {
+        let model = cfg.model.as_deref().unwrap_or("anthropic/claude-sonnet-4.6");
+        env_args.push(format!("ANTHROPIC_AUTH_TOKEN={}", cfg.api_key));
+        env_args.push("ANTHROPIC_BASE_URL=https://openrouter.ai/api".to_string());
+        env_args.push(format!("ANTHROPIC_MODEL={model}"));
+    }
+
+    let mut cmd_args = vec!["-u".to_string(), "nobody".to_string(), "env".to_string()];
+    cmd_args.extend(env_args);
+    let mut claude_args = vec![
+        "claude".to_string(),
+        "--dangerously-skip-permissions".to_string(),
+    ];
+    claude_args.extend(["-p".to_string(), context.clone()]);
+    cmd_args.extend(claude_args);
 
     let output = tokio::process::Command::new("sudo")
-        .args([
-            "-u", "nobody",
-            "env",
-            &format!("CLAUDE_CODE_OAUTH_TOKEN={oauth_token}"),
-            "HOME=/tmp",
-            "claude",
-            "--dangerously-skip-permissions",
-            "-p",
-            &context,
-        ])
+        .args(&cmd_args)
         .output()
         .await
         .map_err(|e| AppError::Internal(format!("Failed to run claude for PR body: {e}")))?;
@@ -2014,7 +2083,7 @@ pub async fn create_pr(
         .collect::<String>();
 
     // Build PR body: gather context and ask Claude to write the description
-    let body = generate_pr_body(&state.db, &git_id.token, &task).await
+    let body = generate_pr_body(&state.db, &state.config.secrets_encryption_key, &git_id.token, &task, &user.0.sub).await
         .unwrap_or_else(|e| {
             tracing::warn!("Failed to generate PR body via Claude: {e}, using fallback");
             format!(

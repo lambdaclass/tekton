@@ -33,9 +33,15 @@ pub struct ClaudeStreamResult {
 
 /// Run a command and return its stdout.
 async fn run_cmd(cmd: &str, args: &[&str]) -> Result<String, AppError> {
+    run_cmd_with_env(cmd, args, &[]).await
+}
+
+/// Run a command with extra environment variables and return its stdout.
+async fn run_cmd_with_env(cmd: &str, args: &[&str], env: &[(&str, &str)]) -> Result<String, AppError> {
     tracing::info!("Running: {cmd} {}", args.join(" "));
     let output = Command::new(cmd)
         .args(args)
+        .envs(env.iter().copied())
         .output()
         .await
         .map_err(|e| AppError::Internal(format!("Failed to execute {cmd}: {e}")))?;
@@ -176,21 +182,22 @@ pub async fn create_preview(
     repo: &str,
     branch: &str,
     slug: Option<&str>,
+    github_token: &str,
 ) -> Result<String, AppError> {
     let mut args = vec!["create", repo, branch];
     if let Some(s) = slug {
         args.push("--slug");
         args.push(s);
     }
-    run_cmd(&config.preview_bin, &args).await
+    run_cmd_with_env(&config.preview_bin, &args, &[("GITHUB_TOKEN", github_token)]).await
 }
 
 pub async fn destroy_preview(config: &Config, slug: &str) -> Result<String, AppError> {
     run_cmd(&config.preview_bin, &["destroy", slug]).await
 }
 
-pub async fn update_preview(config: &Config, slug: &str) -> Result<String, AppError> {
-    run_cmd(&config.preview_bin, &["update", slug]).await
+pub async fn update_preview(config: &Config, slug: &str, github_token: &str) -> Result<String, AppError> {
+    run_cmd_with_env(&config.preview_bin, &["update", slug], &[("GITHUB_TOKEN", github_token)]).await
 }
 
 // ── Agent operations ──
