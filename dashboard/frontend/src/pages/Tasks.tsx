@@ -219,7 +219,7 @@ export default function Tasks() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">Claude Tasks</h1>
+        <h1 className="text-2xl font-bold">Tasks</h1>
         {me?.role !== 'viewer' && (
           <Button
             variant={showCreate ? 'outline' : 'default'}
@@ -245,7 +245,7 @@ export default function Tasks() {
                       id="prompt"
                       value={prompt}
                       onChange={handlePromptChange}
-                      placeholder="Describe the coding task for Claude..."
+                      placeholder="Describe the coding task..."
                       required
                       rows={4}
                       className="flex-1"
