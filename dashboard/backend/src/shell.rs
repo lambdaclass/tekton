@@ -22,6 +22,8 @@ pub struct RawAction {
 pub struct TokenUsage {
     pub input_tokens: i64,
     pub output_tokens: i64,
+    /// Cost reported by the Claude CLI (from the `result` event's `total_cost_usd` field).
+    pub cost_usd: f64,
 }
 
 /// Return value from Claude streaming: text output, structured actions, and token usage.
@@ -446,11 +448,12 @@ pub async fn agent_exec_claude_streaming(
             if let Some(action) = extract_action(&line) {
                 actions_clone.lock().await.push(action);
             }
-            // Extract token usage from result events
+            // Extract token usage and cost from result events
             if let Some(u) = extract_token_usage(&line) {
                 let mut usage = usage_clone.lock().await;
                 usage.input_tokens += u.input_tokens;
                 usage.output_tokens += u.output_tokens;
+                usage.cost_usd += u.cost_usd;
             }
             if let Some(formatted) = format_claude_event(&line) {
                 let _ = tx.send(formatted);
@@ -581,7 +584,7 @@ fn extract_action(line: &str) -> Option<RawAction> {
     }
 }
 
-/// Extract token usage from a Claude stream-json "result" event.
+/// Extract token usage and cost from a Claude stream-json "result" event.
 fn extract_token_usage(line: &str) -> Option<TokenUsage> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     if v.get("type")?.as_str()? != "result" {
@@ -589,12 +592,14 @@ fn extract_token_usage(line: &str) -> Option<TokenUsage> {
     }
     let input = v.pointer("/usage/input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
     let output = v.pointer("/usage/output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-    if input == 0 && output == 0 {
+    let cost = v.get("total_cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    if input == 0 && output == 0 && cost == 0.0 {
         return None;
     }
     Some(TokenUsage {
         input_tokens: input,
         output_tokens: output,
+        cost_usd: cost,
     })
 }
 

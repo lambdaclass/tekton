@@ -48,6 +48,7 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS name TEXT",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_url TEXT",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_number INTEGER",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS total_cost_usd DOUBLE PRECISION DEFAULT 0",
     ] {
         let _ = sqlx::query(col_sql).execute(pool).await;
     }

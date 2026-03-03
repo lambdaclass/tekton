@@ -220,7 +220,7 @@ pub async fn list_tasks(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
          FROM tasks {where_clause} ORDER BY created_at DESC LIMIT ${bind_idx} OFFSET ${next_idx}",
         bind_idx = bind_idx,
         next_idx = bind_idx + 1,
@@ -252,7 +252,7 @@ pub async fn get_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -281,7 +281,7 @@ pub async fn get_subtasks(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
          FROM tasks WHERE parent_task_id = $1 ORDER BY created_at ASC"
     )
     .bind(&id)
@@ -356,7 +356,7 @@ pub async fn create_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -474,13 +474,6 @@ async fn run_task_pipeline(
         );
     }
 
-    // Resolve the user's configured model for cost estimation
-    let user_model: Option<String> = settings::get_user_ai_config(db, &config.secrets_encryption_key, created_by)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|cfg| cfg.model);
-
     // Step 1: Create agent container
     update_task_status(db, task_id, "creating_agent", None).await?;
     log_and_send(db, task_id, &tx, &format!("[STEP] Creating agent container '{agent_name}'..."));
@@ -596,7 +589,7 @@ async fn run_task_pipeline(
     // Check cost limit after initial run (can't undo this call, but we can prevent follow-ups)
     if let Some(ref pol) = policy {
         if let Some(max_cost) = pol.max_cost_usd {
-            if check_cost_limit(db, task_id, max_cost, user_model.as_deref(), &tx).await? {
+            if check_cost_limit(db, task_id, max_cost, &tx).await? {
                 log_and_send(db, task_id, &tx, "[POLICY] Cost limit exceeded after initial run — follow-ups will be blocked.");
             }
         }
@@ -615,7 +608,7 @@ async fn run_task_pipeline(
     }
 
     // Step 4: Follow-up loop
-    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, policy.as_ref(), user_model.as_deref(), &tx).await?;
+    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, policy.as_ref(), &tx).await?;
 
     // Step 5: Destroy agent
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
@@ -905,77 +898,47 @@ async fn check_policy_violations(
     }
 }
 
-/// Increment the task's cumulative token usage counters.
+/// Increment the task's cumulative token usage counters and cost.
 async fn increment_token_usage(db: &PgPool, task_id: &str, usage: &shell::TokenUsage) {
-    if usage.input_tokens == 0 && usage.output_tokens == 0 {
+    if usage.input_tokens == 0 && usage.output_tokens == 0 && usage.cost_usd == 0.0 {
         return;
     }
     let _ = sqlx::query(
         "UPDATE tasks SET \
          total_input_tokens = COALESCE(total_input_tokens, 0) + $1, \
          total_output_tokens = COALESCE(total_output_tokens, 0) + $2, \
+         total_cost_usd = COALESCE(total_cost_usd, 0) + $3, \
          updated_at = NOW() \
-         WHERE id = $3"
+         WHERE id = $4"
     )
     .bind(usage.input_tokens)
     .bind(usage.output_tokens)
+    .bind(usage.cost_usd)
     .bind(task_id)
     .execute(db)
     .await;
 }
 
-/// Per-million-token pricing (input, output) for known Anthropic models.
-/// When the model is unknown or from a third-party provider, we fall back to
-/// the most expensive tier (Opus) so the cost cap errs on the side of caution.
-fn model_pricing_per_million(model: Option<&str>) -> (f64, f64) {
-    let m = match model {
-        Some(s) => s.to_lowercase(),
-        None => return (15.0, 75.0), // unknown → Opus rates
-    };
-
-    if m.contains("haiku") {
-        (0.80, 4.0)
-    } else if m.contains("sonnet") {
-        (3.0, 15.0)
-    } else if m.contains("opus") {
-        (15.0, 75.0)
-    } else {
-        // Unknown model — use Opus pricing as conservative upper bound
-        (15.0, 75.0)
-    }
-}
-
-/// Estimate accumulated cost in USD from token counts and model.
-fn estimate_cost_usd(input_tokens: i64, output_tokens: i64, model: Option<&str>) -> f64 {
-    let (input_rate, output_rate) = model_pricing_per_million(model);
-    (input_tokens as f64 * input_rate / 1_000_000.0)
-        + (output_tokens as f64 * output_rate / 1_000_000.0)
-}
-
 /// Check whether the task has exceeded its cost limit.
+/// Uses the real cost reported by the Claude CLI (stored in total_cost_usd).
 /// Returns `true` if the limit has been reached or exceeded.
 async fn check_cost_limit(
     db: &PgPool,
     task_id: &str,
     max_cost_usd: f64,
-    model: Option<&str>,
     tx: &broadcast::Sender<String>,
 ) -> Result<bool, AppError> {
-    let row = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
-        "SELECT total_input_tokens, total_output_tokens FROM tasks WHERE id = $1",
+    let cost: f64 = sqlx::query_scalar(
+        "SELECT COALESCE(total_cost_usd, 0) FROM tasks WHERE id = $1",
     )
     .bind(task_id)
     .fetch_one(db)
     .await?;
 
-    let input_tokens = row.0.unwrap_or(0);
-    let output_tokens = row.1.unwrap_or(0);
-    let cost = estimate_cost_usd(input_tokens, output_tokens, model);
-
     if cost >= max_cost_usd {
         let msg = format!(
-            "[POLICY] Cost limit reached: ~${:.4} estimated >= ${:.4} limit (input: {}, output: {})",
-            cost, max_cost_usd, input_tokens, output_tokens
+            "[POLICY] Cost limit reached: ${:.4} spent >= ${:.4} limit",
+            cost, max_cost_usd,
         );
         tracing::warn!("Task {task_id}: {msg}");
         let _ = tx.send(msg);
@@ -1126,7 +1089,6 @@ async fn follow_up_loop(
     git_id: &GitIdentity,
     created_by: &str,
     policy: Option<&crate::models::RepoPolicy>,
-    user_model: Option<&str>,
     tx: &broadcast::Sender<String>,
 ) -> Result<FollowUpOutcome, AppError> {
     let mut last_seen_id: i64 = 0;
@@ -1224,7 +1186,7 @@ async fn follow_up_loop(
         // Check cost limit before running follow-up
         if let Some(pol) = policy {
             if let Some(max_cost) = pol.max_cost_usd {
-                if check_cost_limit(db, task_id, max_cost, user_model, tx).await? {
+                if check_cost_limit(db, task_id, max_cost, tx).await? {
                     save_system_message(db, task_id, "Cost limit reached — follow-up blocked by policy.").await?;
                     return Ok(FollowUpOutcome::Done);
                 }
@@ -1996,7 +1958,7 @@ pub async fn reopen_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2066,7 +2028,7 @@ pub async fn reopen_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2088,7 +2050,7 @@ pub async fn get_task_diff(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
          FROM tasks WHERE id = $1",
     )
     .bind(&id)
@@ -2132,7 +2094,7 @@ pub async fn update_task_name(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2152,7 +2114,7 @@ pub async fn update_task_name(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2225,18 +2187,11 @@ async fn run_reopen_pipeline(
         }
     }
 
-    // Resolve the user's configured model for cost estimation
-    let user_model: Option<String> = settings::get_user_ai_config(db, &config.secrets_encryption_key, created_by)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|cfg| cfg.model);
-
     // Step 3: Go straight into follow-up loop
     // branch_pushed starts as true since the branch already exists on GitHub
     let mut branch_pushed = true;
     let mut preview_created = had_preview;
-    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, policy.as_ref(), user_model.as_deref(), &tx).await?;
+    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, policy.as_ref(), &tx).await?;
 
     // Step 4: Destroy agent
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
@@ -2259,7 +2214,7 @@ pub async fn recover_interrupted_tasks(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
          FROM tasks WHERE status NOT IN ('completed', 'failed')",
     )
     .fetch_all(&db)
@@ -2581,7 +2536,7 @@ pub async fn create_pr(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2656,7 +2611,7 @@ pub async fn create_pr(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2692,7 +2647,7 @@ pub async fn link_pr(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)

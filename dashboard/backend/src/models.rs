@@ -95,6 +95,7 @@ pub struct Task {
     pub image_url: Option<String>,
     pub total_input_tokens: Option<i64>,
     pub total_output_tokens: Option<i64>,
+    pub total_cost_usd: Option<f64>,
     pub name: Option<String>,
     pub pr_url: Option<String>,
     pub pr_number: Option<i32>,

@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { statusVariant } from '@/lib/status';
-import { formatTokenCost } from '@/lib/utils';
+import { formatCost } from '@/lib/utils';
 
 const CHAT_STATUSES = ['awaiting_followup', 'running_claude', 'pushing', 'creating_preview'];
 
@@ -198,9 +198,11 @@ export default function TaskDetail() {
                   <p>
                     {(task.total_input_tokens ?? 0).toLocaleString()} in / {(task.total_output_tokens ?? 0).toLocaleString()} out
                   </p>
-                  <p className="text-muted-foreground">
-                    {formatTokenCost(task.total_input_tokens ?? 0, task.total_output_tokens ?? 0)}
-                  </p>
+                  {task.total_cost_usd ? (
+                    <p className="text-muted-foreground">
+                      {formatCost(task.total_cost_usd)}
+                    </p>
+                  ) : null}
                 </div>
               ) : null}
             </div>
