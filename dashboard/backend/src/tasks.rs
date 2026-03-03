@@ -220,7 +220,7 @@ pub async fn list_tasks(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
          FROM tasks {where_clause} ORDER BY created_at DESC LIMIT ${bind_idx} OFFSET ${next_idx}",
         bind_idx = bind_idx,
         next_idx = bind_idx + 1,
@@ -252,7 +252,7 @@ pub async fn get_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -281,7 +281,7 @@ pub async fn get_subtasks(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE parent_task_id = $1 ORDER BY created_at ASC"
     )
     .bind(&id)
@@ -307,6 +307,9 @@ pub async fn create_task(
 
     // Check per-user repo permission
     check_repo_permission(&state.db, &user.0.sub, &req.repo, &user.0.role, &state.config.github_org).await?;
+
+    // Check budget limits before creating the task
+    crate::cost::check_budget(&state.db, &user.0.sub, &state.config.github_org).await?;
 
     // Validate parent_task_id if provided
     if let Some(ref parent_id) = req.parent_task_id {
@@ -350,13 +353,24 @@ pub async fn create_task(
     // Record initial state transition
     record_state_transition(&state.db, &id, None, "pending").await;
 
+    // Audit: task.created
+    crate::audit::log_event(
+        &state.db,
+        "task.created",
+        &created_by,
+        Some(&id),
+        serde_json::json!({ "repo": &req.repo, "created_by": &created_by }),
+        None,
+    )
+    .await;
+
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -474,6 +488,9 @@ async fn run_task_pipeline(
         );
     }
 
+    // Record pipeline start time for compute_seconds tracking
+    let pipeline_start = std::time::Instant::now();
+
     // Step 1: Create agent container
     update_task_status(db, task_id, "creating_agent", None).await?;
     log_and_send(db, task_id, &tx, &format!("[STEP] Creating agent container '{agent_name}'..."));
@@ -562,6 +579,14 @@ async fn run_task_pipeline(
     // Step 5: Destroy agent
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
     let _ = shell::destroy_agent(config, &agent_name).await;
+
+    // Record compute time (wall-clock seconds from agent creation to destruction)
+    let compute_secs = pipeline_start.elapsed().as_secs() as i32;
+    let _ = sqlx::query("UPDATE tasks SET compute_seconds = $1 WHERE id = $2")
+        .bind(compute_secs)
+        .bind(task_id)
+        .execute(db)
+        .await;
 
     // Done
     let preview_url = format!("https://t-{short_id}.{}", config.preview_domain);
@@ -1783,7 +1808,7 @@ pub async fn reopen_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -1853,7 +1878,7 @@ pub async fn reopen_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -1875,7 +1900,7 @@ pub async fn get_task_diff(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1",
     )
     .bind(&id)
@@ -1919,7 +1944,7 @@ pub async fn update_task_name(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -1939,7 +1964,7 @@ pub async fn update_task_name(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2026,7 +2051,7 @@ pub async fn recover_interrupted_tasks(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE status NOT IN ('completed', 'failed')",
     )
     .fetch_all(&db)
@@ -2348,7 +2373,7 @@ pub async fn create_pr(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2423,7 +2448,7 @@ pub async fn create_pr(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2459,7 +2484,7 @@ pub async fn link_pr(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
