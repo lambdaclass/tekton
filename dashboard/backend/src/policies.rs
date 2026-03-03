@@ -532,3 +532,32 @@ pub async fn load_effective_policy(
         }
     }
 }
+
+/// Check whether a tool name is denied by the policy's allowed_tools configuration.
+/// Returns `Some(reason)` if the tool is denied, `None` if allowed.
+pub fn check_tool_denied(policy: &RepoPolicy, tool_name: &str) -> Option<String> {
+    let tools = policy.allowed_tools.as_ref()?;
+
+    // Check explicit deny list
+    if let Some(deny) = tools.get("deny").and_then(|v| v.as_array()) {
+        let denied: Vec<&str> = deny.iter().filter_map(|v| v.as_str()).collect();
+        if denied.iter().any(|d| d.eq_ignore_ascii_case(tool_name)) {
+            return Some(format!("Tool '{}' is on the deny list", tool_name));
+        }
+    }
+
+    // Check allow list (if present, anything not on the list is denied)
+    if let Some(allow) = tools.get("allow").and_then(|v| v.as_array()) {
+        let allowed: Vec<&str> = allow.iter().filter_map(|v| v.as_str()).collect();
+        if !allowed.is_empty()
+            && !allowed.iter().any(|a| a.eq_ignore_ascii_case(tool_name))
+        {
+            return Some(format!(
+                "Tool '{}' is not on the allow list",
+                tool_name
+            ));
+        }
+    }
+
+    None
+}

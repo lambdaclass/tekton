@@ -542,6 +542,9 @@ async fn run_task_pipeline(
     let result = run_claude_streaming(db, &config.secrets_encryption_key, created_by, &agent_name, &effective_prompt, tx.clone()).await?;
     save_claude_response_as_message(db, task_id, &result.text).await?;
     persist_actions(db, task_id, &result.actions).await;
+    if let Some(ref pol) = policy {
+        check_policy_violations(db, task_id, &result.actions, pol, &tx).await;
+    }
     increment_token_usage(db, task_id, &result.usage).await;
 
     // Step 3b: Commit any changes (if Claude asked a question and made none, that's fine —
@@ -557,7 +560,7 @@ async fn run_task_pipeline(
     }
 
     // Step 4: Follow-up loop
-    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, &tx).await?;
+    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, policy.as_ref(), &tx).await?;
 
     // Step 5: Destroy agent
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
@@ -768,6 +771,53 @@ async fn persist_actions(db: &PgPool, task_id: &str, actions: &[shell::RawAction
     }
 }
 
+/// Check all tool_use actions against the policy and log violations/passes.
+async fn check_policy_violations(
+    db: &PgPool,
+    task_id: &str,
+    actions: &[shell::RawAction],
+    policy: &crate::models::RepoPolicy,
+    tx: &broadcast::Sender<String>,
+) {
+    for action in actions {
+        if action.action_type != "tool_use" {
+            continue;
+        }
+        let tool_name = match &action.tool_name {
+            Some(n) => n,
+            None => continue,
+        };
+
+        if let Some(reason) = policies::check_tool_denied(policy, tool_name) {
+            // Log policy violation
+            let summary = format!("POLICY VIOLATION: {} — {}", tool_name, reason);
+            let _ = sqlx::query(
+                "INSERT INTO task_actions (task_id, action_type, tool_name, tool_input, summary) \
+                 VALUES ($1, 'policy_violation', $2, $3, $4)",
+            )
+            .bind(task_id)
+            .bind(tool_name)
+            .bind(&action.tool_input)
+            .bind(&summary)
+            .execute(db)
+            .await;
+            let _ = tx.send(format!("[POLICY] {summary}"));
+            tracing::warn!("Policy violation in task {task_id}: {summary}");
+        } else {
+            // Log policy check pass
+            let _ = sqlx::query(
+                "INSERT INTO task_actions (task_id, action_type, tool_name, summary) \
+                 VALUES ($1, 'policy_check', $2, $3)",
+            )
+            .bind(task_id)
+            .bind(tool_name)
+            .bind(&format!("Tool '{}' allowed by policy", tool_name))
+            .execute(db)
+            .await;
+        }
+    }
+}
+
 /// Increment the task's cumulative token usage counters.
 async fn increment_token_usage(db: &PgPool, task_id: &str, usage: &shell::TokenUsage) {
     if usage.input_tokens == 0 && usage.output_tokens == 0 {
@@ -927,6 +977,7 @@ async fn follow_up_loop(
     preview_created: &mut bool,
     git_id: &GitIdentity,
     created_by: &str,
+    policy: Option<&crate::models::RepoPolicy>,
     tx: &broadcast::Sender<String>,
 ) -> Result<FollowUpOutcome, AppError> {
     let mut last_seen_id: i64 = 0;
@@ -1041,6 +1092,9 @@ async fn follow_up_loop(
         };
         save_claude_response_as_message(db, task_id, &result.text).await?;
         persist_actions(db, task_id, &result.actions).await;
+        if let Some(pol) = policy {
+            check_policy_violations(db, task_id, &result.actions, pol, tx).await;
+        }
         increment_token_usage(db, task_id, &result.usage).await;
 
         let _ = commit_changes_in_agent(agent_name, &combined_parts[0], tx.clone()).await?;
@@ -1946,11 +2000,14 @@ async fn run_reopen_pipeline(
         write_secrets_env_file(&agent_name, &repo_secrets, tx.clone()).await?;
     }
 
+    // Load effective policy for enforcement during follow-ups
+    let policy = policies::load_effective_policy(db, repo).await?;
+
     // Step 3: Go straight into follow-up loop
     // branch_pushed starts as true since the branch already exists on GitHub
     let mut branch_pushed = true;
     let mut preview_created = had_preview;
-    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, &tx).await?;
+    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, policy.as_ref(), &tx).await?;
 
     // Step 4: Destroy agent
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
