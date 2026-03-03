@@ -9,22 +9,6 @@ use crate::models::{
     UpdateBudgetRequest,
 };
 
-/// Default pricing: $3 per 1M input tokens, $15 per 1M output tokens.
-/// Overridable via COST_PER_INPUT_TOKEN and COST_PER_OUTPUT_TOKEN env vars.
-fn cost_per_input_token() -> f64 {
-    std::env::var("COST_PER_INPUT_TOKEN")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(3.0 / 1_000_000.0)
-}
-
-fn cost_per_output_token() -> f64 {
-    std::env::var("COST_PER_OUTPUT_TOKEN")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(15.0 / 1_000_000.0)
-}
-
 /// Parse days from either `days` (integer) or `period` (e.g. "7d", "30d", "90d"). Default 30.
 fn parse_days(days: Option<i32>, period: Option<&str>) -> i32 {
     if let Some(d) = days {
@@ -40,18 +24,17 @@ fn parse_days(days: Option<i32>, period: Option<&str>) -> i32 {
 // ── Cost aggregation endpoints ──
 
 /// GET /api/admin/cost/summary?days={n}
-/// Flat aggregate: total spend, total tasks, average cost per task.
+/// Flat aggregate using real cost from Claude CLI (total_cost_usd on each task).
 pub async fn cost_summary(
     _admin: AdminUser,
     State(state): State<crate::AppState>,
     Query(q): Query<CostByQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let days = parse_days(q.days, q.period.as_deref());
-    let input_price = cost_per_input_token();
-    let output_price = cost_per_output_token();
 
-    let row: (i64, i64, i64) = sqlx::query_as(
+    let row: (f64, i64, i64, i64) = sqlx::query_as(
         "SELECT \
+            COALESCE(SUM(total_cost_usd), 0)::DOUBLE PRECISION, \
             COALESCE(SUM(total_input_tokens), 0)::BIGINT, \
             COALESCE(SUM(total_output_tokens), 0)::BIGINT, \
             COUNT(*)::BIGINT \
@@ -62,11 +45,10 @@ pub async fn cost_summary(
     .fetch_one(&state.db)
     .await?;
 
-    let total_input_tokens = row.0;
-    let total_output_tokens = row.1;
-    let total_tasks = row.2;
-    let total_cost_usd =
-        total_input_tokens as f64 * input_price + total_output_tokens as f64 * output_price;
+    let total_cost_usd = row.0;
+    let total_input_tokens = row.1;
+    let total_output_tokens = row.2;
+    let total_tasks = row.3;
     let avg_cost_per_task = if total_tasks > 0 {
         total_cost_usd / total_tasks as f64
     } else {
@@ -82,16 +64,14 @@ pub async fn cost_summary(
     })))
 }
 
-/// GET /api/admin/cost/by-user?user={login}&days={n}
-/// If user is omitted, returns aggregated cost per user (not daily breakdown).
+/// GET /api/admin/cost/by-user?days={n}
+/// Aggregated cost per user using real cost from Claude CLI.
 pub async fn cost_by_user(
     _admin: AdminUser,
     State(state): State<crate::AppState>,
     Query(q): Query<CostByQuery>,
 ) -> Result<Json<Vec<CostSummaryRow>>, AppError> {
     let days = parse_days(q.days, q.period.as_deref());
-    let input_price = cost_per_input_token();
-    let output_price = cost_per_output_token();
 
     let rows = sqlx::query_as::<_, CostSummaryRow>(
         "SELECT \
@@ -99,14 +79,12 @@ pub async fn cost_by_user(
             COALESCE(SUM(total_input_tokens), 0)::BIGINT as total_input_tokens, \
             COALESCE(SUM(total_output_tokens), 0)::BIGINT as total_output_tokens, \
             COALESCE(SUM(compute_seconds), 0)::BIGINT as total_compute_seconds, \
-            (COALESCE(SUM(total_input_tokens), 0) * $1 + COALESCE(SUM(total_output_tokens), 0) * $2) as estimated_cost_usd \
+            COALESCE(SUM(total_cost_usd), 0)::DOUBLE PRECISION as cost_usd \
          FROM tasks \
-         WHERE created_at >= NOW() - ($3 || ' days')::INTERVAL \
+         WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL \
          GROUP BY created_by \
-         ORDER BY estimated_cost_usd DESC",
+         ORDER BY cost_usd DESC",
     )
-    .bind(input_price)
-    .bind(output_price)
     .bind(days.to_string())
     .fetch_all(&state.db)
     .await?;
@@ -114,16 +92,14 @@ pub async fn cost_by_user(
     Ok(Json(rows))
 }
 
-/// GET /api/admin/cost/by-repo?repo={owner/repo}&days={n}
-/// If repo is omitted, returns aggregated cost per repo (not daily breakdown).
+/// GET /api/admin/cost/by-repo?days={n}
+/// Aggregated cost per repo using real cost from Claude CLI.
 pub async fn cost_by_repo(
     _admin: AdminUser,
     State(state): State<crate::AppState>,
     Query(q): Query<CostByQuery>,
 ) -> Result<Json<Vec<CostSummaryRow>>, AppError> {
     let days = parse_days(q.days, q.period.as_deref());
-    let input_price = cost_per_input_token();
-    let output_price = cost_per_output_token();
 
     let rows = sqlx::query_as::<_, CostSummaryRow>(
         "SELECT \
@@ -131,14 +107,12 @@ pub async fn cost_by_repo(
             COALESCE(SUM(total_input_tokens), 0)::BIGINT as total_input_tokens, \
             COALESCE(SUM(total_output_tokens), 0)::BIGINT as total_output_tokens, \
             COALESCE(SUM(compute_seconds), 0)::BIGINT as total_compute_seconds, \
-            (COALESCE(SUM(total_input_tokens), 0) * $1 + COALESCE(SUM(total_output_tokens), 0) * $2) as estimated_cost_usd \
+            COALESCE(SUM(total_cost_usd), 0)::DOUBLE PRECISION as cost_usd \
          FROM tasks \
-         WHERE created_at >= NOW() - ($3 || ' days')::INTERVAL \
+         WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL \
          GROUP BY repo \
-         ORDER BY estimated_cost_usd DESC",
+         ORDER BY cost_usd DESC",
     )
-    .bind(input_price)
-    .bind(output_price)
     .bind(days.to_string())
     .fetch_all(&state.db)
     .await?;
@@ -146,16 +120,14 @@ pub async fn cost_by_repo(
     Ok(Json(rows))
 }
 
-/// GET /api/admin/cost/trends?period={7d|30d|90d}
-/// Daily aggregate totals for burn rate chart.
+/// GET /api/admin/cost/trends?days={n}
+/// Daily aggregate totals for burn rate chart, using real cost.
 pub async fn cost_trends(
     _admin: AdminUser,
     State(state): State<crate::AppState>,
     Query(q): Query<CostByQuery>,
 ) -> Result<Json<Vec<DailyCostRow>>, AppError> {
     let days = parse_days(q.days, q.period.as_deref());
-    let input_price = cost_per_input_token();
-    let output_price = cost_per_output_token();
 
     let rows = sqlx::query_as::<_, DailyCostRow>(
         "SELECT \
@@ -163,15 +135,13 @@ pub async fn cost_trends(
             COALESCE(SUM(total_input_tokens), 0)::BIGINT as total_input_tokens, \
             COALESCE(SUM(total_output_tokens), 0)::BIGINT as total_output_tokens, \
             COALESCE(SUM(compute_seconds), 0)::BIGINT as total_compute_seconds, \
-            (COALESCE(SUM(total_input_tokens), 0) * $1 + COALESCE(SUM(total_output_tokens), 0) * $2) as estimated_cost_usd, \
+            COALESCE(SUM(total_cost_usd), 0)::DOUBLE PRECISION as cost_usd, \
             COUNT(*)::BIGINT as task_count \
          FROM tasks \
-         WHERE created_at >= NOW() - ($3 || ' days')::INTERVAL \
+         WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL \
          GROUP BY created_at::date \
          ORDER BY day",
     )
-    .bind(input_price)
-    .bind(output_price)
     .bind(days.to_string())
     .fetch_all(&state.db)
     .await?;
@@ -317,14 +287,11 @@ pub async fn delete_budget(
 // ── Budget check (called at task creation) ──
 
 /// Check if the user or their org has exceeded their monthly budget.
-/// If over limit, return an error. If over alert threshold, log a warning.
+/// Uses real cost (total_cost_usd) reported by Claude CLI.
 pub async fn check_budget(db: &PgPool, github_login: &str, org: &str) -> Result<(), AppError> {
-    let input_price = cost_per_input_token();
-    let output_price = cost_per_output_token();
-
     // Check user-level budget
     if let Some(budget) = load_budget(db, github_login, "user").await? {
-        let spent = current_month_cost_for_user(db, github_login, input_price, output_price).await?;
+        let spent = current_month_cost_for_user(db, github_login).await?;
         if spent >= budget.monthly_limit_usd {
             return Err(AppError::BadRequest(format!(
                 "Monthly budget exceeded for user '{}': ${:.2} spent of ${:.2} limit",
@@ -344,7 +311,7 @@ pub async fn check_budget(db: &PgPool, github_login: &str, org: &str) -> Result<
     // Check org-level budget
     if !org.is_empty() {
         if let Some(budget) = load_budget(db, org, "org").await? {
-            let spent = current_month_cost_for_org(db, input_price, output_price).await?;
+            let spent = current_month_cost_for_org(db).await?;
             if spent >= budget.monthly_limit_usd {
                 return Err(AppError::BadRequest(format!(
                     "Monthly budget exceeded for org '{}': ${:.2} spent of ${:.2} limit",
@@ -387,17 +354,13 @@ async fn load_budget(
 async fn current_month_cost_for_user(
     db: &PgPool,
     github_login: &str,
-    input_price: f64,
-    output_price: f64,
 ) -> Result<f64, AppError> {
     let row: (f64,) = sqlx::query_as(
-        "SELECT COALESCE(SUM(COALESCE(total_input_tokens, 0)) * $1 + SUM(COALESCE(total_output_tokens, 0)) * $2, 0) \
+        "SELECT COALESCE(SUM(total_cost_usd), 0)::DOUBLE PRECISION \
          FROM tasks \
-         WHERE created_by = $3 \
+         WHERE created_by = $1 \
            AND created_at >= DATE_TRUNC('month', NOW())",
     )
-    .bind(input_price)
-    .bind(output_price)
     .bind(github_login)
     .fetch_one(db)
     .await?;
@@ -406,16 +369,12 @@ async fn current_month_cost_for_user(
 
 async fn current_month_cost_for_org(
     db: &PgPool,
-    input_price: f64,
-    output_price: f64,
 ) -> Result<f64, AppError> {
     let row: (f64,) = sqlx::query_as(
-        "SELECT COALESCE(SUM(COALESCE(total_input_tokens, 0)) * $1 + SUM(COALESCE(total_output_tokens, 0)) * $2, 0) \
+        "SELECT COALESCE(SUM(total_cost_usd), 0)::DOUBLE PRECISION \
          FROM tasks \
          WHERE created_at >= DATE_TRUNC('month', NOW())",
     )
-    .bind(input_price)
-    .bind(output_price)
     .fetch_one(db)
     .await?;
     Ok(row.0)

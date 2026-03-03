@@ -298,7 +298,7 @@ export interface CostTrend {
   total_input_tokens: number;
   total_output_tokens: number;
   total_compute_seconds: number;
-  estimated_cost_usd: number;
+  cost_usd: number;
   task_count: number;
 }
 export interface CostGroupRow {
@@ -306,7 +306,7 @@ export interface CostGroupRow {
   total_input_tokens: number;
   total_output_tokens: number;
   total_compute_seconds: number;
-  estimated_cost_usd: number;
+  cost_usd: number;
 }
 export interface Budget {
   id: number;

@@ -128,7 +128,7 @@ function SpendChart({ days }: { days: number }) {
   });
 
   const maxCost = trends?.length
-    ? Math.max(...trends.map((t: CostTrend) => t.estimated_cost_usd), 0.01)
+    ? Math.max(...trends.map((t: CostTrend) => t.cost_usd), 0.01)
     : 1;
 
   return (
@@ -147,7 +147,7 @@ function SpendChart({ days }: { days: number }) {
         ) : (
           <div className="flex items-end gap-1 h-48">
             {trends.map((t: CostTrend) => {
-              const pct = (t.estimated_cost_usd / maxCost) * 100;
+              const pct = (t.cost_usd / maxCost) * 100;
               const date = new Date(t.day);
               const label = `${date.getMonth() + 1}/${date.getDate()}`;
               return (
@@ -159,7 +159,7 @@ function SpendChart({ days }: { days: number }) {
                   <div
                     className="w-full bg-primary/80 rounded-t-sm min-h-[2px] transition-all hover:bg-primary"
                     style={{ height: `${Math.max(pct, 1)}%` }}
-                    title={`${label}: $${t.estimated_cost_usd.toFixed(2)} (${t.task_count} tasks)`}
+                    title={`${label}: $${t.cost_usd.toFixed(2)} (${t.task_count} tasks)`}
                   />
                   <span className="text-[10px] text-muted-foreground mt-1 leading-none">
                     {label}
@@ -210,7 +210,7 @@ function CostByUserTable({ days }: { days: number }) {
                   <th className="pb-2 pr-4 font-medium">User</th>
                   <th className="pb-2 pr-4 font-medium text-right">Input Tokens</th>
                   <th className="pb-2 pr-4 font-medium text-right">Output Tokens</th>
-                  <th className="pb-2 pr-4 font-medium text-right">Est. Cost</th>
+                  <th className="pb-2 pr-4 font-medium text-right">Cost</th>
                   <th className="pb-2 font-medium text-right">Compute Time</th>
                 </tr>
               </thead>
@@ -220,7 +220,7 @@ function CostByUserTable({ days }: { days: number }) {
                     <td className="py-2 pr-4 font-mono">{row.group_key}</td>
                     <td className="py-2 pr-4 text-right">{row.total_input_tokens.toLocaleString()}</td>
                     <td className="py-2 pr-4 text-right">{row.total_output_tokens.toLocaleString()}</td>
-                    <td className="py-2 pr-4 text-right font-medium">${row.estimated_cost_usd.toFixed(2)}</td>
+                    <td className="py-2 pr-4 text-right font-medium">${row.cost_usd.toFixed(2)}</td>
                     <td className="py-2 text-right">{formatDuration(row.total_compute_seconds)}</td>
                   </tr>
                 ))}
@@ -260,7 +260,7 @@ function CostByRepoTable({ days }: { days: number }) {
                   <th className="pb-2 pr-4 font-medium">Repository</th>
                   <th className="pb-2 pr-4 font-medium text-right">Input Tokens</th>
                   <th className="pb-2 pr-4 font-medium text-right">Output Tokens</th>
-                  <th className="pb-2 pr-4 font-medium text-right">Est. Cost</th>
+                  <th className="pb-2 pr-4 font-medium text-right">Cost</th>
                   <th className="pb-2 font-medium text-right">Compute Time</th>
                 </tr>
               </thead>
@@ -270,7 +270,7 @@ function CostByRepoTable({ days }: { days: number }) {
                     <td className="py-2 pr-4 font-mono">{row.group_key}</td>
                     <td className="py-2 pr-4 text-right">{row.total_input_tokens.toLocaleString()}</td>
                     <td className="py-2 pr-4 text-right">{row.total_output_tokens.toLocaleString()}</td>
-                    <td className="py-2 pr-4 text-right font-medium">${row.estimated_cost_usd.toFixed(2)}</td>
+                    <td className="py-2 pr-4 text-right font-medium">${row.cost_usd.toFixed(2)}</td>
                     <td className="py-2 text-right">{formatDuration(row.total_compute_seconds)}</td>
                   </tr>
                 ))}

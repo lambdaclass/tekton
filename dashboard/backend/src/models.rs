@@ -280,7 +280,7 @@ pub struct CostSummaryRow {
     pub total_input_tokens: i64,
     pub total_output_tokens: i64,
     pub total_compute_seconds: i64,
-    pub estimated_cost_usd: f64,
+    pub cost_usd: f64,
 }
 
 
@@ -298,7 +298,7 @@ pub struct DailyCostRow {
     pub total_input_tokens: i64,
     pub total_output_tokens: i64,
     pub total_compute_seconds: i64,
-    pub estimated_cost_usd: f64,
+    pub cost_usd: f64,
     pub task_count: i64,
 }
 
