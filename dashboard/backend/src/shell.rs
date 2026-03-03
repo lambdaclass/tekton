@@ -458,6 +458,8 @@ pub async fn agent_exec_claude_streaming(
         }
     });
 
+    let stderr_lines = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let stderr_lines_clone = stderr_lines.clone();
     let stderr_handle = tokio::spawn(async move {
         let reader = BufReader::new(stderr);
         let mut lines = reader.lines();
@@ -466,6 +468,7 @@ pub async fn agent_exec_claude_streaming(
             if line.contains("Warning: Permanently added") {
                 continue;
             }
+            stderr_lines_clone.lock().await.push(line.clone());
             let _ = tx2.send(line);
         }
     });
@@ -479,8 +482,14 @@ pub async fn agent_exec_claude_streaming(
         .map_err(|e| AppError::Internal(format!("Failed to wait on ssh: {e}")))?;
 
     if !status.success() {
+        let stderr_output = stderr_lines.lock().await.join("\n");
+        let detail = if stderr_output.is_empty() {
+            String::new()
+        } else {
+            format!(": {stderr_output}")
+        };
         return Err(AppError::Internal(format!(
-            "Claude streaming exited with status {status}"
+            "Claude streaming exited with status {status}{detail}"
         )));
     }
 

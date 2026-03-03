@@ -549,7 +549,26 @@ async fn run_task_pipeline(
 
     update_task_status(db, task_id, "running_claude", None).await?;
     log_and_send(db, task_id, &tx, "[STEP] Running Claude...");
-    let result = run_claude_streaming(db, &config.secrets_encryption_key, created_by, &agent_name, &effective_prompt, tx.clone(), policy.as_ref()).await?;
+    let result = match run_claude_streaming(db, &config.secrets_encryption_key, created_by, &agent_name, &effective_prompt, tx.clone(), policy.as_ref()).await {
+        Ok(r) => r,
+        Err(e) => {
+            // If a policy with denied tools is active, the CLI may exit non-zero because
+            // it cannot fulfil the request. Surface that clearly instead of a raw SSH error.
+            if let Some(ref pol) = policy {
+                let denied = get_denied_tools(pol);
+                if !denied.is_empty() {
+                    let msg = format!(
+                        "Claude failed — this may be because the repo policy blocks these tools: {}. \
+                         The task asked for functionality that requires a blocked tool.",
+                        denied.join(", ")
+                    );
+                    log_and_send(db, task_id, &tx, &format!("[POLICY] {msg}"));
+                    return Err(AppError::Internal(msg));
+                }
+            }
+            return Err(e);
+        }
+    };
     save_claude_response_as_message(db, task_id, &result.text).await?;
     persist_actions(db, task_id, &result.actions).await;
     if let Some(ref pol) = policy {
@@ -705,6 +724,19 @@ fn slugify_for_branch(name: &str) -> String {
         }
     }
     result.trim_end_matches('-').to_string()
+}
+
+/// Extract the list of denied tool names from a policy.
+fn get_denied_tools(policy: &crate::models::RepoPolicy) -> Vec<String> {
+    let tools = match &policy.allowed_tools {
+        Some(t) => t,
+        None => return Vec::new(),
+    };
+    if let Some(deny) = tools.get("deny").and_then(|v| v.as_array()) {
+        deny.iter().filter_map(|v| v.as_str()).map(String::from).collect()
+    } else {
+        Vec::new()
+    }
 }
 
 /// Build a `--disallowedTools` CLI flag from the policy's deny list.
