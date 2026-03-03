@@ -618,7 +618,7 @@ async fn run_task_pipeline(
     }
 
     // Step 4: Follow-up loop
-    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, policy.as_ref(), &tx).await?;
+    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, &tx).await?;
 
     // Step 5: Destroy agent
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
@@ -1098,7 +1098,6 @@ async fn follow_up_loop(
     preview_created: &mut bool,
     git_id: &GitIdentity,
     created_by: &str,
-    policy: Option<&crate::models::RepoPolicy>,
     tx: &broadcast::Sender<String>,
 ) -> Result<FollowUpOutcome, AppError> {
     let mut last_seen_id: i64 = 0;
@@ -1175,6 +1174,9 @@ async fn follow_up_loop(
             return Ok(FollowUpOutcome::Done);
         }
 
+        // Reload policy from DB each iteration so changes (add/remove/edit) take effect immediately
+        let policy = policies::load_effective_policy(db, repo).await?;
+
         // Batch all pending messages into one prompt
         let mut combined_parts: Vec<String> = Vec::new();
         for msg in &new_messages {
@@ -1194,7 +1196,7 @@ async fn follow_up_loop(
         }
 
         // Check cost limit before running follow-up — reject this message but keep the task open
-        if let Some(pol) = policy {
+        if let Some(ref pol) = policy {
             if let Some(max_cost) = pol.max_cost_usd {
                 if check_cost_limit(db, task_id, max_cost, tx).await? {
                     save_system_message(db, task_id, "Cost limit reached — this follow-up was blocked by policy.").await?;
@@ -1209,7 +1211,7 @@ async fn follow_up_loop(
         update_task_status(db, task_id, "running_claude", None).await?;
         let _ = tx.send("[FOLLOWUP] Running Claude with follow-up...".to_string());
 
-        let result = match run_claude_continue(db, &config.secrets_encryption_key, created_by, agent_name, &combined_prompt, tx.clone(), policy).await {
+        let result = match run_claude_continue(db, &config.secrets_encryption_key, created_by, agent_name, &combined_prompt, tx.clone(), policy.as_ref()).await {
             Ok(r) => r,
             Err(e) => {
                 // Fallback: if --continue fails, use fresh session with full context
@@ -1219,12 +1221,12 @@ async fn follow_up_loop(
                     .fetch_one(db)
                     .await?;
                 let context_prompt = build_followup_prompt(&original_prompt, &conversation_history, &combined_prompt);
-                run_claude_streaming(db, &config.secrets_encryption_key, created_by, agent_name, &context_prompt, tx.clone(), policy).await?
+                run_claude_streaming(db, &config.secrets_encryption_key, created_by, agent_name, &context_prompt, tx.clone(), policy.as_ref()).await?
             }
         };
         save_claude_response_as_message(db, task_id, &result.text).await?;
         persist_actions(db, task_id, &result.actions).await;
-        if let Some(pol) = policy {
+        if let Some(ref pol) = policy {
             check_policy_violations(db, task_id, &result.actions, pol, tx).await;
         }
         increment_token_usage(db, task_id, &result.usage).await;
@@ -2202,7 +2204,7 @@ async fn run_reopen_pipeline(
     // branch_pushed starts as true since the branch already exists on GitHub
     let mut branch_pushed = true;
     let mut preview_created = had_preview;
-    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, policy.as_ref(), &tx).await?;
+    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, &tx).await?;
 
     // Step 4: Destroy agent
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
