@@ -1262,38 +1262,20 @@ fn build_followup_prompt(original_prompt: &str, history: &[String], new_message:
 }
 
 /// Collect all file changes in the agent repo relative to a base ref.
-/// Runs a Python script inside the container that stages everything,
-/// diffs against base_ref, and outputs JSON with additions (base64) and deletions.
+///
+/// Why Python: This function needs to run a multi-step operation (stage files, commit,
+/// diff, read file contents, base64-encode them, produce JSON) inside a *remote* agent
+/// container over SSH. We can't use Rust libraries like `git2` because the git repo
+/// lives on the remote machine, not locally. We need to send a self-contained script
+/// over SSH that does everything in one shot. Python is a good fit here because it has
+/// `subprocess`, `base64`, `json`, and file I/O in its stdlib, making the script
+/// compact and readable compared to an equivalent bash version. The script source lives
+/// in `scripts/collect_file_changes.py` and is embedded at compile time.
 async fn collect_file_changes(agent_name: &str, base_ref: &str) -> Result<FileChanges, AppError> {
     // Sanitize base_ref (should be like "origin/main" — never contains quotes)
     let safe_base_ref = base_ref.replace('\'', "").replace('"', "");
-    let python_script = r#"
-import subprocess, json, base64, os
-base_ref = "__BASE_REF__"
-os.chdir("/home/agent/repo")
-subprocess.run(["git", "add", "-A"], check=True)
-if subprocess.run(["git", "diff", "--cached", "--quiet"]).returncode != 0:
-    subprocess.run(["git", "commit", "-m", "temp"], check=True)
-result = subprocess.run(
-    ["git", "diff", "--name-status", base_ref + "..HEAD"],
-    capture_output=True, text=True, check=True)
-changes = {"additions": [], "deletions": []}
-for line in result.stdout.strip().split("\n"):
-    if not line: continue
-    parts = line.split("\t")
-    status = parts[0][0]
-    if status == "D":
-        changes["deletions"].append({"path": parts[1]})
-    elif status == "R":
-        changes["deletions"].append({"path": parts[1]})
-        with open(parts[2], "rb") as f:
-            changes["additions"].append({"path": parts[2], "contents": base64.b64encode(f.read()).decode()})
-    else:
-        with open(parts[-1], "rb") as f:
-            changes["additions"].append({"path": parts[-1], "contents": base64.b64encode(f.read()).decode()})
-print(json.dumps(changes))
-"#
-    .replace("__BASE_REF__", &safe_base_ref);
+    let python_script = include_str!("../scripts/collect_file_changes.py")
+        .replace("__BASE_REF__", &safe_base_ref);
 
     let cmd = ["python3 -c '", python_script.trim(), "'"].concat();
     let output = shell::agent_exec_capture(agent_name, &cmd).await?;
