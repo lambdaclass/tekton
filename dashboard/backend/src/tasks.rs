@@ -503,6 +503,16 @@ async fn run_task_pipeline(
         write_secrets_env_file(&agent_name, &repo_secrets, tx.clone()).await?;
     }
 
+    // Step 2c: Apply network egress restrictions (if any)
+    if let Some(ref pol) = policy {
+        if let Some(ref egress) = pol.network_egress {
+            log_and_send(db, task_id, &tx, "[POLICY] Applying network egress restrictions...");
+            if let Err(e) = shell::apply_egress_rules(&agent_name, egress).await {
+                log_and_send(db, task_id, &tx, &format!("[WARN] Failed to apply egress rules: {e}"));
+            }
+        }
+    }
+
     // Step 3: Copy images and run Claude (streaming)
     let mut effective_prompt = augment_prompt_with_images(config, &agent_name, image_url_json, prompt, &tx).await?;
 
@@ -2002,6 +2012,16 @@ async fn run_reopen_pipeline(
 
     // Load effective policy for enforcement during follow-ups
     let policy = policies::load_effective_policy(db, repo).await?;
+
+    // Apply network egress restrictions (if any)
+    if let Some(ref pol) = policy {
+        if let Some(ref egress) = pol.network_egress {
+            log_and_send(db, task_id, &tx, "[POLICY] Applying network egress restrictions...");
+            if let Err(e) = shell::apply_egress_rules(&agent_name, egress).await {
+                log_and_send(db, task_id, &tx, &format!("[WARN] Failed to apply egress rules: {e}"));
+            }
+        }
+    }
 
     // Step 3: Go straight into follow-up loop
     // branch_pushed starts as true since the branch already exists on GitHub
