@@ -11,7 +11,7 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import { statusVariant } from '@/lib/status';
-import { timeAgo, formatTokenCost } from '@/lib/utils';
+import { timeAgo, formatCost } from '@/lib/utils';
 import VoiceInput from '@/components/VoiceInput';
 import BranchCombobox from '@/components/BranchCombobox';
 import { ImagePlus, X, ChevronLeft, ChevronRight, Search, BrainCircuit } from 'lucide-react';
@@ -447,10 +447,10 @@ export default function Tasks() {
                           {t.preview_url.replace(/^https?:\/\//, '')}
                         </a>
                       )}
-                      {(t.total_input_tokens || t.total_output_tokens) ? (
+                      {t.total_cost_usd ? (
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <span className="shrink-0 cursor-default">{formatTokenCost(t.total_input_tokens ?? 0, t.total_output_tokens ?? 0)}</span>
+                            <span className="shrink-0 cursor-default">{formatCost(t.total_cost_usd)}</span>
                           </TooltipTrigger>
                           <TooltipContent>
                             {(t.total_input_tokens ?? 0).toLocaleString()} input + {(t.total_output_tokens ?? 0).toLocaleString()} output tokens

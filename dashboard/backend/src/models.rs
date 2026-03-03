@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 // ── Auth ──
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: String, // github_login
     pub name: String,
@@ -95,6 +95,7 @@ pub struct Task {
     pub image_url: Option<String>,
     pub total_input_tokens: Option<i64>,
     pub total_output_tokens: Option<i64>,
+    pub total_cost_usd: Option<f64>,
     pub name: Option<String>,
     pub pr_url: Option<String>,
     pub pr_number: Option<i32>,
@@ -228,6 +229,41 @@ pub struct CreateRepoPolicyRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateRepoPolicyRequest {
+    pub protected_branches: Option<Vec<String>>,
+    pub allowed_tools: Option<serde_json::Value>,
+    pub network_egress: Option<serde_json::Value>,
+    pub max_cost_usd: Option<f64>,
+    pub require_approval_above_usd: Option<f64>,
+}
+
+// ── Org Policies ──
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct OrgPolicy {
+    pub id: i64,
+    pub org: String,
+    pub protected_branches: Vec<String>,
+    pub allowed_tools: Option<serde_json::Value>,
+    pub network_egress: Option<serde_json::Value>,
+    pub max_cost_usd: Option<f64>,
+    pub require_approval_above_usd: Option<f64>,
+    pub created_by: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateOrgPolicyRequest {
+    pub org: String,
+    pub protected_branches: Option<Vec<String>>,
+    pub allowed_tools: Option<serde_json::Value>,
+    pub network_egress: Option<serde_json::Value>,
+    pub max_cost_usd: Option<f64>,
+    pub require_approval_above_usd: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateOrgPolicyRequest {
     pub protected_branches: Option<Vec<String>>,
     pub allowed_tools: Option<serde_json::Value>,
     pub network_egress: Option<serde_json::Value>,

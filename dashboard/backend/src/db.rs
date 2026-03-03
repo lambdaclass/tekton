@@ -48,6 +48,7 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS name TEXT",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_url TEXT",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_number INTEGER",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS total_cost_usd DOUBLE PRECISION DEFAULT 0",
     ] {
         let _ = sqlx::query(col_sql).execute(pool).await;
     }
@@ -180,6 +181,24 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
         "CREATE TABLE IF NOT EXISTS repo_policies (
             id BIGSERIAL PRIMARY KEY,
             repo TEXT NOT NULL UNIQUE,
+            protected_branches TEXT[] NOT NULL DEFAULT '{main,master}',
+            allowed_tools JSONB,
+            network_egress JSONB,
+            max_cost_usd DOUBLE PRECISION,
+            require_approval_above_usd DOUBLE PRECISION,
+            created_by TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Create org_policies table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS org_policies (
+            id BIGSERIAL PRIMARY KEY,
+            org TEXT NOT NULL UNIQUE,
             protected_branches TEXT[] NOT NULL DEFAULT '{main,master}',
             allowed_tools JSONB,
             network_egress JSONB,
