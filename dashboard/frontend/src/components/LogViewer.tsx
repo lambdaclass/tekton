@@ -111,10 +111,14 @@ export default function LogViewer({ taskId, previewSlug, ws, onConnectionChange 
       const socket = connectPreviewLogs(previewSlug!);
       currentSocket = socket;
 
+      socket.addEventListener('open', () => {
+        onConnectionChange?.(true);
+      });
       socket.addEventListener('message', (ev) => {
         writeLine(term, ev.data);
       });
       socket.addEventListener('close', () => {
+        onConnectionChange?.(false);
         if (!disposed) {
           reconnectTimer = setTimeout(connect, 3000);
         }

@@ -239,10 +239,13 @@ export interface RepoPolicy {
   updated_at: string;
 }
 
+export type AllowedToolsValue = { allow?: string[]; deny?: string[] } | null;
+export type NetworkEgressValue = { allowlist?: string[]; denylist?: string[]; default?: string } | null;
+
 export const listPolicies = () => apiFetch<RepoPolicy[]>('/api/admin/policies');
-export const createPolicy = (data: { repo: string; protected_branches?: string[]; allowed_tools?: any; network_egress?: any; max_cost_usd?: number | null; require_approval_above_usd?: number | null }) =>
+export const createPolicy = (data: { repo: string; protected_branches?: string[]; allowed_tools?: AllowedToolsValue; network_egress?: NetworkEgressValue; max_cost_usd?: number | null; require_approval_above_usd?: number | null }) =>
   apiFetch<RepoPolicy>('/api/admin/policies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-export const updatePolicy = (id: number, data: { protected_branches?: string[]; allowed_tools?: any; network_egress?: any; max_cost_usd?: number | null; require_approval_above_usd?: number | null }) =>
+export const updatePolicy = (id: number, data: { protected_branches?: string[]; allowed_tools?: AllowedToolsValue; network_egress?: NetworkEgressValue; max_cost_usd?: number | null; require_approval_above_usd?: number | null }) =>
   apiFetch<RepoPolicy>(`/api/admin/policies/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
 export const deletePolicy = (id: number) =>
   apiFetch<{ deleted: boolean }>(`/api/admin/policies/${id}`, { method: 'DELETE' });
@@ -261,9 +264,9 @@ export interface OrgPolicy {
 }
 
 export const listOrgPolicies = () => apiFetch<OrgPolicy[]>('/api/admin/org-policies');
-export const createOrgPolicy = (data: { org: string; protected_branches?: string[]; allowed_tools?: any; network_egress?: any; max_cost_usd?: number | null; require_approval_above_usd?: number | null }) =>
+export const createOrgPolicy = (data: { org: string; protected_branches?: string[]; allowed_tools?: AllowedToolsValue; network_egress?: NetworkEgressValue; max_cost_usd?: number | null; require_approval_above_usd?: number | null }) =>
   apiFetch<OrgPolicy>('/api/admin/org-policies', { method: 'POST', body: JSON.stringify(data) });
-export const updateOrgPolicy = (id: number, data: { protected_branches?: string[]; allowed_tools?: any; network_egress?: any; max_cost_usd?: number | null; require_approval_above_usd?: number | null }) =>
+export const updateOrgPolicy = (id: number, data: { protected_branches?: string[]; allowed_tools?: AllowedToolsValue; network_egress?: NetworkEgressValue; max_cost_usd?: number | null; require_approval_above_usd?: number | null }) =>
   apiFetch<OrgPolicy>(`/api/admin/org-policies/${id}`, { method: 'PUT', body: JSON.stringify(data) });
 export const deleteOrgPolicy = (id: number) =>
   apiFetch<{ deleted: boolean }>(`/api/admin/org-policies/${id}`, { method: 'DELETE' });
