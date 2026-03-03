@@ -572,9 +572,9 @@ async fn run_task_pipeline(
 }
 
 /// Build the shell export fragment that sets AI credentials for a user.
-/// Returns (env_export_string, model_flag) where model_flag is e.g.
-/// `"--model anthropic/claude-sonnet-4-6"` for OpenRouter (which requires
-/// provider-prefixed model names) and `""` for Anthropic direct.
+/// Returns (env_export_string, model_flag) where model_flag is always `""`.
+/// Model selection uses ANTHROPIC_MODEL env var rather than --model flag to
+/// avoid the Claude CLI's client-side validation against Anthropic-only names.
 async fn build_claude_auth_env(
     db: &PgPool,
     encryption_key: &str,
@@ -585,10 +585,10 @@ async fn build_claude_auth_env(
             let model = cfg.model.as_deref().unwrap_or("anthropic/claude-sonnet-4.6");
             Ok((
                 format!(
-                    "export ANTHROPIC_BASE_URL='https://openrouter.ai/api/v1' ANTHROPIC_API_KEY='{}'",
-                    cfg.api_key
+                    "export ANTHROPIC_BASE_URL='https://openrouter.ai/api/v1' ANTHROPIC_API_KEY='{}' ANTHROPIC_MODEL='{}'",
+                    cfg.api_key, model
                 ),
-                format!("--model {model}"),
+                String::new(),
             ))
         }
         Some(cfg) => Ok((format!("export ANTHROPIC_API_KEY='{}'", cfg.api_key), String::new())),
@@ -626,7 +626,9 @@ async fn generate_task_name(
         "HOME=/tmp".to_string(),
     ];
     if cfg.provider == "openrouter" {
+        let model = cfg.model.as_deref().unwrap_or("anthropic/claude-sonnet-4.6");
         env_args.push("ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1".to_string());
+        env_args.push(format!("ANTHROPIC_MODEL={model}"));
     }
 
     let mut cmd_args = vec!["-u".to_string(), "nobody".to_string(), "env".to_string()];
@@ -635,10 +637,6 @@ async fn generate_task_name(
         "claude".to_string(),
         "--dangerously-skip-permissions".to_string(),
     ];
-    if cfg.provider == "openrouter" {
-        let model = cfg.model.as_deref().unwrap_or("anthropic/claude-sonnet-4.6");
-        claude_args.extend(["--model".to_string(), model.to_string()]);
-    }
     claude_args.extend(["-p".to_string(), naming_prompt]);
     cmd_args.extend(claude_args);
 
@@ -2008,7 +2006,9 @@ async fn generate_pr_body(
         "HOME=/tmp".to_string(),
     ];
     if cfg.provider == "openrouter" {
+        let model = cfg.model.as_deref().unwrap_or("anthropic/claude-sonnet-4.6");
         env_args.push("ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1".to_string());
+        env_args.push(format!("ANTHROPIC_MODEL={model}"));
     }
 
     let mut cmd_args = vec!["-u".to_string(), "nobody".to_string(), "env".to_string()];
@@ -2017,10 +2017,6 @@ async fn generate_pr_body(
         "claude".to_string(),
         "--dangerously-skip-permissions".to_string(),
     ];
-    if cfg.provider == "openrouter" {
-        let model = cfg.model.as_deref().unwrap_or("anthropic/claude-sonnet-4.6");
-        claude_args.extend(["--model".to_string(), model.to_string()]);
-    }
     claude_args.extend(["-p".to_string(), context.clone()]);
     cmd_args.extend(claude_args);
 
