@@ -285,27 +285,25 @@ export default function TaskDetail() {
         </Card>
       )}
 
-      <div className={task?.branch_name ? 'grid grid-cols-2 gap-6' : 'space-y-6'}>
-        <div className="space-y-6">
-          <Card>
-            <CardHeader className="py-3">
-              <CardTitle className="text-base">Live Logs</CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              <LogViewer taskId={id!} onConnectionChange={onConnectionChange} />
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="py-3">
-              <CardTitle className="text-base">Preview Logs</CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              <LogViewer previewSlug={`t-${id!.slice(0, 6)}`} />
-            </CardContent>
-          </Card>
-        </div>
+      <div className="space-y-6">
+        <Card>
+          <CardHeader className="py-3">
+            <CardTitle className="text-base">Agent Logs</CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <LogViewer taskId={id!} onConnectionChange={onConnectionChange} />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="py-3">
+            <CardTitle className="text-base">Container Logs</CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <LogViewer previewSlug={`t-${id!.slice(0, 6)}`} />
+          </CardContent>
+        </Card>
         {task?.branch_name && (
-          <Card className="self-start sticky top-4">
+          <Card>
             <CardHeader className="py-3">
               <CardTitle className="text-base">Code Diff</CardTitle>
             </CardHeader>
