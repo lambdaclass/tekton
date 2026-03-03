@@ -8,9 +8,6 @@ CREDS_DIR="/var/secrets/claude"
 FLAKE_DIR="/etc/nixos"
 SUBNET="10.100.0"
 SYSTEM_PATH_CACHE="$AGENT_DIR/.system-path"
-POOL_FILE="$AGENT_DIR/.pool"
-POOL_SIZE_FILE="$AGENT_DIR/.pool-size"
-DEFAULT_POOL_SIZE=3
 
 # -- Helpers ------------------------------------------------------------------
 RED='\033[0;31m'
@@ -209,239 +206,6 @@ cmd_list() {
     fi
 }
 
-# -- Pool helpers -------------------------------------------------------------
-
-get_pool_size() {
-    if [[ -f "$POOL_SIZE_FILE" ]]; then
-        cat "$POOL_SIZE_FILE"
-    else
-        echo "$DEFAULT_POOL_SIZE"
-    fi
-}
-
-pool_available() {
-    if [[ -f "$POOL_FILE" ]]; then
-        grep -c . "$POOL_FILE" 2>/dev/null || echo 0
-    else
-        echo 0
-    fi
-}
-
-# -- Pool commands ------------------------------------------------------------
-
-cmd_pool_init() {
-    local size="${1:-$(get_pool_size)}"
-    ensure_root
-    ensure_agent_dir
-
-    echo "$size" > "$POOL_SIZE_FILE"
-    > "$POOL_FILE"  # truncate
-
-    info "Initializing pool with $size containers..."
-    local system_path
-    system_path=$(get_system_path)
-
-    for i in $(seq 1 "$size"); do
-        local name="pool-${i}"
-        if [[ -f "$AGENT_DIR/$name" ]]; then
-            info "Pool container '$name' already exists, skipping."
-            echo "$name" >> "$POOL_FILE"
-            continue
-        fi
-
-        local slot
-        slot=$(next_slot)
-        read -r host_ip local_ip <<< "$(slot_to_ips "$slot")"
-
-        info "Creating pool container '$name' ($i/$size)..."
-        nixos-container create "$name" \
-            --system-path "$system_path" \
-            --host-address "$host_ip" \
-            --local-address "$local_ip"
-
-        local container_root="/var/lib/nixos-containers/${name}"
-        local creds_dest="${container_root}/mnt/claude-creds"
-        mkdir -p "$creds_dest"
-        cp -r "${CREDS_DIR}"/. "$creds_dest/"
-
-        echo "${slot} ${host_ip} ${local_ip}" > "$AGENT_DIR/$name"
-        bump_slot
-
-        nixos-container start "$name"
-        echo "$name" >> "$POOL_FILE"
-    done
-
-    success "Pool initialized: $size containers ready."
-}
-
-cmd_pool_claim() {
-    ensure_root
-    ensure_agent_dir
-
-    local avail
-    avail=$(pool_available)
-
-    if [[ "$avail" -eq 0 ]]; then
-        # Pool empty — fall back to on-demand creation
-        info "Pool empty, creating container on demand..."
-        # Find next pool index for naming
-        local idx=1
-        while [[ -f "$AGENT_DIR/pool-${idx}" ]]; do
-            idx=$(( idx + 1 ))
-        done
-        local name="pool-${idx}"
-        cmd_create "$name" >/dev/null 2>&1
-        echo "$name"
-        return
-    fi
-
-    # Take the first available container from the pool
-    local name
-    name=$(head -n1 "$POOL_FILE")
-    # Remove it from the pool list
-    sed -i "1d" "$POOL_FILE"
-
-    # Verify the container is still running, restart if needed
-    if ! nixos-container status "$name" 2>/dev/null | grep -q "running"; then
-        info "Pool container '$name' was stopped, restarting..." >&2
-        nixos-container start "$name" 2>/dev/null || true
-    fi
-
-    echo "$name"
-}
-
-cmd_pool_release() {
-    local name="${1:-}"
-    if [[ -z "$name" ]]; then
-        fatal "Usage: agent pool-release <name>"
-    fi
-
-    ensure_root
-
-    if [[ ! -f "$AGENT_DIR/$name" ]]; then
-        fatal "Agent '$name' not found."
-    fi
-
-    local target_size
-    target_size=$(get_pool_size)
-    local current_avail
-    current_avail=$(pool_available)
-
-    if [[ "$current_avail" -ge "$target_size" ]]; then
-        # Pool is full — destroy instead of recycling
-        info "Pool at capacity ($current_avail/$target_size), destroying '$name'..."
-        cmd_destroy "$name"
-        return
-    fi
-
-    info "Recycling '$name' back into pool..."
-
-    # Stop the container
-    nixos-container stop "$name" 2>/dev/null || true
-
-    # Reset work files: wipe /home/agent contents inside the container
-    local container_root="/var/lib/nixos-containers/${name}"
-    rm -rf "${container_root}/home/agent/"* 2>/dev/null || true
-    rm -rf "${container_root}/home/agent/".* 2>/dev/null || true
-
-    # Re-copy credentials (they may have been modified during the task)
-    local creds_dest="${container_root}/mnt/claude-creds"
-    mkdir -p "$creds_dest"
-    cp -r "${CREDS_DIR}"/. "$creds_dest/"
-
-    # Restart the container
-    nixos-container start "$name"
-
-    # Add back to the pool
-    echo "$name" >> "$POOL_FILE"
-    success "Agent '$name' recycled into pool."
-}
-
-cmd_pool_status() {
-    ensure_agent_dir
-
-    local target_size
-    target_size=$(get_pool_size)
-    local avail
-    avail=$(pool_available)
-
-    echo -e "${BOLD}Agent Pool Status${NC}"
-    echo -e "  Target size:  $target_size"
-    echo -e "  Available:    $avail"
-    echo -e "  Deficit:      $(( target_size - avail > 0 ? target_size - avail : 0 ))"
-
-    if [[ "$avail" -gt 0 ]]; then
-        echo -e "\n${BOLD}Available containers:${NC}"
-        while IFS= read -r name; do
-            [[ -z "$name" ]] && continue
-            if [[ -f "$AGENT_DIR/$name" ]]; then
-                read -r _slot host_ip local_ip < "$AGENT_DIR/$name"
-                echo -e "  $name  ($local_ip)"
-            else
-                echo -e "  $name  ${RED}(tracking file missing)${NC}"
-            fi
-        done < "$POOL_FILE"
-    fi
-}
-
-cmd_pool_refill() {
-    ensure_root
-    ensure_agent_dir
-
-    local target_size
-    target_size=$(get_pool_size)
-    local avail
-    avail=$(pool_available)
-
-    if [[ "$avail" -ge "$target_size" ]]; then
-        info "Pool already at target size ($avail/$target_size)."
-        return
-    fi
-
-    local needed=$(( target_size - avail ))
-    info "Refilling pool: $needed container(s) needed (have $avail, target $target_size)..."
-
-    local system_path
-    system_path=$(get_system_path)
-
-    local created=0
-    local idx=1
-    while [[ $created -lt $needed ]]; do
-        local name="pool-${idx}"
-        idx=$(( idx + 1 ))
-
-        # Skip if this name is already in the pool or in use
-        if [[ -f "$AGENT_DIR/$name" ]]; then
-            continue
-        fi
-
-        local slot
-        slot=$(next_slot)
-        read -r host_ip local_ip <<< "$(slot_to_ips "$slot")"
-
-        info "Creating pool container '$name' ($(( created + 1 ))/$needed)..."
-        nixos-container create "$name" \
-            --system-path "$system_path" \
-            --host-address "$host_ip" \
-            --local-address "$local_ip"
-
-        local container_root="/var/lib/nixos-containers/${name}"
-        local creds_dest="${container_root}/mnt/claude-creds"
-        mkdir -p "$creds_dest"
-        cp -r "${CREDS_DIR}"/. "$creds_dest/"
-
-        echo "${slot} ${host_ip} ${local_ip}" > "$AGENT_DIR/$name"
-        bump_slot
-
-        nixos-container start "$name"
-        echo "$name" >> "$POOL_FILE"
-
-        created=$(( created + 1 ))
-    done
-
-    success "Pool refilled: $created container(s) created. Now at $(pool_available)/$target_size."
-}
-
 cmd_ssh() {
     local name="${1:-}"
     if [[ -z "$name" ]]; then
@@ -465,11 +229,6 @@ cmd_help() {
     echo "  list               List all agent containers"
     echo "  ssh <name>         SSH into an agent container"
     echo "  build              Pre-build the agent system closure"
-    echo "  pool-init [size]   Initialize pool with N prewarmed containers"
-    echo "  pool-claim         Claim a container from the pool (prints name)"
-    echo "  pool-release <n>   Recycle a container back into the pool"
-    echo "  pool-status        Show pool size and available containers"
-    echo "  pool-refill        Top up the pool to target size"
     echo "  help               Show this help"
     echo ""
     echo -e "${BOLD}Examples:${NC}"
@@ -477,9 +236,6 @@ cmd_help() {
     echo "  agent create myagent"
     echo "  agent ssh myagent"
     echo "  agent destroy myagent"
-    echo "  agent pool-init 5        # create 5 prewarmed containers"
-    echo "  agent pool-claim         # grab a container from the pool"
-    echo "  agent pool-release pool-3  # recycle container back"
 }
 
 # -- Main ---------------------------------------------------------------------
@@ -492,11 +248,6 @@ case "$command" in
     list)         cmd_list ;;
     ssh)          cmd_ssh "$@" ;;
     build)        cmd_build ;;
-    pool-init)    cmd_pool_init "$@" ;;
-    pool-claim)   cmd_pool_claim "$@" ;;
-    pool-release) cmd_pool_release "$@" ;;
-    pool-status)  cmd_pool_status "$@" ;;
-    pool-refill)  cmd_pool_refill "$@" ;;
     help|--help|-h) cmd_help ;;
     *)       fatal "Unknown command: $command. Run 'agent help' for usage." ;;
 esac

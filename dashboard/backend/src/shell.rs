@@ -214,39 +214,6 @@ pub async fn destroy_agent(config: &Config, name: &str) -> Result<String, AppErr
     run_cmd(&config.agent_bin, &["destroy", name]).await
 }
 
-/// Claim a prewarmed container from the pool.
-/// Returns the actual pool container name (e.g. "pool-3").
-/// Falls back to on-demand creation if the pool is empty.
-pub async fn claim_agent(config: &Config) -> Result<String, AppError> {
-    let output = run_cmd(&config.agent_bin, &["pool-claim"]).await?;
-    let name = output.trim().to_string();
-    if name.is_empty() {
-        return Err(AppError::Internal("pool-claim returned empty name".into()));
-    }
-    Ok(name)
-}
-
-/// Release a container back to the pool for recycling.
-/// If the pool is at capacity, the container is destroyed instead.
-pub async fn release_agent(config: &Config, name: &str) -> Result<String, AppError> {
-    run_cmd(&config.agent_bin, &["pool-release", name]).await
-}
-
-/// Refill the pool to its target size.
-pub async fn pool_refill(config: &Config) -> Result<String, AppError> {
-    run_cmd(&config.agent_bin, &["pool-refill"]).await
-}
-
-/// Get pool status (target size, available count).
-pub async fn pool_status(config: &Config) -> Result<String, AppError> {
-    run_cmd(&config.agent_bin, &["pool-status"]).await
-}
-
-/// Run an arbitrary agent command with the given arguments.
-pub async fn run_agent_cmd(config: &Config, args: &[&str]) -> Result<String, AppError> {
-    run_cmd(&config.agent_bin, args).await
-}
-
 /// Apply network egress restrictions to an agent container using iptables FORWARD rules.
 ///
 /// The rules are applied to the FORWARD chain for traffic from the container's IP.

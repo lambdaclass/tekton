@@ -380,6 +380,32 @@ pub async fn create_task(
     // Get the user's git identity (GitHub token, name, email)
     let git_id = get_git_identity(&state.db, &created_by).await?;
 
+    // Prewarm preview: create the preview container immediately using the base branch.
+    // It will start building deps in the background while the agent works.
+    let preview_slug = format!("t-{short_id}");
+    let preview_url = format!("https://{preview_slug}.{}", state.config.preview_domain);
+
+    // Save preview_slug and preview_url to the DB right away
+    sqlx::query("UPDATE tasks SET preview_slug = $1, preview_url = $2 WHERE id = $3")
+        .bind(&preview_slug)
+        .bind(&preview_url)
+        .bind(&id)
+        .execute(&state.db)
+        .await?;
+
+    {
+        let config = state.config.clone();
+        let repo = req.repo.clone();
+        let base = base_branch.to_string();
+        let slug = preview_slug.clone();
+        let token = git_id.token.clone();
+        tokio::spawn(async move {
+            if let Err(e) = shell::create_preview(&config, &repo, &base, Some(&slug), &token).await {
+                tracing::warn!("Preview prewarm failed for {slug}: {e}");
+            }
+        });
+    }
+
     // Create broadcast channel for this task
     let (tx, _) = broadcast::channel(1024);
     state.task_channels.insert(id.clone(), tx.clone());
@@ -405,8 +431,7 @@ pub async fn create_task(
         if let Err(e) = &result {
             let _ = update_task_status(&db, &task_id, "failed", Some(&e.to_string())).await;
             let _ = tx.send(format!("[ERROR] Task failed: {e}"));
-            // Clean up agent container on failure — read the name from the DB
-            // since it was set by claim_agent inside the pipeline
+            // Clean up agent container on failure
             if let Ok(Some(name)) = sqlx::query_scalar::<_, Option<String>>(
                 "SELECT agent_name FROM tasks WHERE id = $1"
             )
@@ -414,7 +439,7 @@ pub async fn create_task(
             .fetch_one(&db)
             .await
             {
-                let _ = shell::release_agent(&config, &name).await;
+                let _ = shell::destroy_agent(&config, &name).await;
             }
         }
 
@@ -497,13 +522,14 @@ async fn run_task_pipeline(
     // Record pipeline start time for compute_seconds tracking
     let pipeline_start = std::time::Instant::now();
 
-    // Step 1: Claim agent container from the pool (or create on demand)
+    // Step 1: Create agent container
+    let agent_name = format!("task-{short_id}");
     update_task_status(db, task_id, "creating_agent", None).await?;
-    log_and_send(db, task_id, &tx, "[STEP] Claiming agent container from pool...");
-    let claim_start = std::time::Instant::now();
-    let agent_name = shell::claim_agent(config).await?;
-    let claim_ms = claim_start.elapsed().as_millis();
-    log_and_send(db, task_id, &tx, &format!("[STEP] Acquired agent '{}' in {}ms", agent_name, claim_ms));
+    log_and_send(db, task_id, &tx, &format!("[STEP] Creating agent container '{agent_name}'..."));
+    let create_start = std::time::Instant::now();
+    shell::create_agent(config, &agent_name).await?;
+    let create_ms = create_start.elapsed().as_millis();
+    log_and_send(db, task_id, &tx, &format!("[STEP] Agent '{agent_name}' created in {create_ms}ms"));
     update_task_field(db, task_id, "agent_name", &agent_name).await?;
 
     // Step 2: Clone repo and create branch
@@ -635,8 +661,8 @@ async fn run_task_pipeline(
     // the user will see the question in chat and respond via the follow-up loop)
     let _ = commit_changes_in_agent(&agent_name, prompt, tx.clone()).await?;
 
-    // Step 3c: Push and create preview
-    let mut preview_created = false;
+    // Step 3c: Push and update preview (preview was prewarmed at task creation)
+    let mut preview_created = true;
     let mut branch_pushed = false;
     let pushed = push_and_preview(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, &tx).await?;
     if pushed {
@@ -646,9 +672,9 @@ async fn run_task_pipeline(
     // Step 4: Follow-up loop
     follow_up_loop(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, &tx).await?;
 
-    // Step 5: Release agent back to pool (or destroy if pool full)
-    log_and_send(db, task_id, &tx, "[STEP] Releasing agent container back to pool...");
-    let _ = shell::release_agent(config, &agent_name).await;
+    // Step 5: Destroy agent container
+    log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
+    let _ = shell::destroy_agent(config, &agent_name).await;
 
     // Record compute time (wall-clock seconds from agent creation to destruction)
     let compute_secs = pipeline_start.elapsed().as_secs() as i32;
@@ -2064,7 +2090,7 @@ pub async fn reopen_task(
             .fetch_one(&db)
             .await
             {
-                let _ = shell::release_agent(&config, &name).await;
+                let _ = shell::destroy_agent(&config, &name).await;
             }
         }
 
@@ -2212,12 +2238,13 @@ async fn run_reopen_pipeline(
         update_task_field(db, task_id, "agent_name", &name).await?;
         name
     } else {
-        // Step 1: Claim agent container from pool
-        log_and_send(db, task_id, &tx, "[STEP] Claiming agent container from pool (reopen)...");
-        let claim_start = std::time::Instant::now();
-        let name = shell::claim_agent(config).await?;
-        let claim_ms = claim_start.elapsed().as_millis();
-        log_and_send(db, task_id, &tx, &format!("[STEP] Acquired agent '{}' in {}ms", name, claim_ms));
+        // Step 1: Create agent container
+        let name = format!("task-{short_id}");
+        log_and_send(db, task_id, &tx, &format!("[STEP] Creating agent container '{name}' (reopen)..."));
+        let create_start = std::time::Instant::now();
+        shell::create_agent(config, &name).await?;
+        let create_ms = create_start.elapsed().as_millis();
+        log_and_send(db, task_id, &tx, &format!("[STEP] Agent '{name}' created in {create_ms}ms"));
         update_task_field(db, task_id, "agent_name", &name).await?;
 
         // Step 2: Clone repo and checkout existing branch
@@ -2263,9 +2290,9 @@ async fn run_reopen_pipeline(
     let mut preview_created = had_preview;
     follow_up_loop(config, db, task_id, short_id, &agent_name, repo, branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, &tx).await?;
 
-    // Step 4: Release agent back to pool
-    log_and_send(db, task_id, &tx, "[STEP] Releasing agent container back to pool...");
-    let _ = shell::release_agent(config, &agent_name).await;
+    // Step 4: Destroy agent container
+    log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
+    let _ = shell::destroy_agent(config, &agent_name).await;
 
     update_task_status(db, task_id, "completed", None).await?;
     log_and_send(db, task_id, &tx, "[DONE] Task completed.");
@@ -2382,7 +2409,7 @@ pub async fn recover_interrupted_tasks(
                         .fetch_one(&db2)
                         .await
                         {
-                            let _ = shell::release_agent(&cfg, &name).await;
+                            let _ = shell::destroy_agent(&cfg, &name).await;
                         }
                     }
                     tokio::spawn(async move {
@@ -2461,7 +2488,7 @@ pub async fn recover_interrupted_tasks(
                         .fetch_one(&db2)
                         .await
                         {
-                            let _ = shell::release_agent(&cfg, &name).await;
+                            let _ = shell::destroy_agent(&cfg, &name).await;
                         }
                     }
                     tokio::spawn(async move {

@@ -18,8 +18,6 @@ pub struct Config {
     pub claude_config_dir: String,
     pub chromium_bin: String,
     pub secrets_encryption_key: String,
-    pub agent_pool_size: u32,
-    pub agent_pool_refill_interval_secs: u64,
 }
 
 impl Config {
@@ -53,14 +51,6 @@ impl Config {
             chromium_bin: env::var("CHROMIUM_BIN").unwrap_or_else(|_| "chromium".into()),
             secrets_encryption_key: env::var("SECRETS_ENCRYPTION_KEY")
                 .unwrap_or_else(|_| String::new()),
-            agent_pool_size: env::var("AGENT_POOL_SIZE")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(3),
-            agent_pool_refill_interval_secs: env::var("AGENT_POOL_REFILL_INTERVAL_SECS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(60),
         })
     }
 }

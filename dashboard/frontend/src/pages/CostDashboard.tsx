@@ -131,6 +131,29 @@ function SpendChart({ days }: { days: number }) {
     ? Math.max(...trends.map((t: CostTrend) => t.cost_usd), 0.01)
     : 1;
 
+  // SVG dimensions
+  const width = 800;
+  const height = 200;
+  const padX = 40;
+  const padTop = 10;
+  const padBottom = 30;
+  const chartW = width - padX * 2;
+  const chartH = height - padTop - padBottom;
+
+  const points = trends?.map((t: CostTrend, i: number) => {
+    const x = padX + (trends.length === 1 ? chartW / 2 : (i / (trends.length - 1)) * chartW);
+    const y = padTop + chartH - (t.cost_usd / maxCost) * chartH;
+    return { x, y, t };
+  }) ?? [];
+
+  const linePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
+  const areaPath = linePath + (points.length
+    ? ` L${points[points.length - 1].x},${padTop + chartH} L${points[0].x},${padTop + chartH} Z`
+    : '');
+
+  // Y-axis ticks
+  const yTicks = [0, maxCost / 2, maxCost];
+
   return (
     <Card>
       <CardHeader>
@@ -145,29 +168,40 @@ function SpendChart({ days }: { days: number }) {
         ) : !trends?.length ? (
           <p className="text-muted-foreground text-sm">No data for this period.</p>
         ) : (
-          <div className="flex items-end gap-1 h-48">
-            {trends.map((t: CostTrend) => {
-              const pct = (t.cost_usd / maxCost) * 100;
-              const date = new Date(t.day);
-              const label = `${date.getMonth() + 1}/${date.getDate()}`;
+          <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-48" preserveAspectRatio="none">
+            {/* Grid lines */}
+            {yTicks.map((v) => {
+              const y = padTop + chartH - (v / maxCost) * chartH;
               return (
-                <div
-                  key={t.day}
-                  className="flex flex-col items-center justify-end h-full"
-                  style={{ width: `${100 / Math.max(trends.length, 7)}%` }}
-                >
-                  <div
-                    className="w-full bg-primary/80 rounded-t-sm min-h-[2px] transition-all hover:bg-primary"
-                    style={{ height: `${Math.max(pct, 1)}%` }}
-                    title={`${label}: $${t.cost_usd.toFixed(2)} (${t.task_count} tasks)`}
-                  />
-                  <span className="text-[10px] text-muted-foreground mt-1 leading-none">
-                    {label}
-                  </span>
-                </div>
+                <g key={v}>
+                  <line x1={padX} y1={y} x2={width - padX} y2={y} stroke="currentColor" strokeOpacity={0.1} />
+                  <text x={padX - 4} y={y + 3} textAnchor="end" className="fill-muted-foreground" style={{ fontSize: 10 }}>
+                    ${v.toFixed(2)}
+                  </text>
+                </g>
               );
             })}
-          </div>
+            {/* Area fill */}
+            <path d={areaPath} className="fill-primary/15" />
+            {/* Line */}
+            <path d={linePath} fill="none" className="stroke-primary" strokeWidth={2} strokeLinejoin="round" />
+            {/* Data points & labels */}
+            {points.map((p) => {
+              const date = new Date(p.t.day);
+              const label = `${date.getMonth() + 1}/${date.getDate()}`;
+              return (
+                <g key={p.t.day}>
+                  <circle cx={p.x} cy={p.y} r={3} className="fill-primary" />
+                  <title>{`${label}: $${p.t.cost_usd.toFixed(2)} (${p.t.task_count} tasks)`}</title>
+                  {trends!.length <= 31 && (
+                    <text x={p.x} y={padTop + chartH + 16} textAnchor="middle" className="fill-muted-foreground" style={{ fontSize: 9 }}>
+                      {label}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+          </svg>
         )}
       </CardContent>
     </Card>

@@ -6,7 +6,6 @@ mod db;
 mod error;
 mod models;
 mod policies;
-mod pool;
 mod previews;
 mod public_config;
 mod secrets;
@@ -125,10 +124,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/admin/budgets", post(cost::create_budget))
         .route("/admin/budgets/{id}", put(cost::update_budget))
         .route("/admin/budgets/{id}", delete(cost::delete_budget))
-        // Admin: Agent Pool
-        .route("/admin/pool/status", get(pool::get_pool_status))
-        .route("/admin/pool/resize", post(pool::resize_pool))
-        .route("/admin/pool/refill", post(pool::refill_pool))
         // Admin: Audit Log
         .route("/admin/audit-log", get(audit::list_audit_log))
         // Settings
@@ -164,37 +159,6 @@ async fn main() -> anyhow::Result<()> {
         state.task_channels.clone(),
     )
     .await;
-
-    // Spawn background pool refill task
-    {
-        let config = state.config.clone();
-        let interval_secs = config.agent_pool_refill_interval_secs;
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(
-                std::time::Duration::from_secs(interval_secs),
-            );
-            // First tick fires immediately — do an initial refill
-            loop {
-                interval.tick().await;
-                match shell::pool_refill(&config).await {
-                    Ok(output) => {
-                        let trimmed = output.trim();
-                        if !trimmed.is_empty() {
-                            tracing::debug!("Pool refill: {trimmed}");
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Pool refill failed: {e}");
-                    }
-                }
-            }
-        });
-        tracing::info!(
-            "Agent pool refill scheduled every {}s (target size: {})",
-            state.config.agent_pool_refill_interval_secs,
-            state.config.agent_pool_size,
-        );
-    }
 
     let app = Router::new()
         .nest("/api", api)
