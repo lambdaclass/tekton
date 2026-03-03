@@ -549,13 +549,22 @@ async fn run_task_pipeline(
 
     update_task_status(db, task_id, "running_claude", None).await?;
     log_and_send(db, task_id, &tx, "[STEP] Running Claude...");
-    let result = run_claude_streaming(db, &config.secrets_encryption_key, created_by, &agent_name, &effective_prompt, tx.clone()).await?;
+    let result = run_claude_streaming(db, &config.secrets_encryption_key, created_by, &agent_name, &effective_prompt, tx.clone(), policy.as_ref()).await?;
     save_claude_response_as_message(db, task_id, &result.text).await?;
     persist_actions(db, task_id, &result.actions).await;
     if let Some(ref pol) = policy {
         check_policy_violations(db, task_id, &result.actions, pol, &tx).await;
     }
     increment_token_usage(db, task_id, &result.usage).await;
+
+    // Check cost limit after initial run (can't undo this call, but we can prevent follow-ups)
+    if let Some(ref pol) = policy {
+        if let Some(max_cost) = pol.max_cost_usd {
+            if check_cost_limit(db, task_id, max_cost, &tx).await? {
+                log_and_send(db, task_id, &tx, "[POLICY] Cost limit exceeded after initial run — follow-ups will be blocked.");
+            }
+        }
+    }
 
     // Step 3b: Commit any changes (if Claude asked a question and made none, that's fine —
     // the user will see the question in chat and respond via the follow-up loop)
@@ -698,6 +707,33 @@ fn slugify_for_branch(name: &str) -> String {
     result.trim_end_matches('-').to_string()
 }
 
+/// Build a `--disallowedTools` CLI flag from the policy's deny list.
+/// Returns an empty string if there is no policy or no denied tools.
+fn build_disallowed_tools_flag(policy: Option<&crate::models::RepoPolicy>) -> String {
+    let pol = match policy {
+        Some(p) => p,
+        None => return String::new(),
+    };
+    let tools = match &pol.allowed_tools {
+        Some(t) => t,
+        None => return String::new(),
+    };
+
+    let mut denied: Vec<&str> = Vec::new();
+
+    // Explicit deny list
+    if let Some(deny) = tools.get("deny").and_then(|v| v.as_array()) {
+        denied.extend(deny.iter().filter_map(|v| v.as_str()));
+    }
+
+    if denied.is_empty() {
+        return String::new();
+    }
+
+    // The Claude CLI accepts: --disallowedTools "Tool1,Tool2"
+    format!("--disallowedTools '{}'", denied.join(","))
+}
+
 async fn run_claude_streaming(
     db: &PgPool,
     encryption_key: &str,
@@ -705,11 +741,13 @@ async fn run_claude_streaming(
     agent_name: &str,
     prompt: &str,
     tx: broadcast::Sender<String>,
+    policy: Option<&crate::models::RepoPolicy>,
 ) -> Result<shell::ClaudeStreamResult, AppError> {
     let (auth_env, model_flag) = build_claude_auth_env(db, encryption_key, created_by).await?;
+    let disallowed_flag = build_disallowed_tools_flag(policy);
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
-        "source /home/agent/.env.sh 2>/dev/null ; {auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose {model_flag} -p '{escaped_prompt}'"
+        "source /home/agent/.env.sh 2>/dev/null ; {auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose {model_flag} {disallowed_flag} -p '{escaped_prompt}'"
     );
     shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
 }
@@ -722,13 +760,15 @@ async fn run_claude_continue(
     agent_name: &str,
     prompt: &str,
     tx: broadcast::Sender<String>,
+    policy: Option<&crate::models::RepoPolicy>,
 ) -> Result<shell::ClaudeStreamResult, AppError> {
     let (auth_env, model_flag) = build_claude_auth_env(db, encryption_key, created_by).await?;
+    let disallowed_flag = build_disallowed_tools_flag(policy);
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
         "source /home/agent/.env.sh 2>/dev/null ; {auth_env} && cd /home/agent/repo && \
          claude --dangerously-skip-permissions --output-format stream-json --verbose \
-         {model_flag} --continue -p '{escaped_prompt}'"
+         {model_flag} {disallowed_flag} --continue -p '{escaped_prompt}'"
     );
     shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
 }
@@ -845,6 +885,44 @@ async fn increment_token_usage(db: &PgPool, task_id: &str, usage: &shell::TokenU
     .bind(task_id)
     .execute(db)
     .await;
+}
+
+/// Estimate accumulated cost in USD from token counts.
+/// Uses Sonnet pricing as a conservative default ($3/M input, $15/M output).
+fn estimate_cost_usd(input_tokens: i64, output_tokens: i64) -> f64 {
+    (input_tokens as f64 * 3.0 / 1_000_000.0) + (output_tokens as f64 * 15.0 / 1_000_000.0)
+}
+
+/// Check whether the task has exceeded its cost limit.
+/// Returns `true` if the limit has been reached or exceeded.
+async fn check_cost_limit(
+    db: &PgPool,
+    task_id: &str,
+    max_cost_usd: f64,
+    tx: &broadcast::Sender<String>,
+) -> Result<bool, AppError> {
+    let row = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+        "SELECT total_input_tokens, total_output_tokens FROM tasks WHERE id = $1",
+    )
+    .bind(task_id)
+    .fetch_one(db)
+    .await?;
+
+    let input_tokens = row.0.unwrap_or(0);
+    let output_tokens = row.1.unwrap_or(0);
+    let cost = estimate_cost_usd(input_tokens, output_tokens);
+
+    if cost >= max_cost_usd {
+        let msg = format!(
+            "[POLICY] Cost limit reached: ${:.4} spent >= ${:.4} limit (input: {}, output: {})",
+            cost, max_cost_usd, input_tokens, output_tokens
+        );
+        tracing::warn!("Task {task_id}: {msg}");
+        let _ = tx.send(msg);
+        return Ok(true);
+    }
+
+    Ok(false)
 }
 
 /// Record a state transition in the task_state_transitions table.
@@ -1082,12 +1160,22 @@ async fn follow_up_loop(
             );
         }
 
+        // Check cost limit before running follow-up
+        if let Some(pol) = policy {
+            if let Some(max_cost) = pol.max_cost_usd {
+                if check_cost_limit(db, task_id, max_cost, tx).await? {
+                    save_system_message(db, task_id, "Cost limit reached — follow-up blocked by policy.").await?;
+                    return Ok(FollowUpOutcome::Done);
+                }
+            }
+        }
+
         // Run Claude with --continue to maintain conversation context
         save_system_message(db, task_id, "Running Claude with your follow-up...").await?;
         update_task_status(db, task_id, "running_claude", None).await?;
         let _ = tx.send("[FOLLOWUP] Running Claude with follow-up...".to_string());
 
-        let result = match run_claude_continue(db, &config.secrets_encryption_key, created_by, agent_name, &combined_prompt, tx.clone()).await {
+        let result = match run_claude_continue(db, &config.secrets_encryption_key, created_by, agent_name, &combined_prompt, tx.clone(), policy).await {
             Ok(r) => r,
             Err(e) => {
                 // Fallback: if --continue fails, use fresh session with full context
@@ -1097,7 +1185,7 @@ async fn follow_up_loop(
                     .fetch_one(db)
                     .await?;
                 let context_prompt = build_followup_prompt(&original_prompt, &conversation_history, &combined_prompt);
-                run_claude_streaming(db, &config.secrets_encryption_key, created_by, agent_name, &context_prompt, tx.clone()).await?
+                run_claude_streaming(db, &config.secrets_encryption_key, created_by, agent_name, &context_prompt, tx.clone(), policy).await?
             }
         };
         save_claude_response_as_message(db, task_id, &result.text).await?;
