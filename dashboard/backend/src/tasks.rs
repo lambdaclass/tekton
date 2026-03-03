@@ -397,7 +397,6 @@ pub async fn create_task(
     let channels = state.task_channels.clone();
 
     tokio::spawn(async move {
-        let agent_name = format!("a-{short}");
         let result = run_task_pipeline(
             &config, &db, &task_id, &short, &prompt, &repo, &base, image_url_json2.as_deref(), &git_id, custom_branch, &created_by, tx.clone(),
         )
@@ -406,8 +405,17 @@ pub async fn create_task(
         if let Err(e) = &result {
             let _ = update_task_status(&db, &task_id, "failed", Some(&e.to_string())).await;
             let _ = tx.send(format!("[ERROR] Task failed: {e}"));
-            // Clean up agent container on failure
-            let _ = shell::destroy_agent(&config, &agent_name).await;
+            // Clean up agent container on failure — read the name from the DB
+            // since it was set by claim_agent inside the pipeline
+            if let Ok(Some(name)) = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT agent_name FROM tasks WHERE id = $1"
+            )
+            .bind(&task_id)
+            .fetch_one(&db)
+            .await
+            {
+                let _ = shell::release_agent(&config, &name).await;
+            }
         }
 
         // Clean up channel after a delay so late WS subscribers can still read
@@ -436,8 +444,6 @@ async fn run_task_pipeline(
     created_by: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
-    let agent_name = format!("a-{short_id}");
-
     // Generate a short name for the task using Claude
     let task_name = match generate_task_name(db, &config.secrets_encryption_key, created_by, prompt).await {
         Ok(name) if !name.is_empty() => {
@@ -491,10 +497,13 @@ async fn run_task_pipeline(
     // Record pipeline start time for compute_seconds tracking
     let pipeline_start = std::time::Instant::now();
 
-    // Step 1: Create agent container
+    // Step 1: Claim agent container from the pool (or create on demand)
     update_task_status(db, task_id, "creating_agent", None).await?;
-    log_and_send(db, task_id, &tx, &format!("[STEP] Creating agent container '{agent_name}'..."));
-    shell::create_agent(config, &agent_name).await?;
+    log_and_send(db, task_id, &tx, "[STEP] Claiming agent container from pool...");
+    let claim_start = std::time::Instant::now();
+    let agent_name = shell::claim_agent(config).await?;
+    let claim_ms = claim_start.elapsed().as_millis();
+    log_and_send(db, task_id, &tx, &format!("[STEP] Acquired agent '{}' in {}ms", agent_name, claim_ms));
     update_task_field(db, task_id, "agent_name", &agent_name).await?;
 
     // Step 2: Clone repo and create branch
@@ -576,9 +585,9 @@ async fn run_task_pipeline(
     // Step 4: Follow-up loop
     follow_up_loop(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, &tx).await?;
 
-    // Step 5: Destroy agent
-    log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
-    let _ = shell::destroy_agent(config, &agent_name).await;
+    // Step 5: Release agent back to pool (or destroy if pool full)
+    log_and_send(db, task_id, &tx, "[STEP] Releasing agent container back to pool...");
+    let _ = shell::release_agent(config, &agent_name).await;
 
     // Record compute time (wall-clock seconds from agent creation to destruction)
     let compute_secs = pipeline_start.elapsed().as_secs() as i32;
@@ -1852,7 +1861,6 @@ pub async fn reopen_task(
     let created_by = user.0.sub.clone();
 
     tokio::spawn(async move {
-        let agent_name = format!("a-{short}");
         let result = run_reopen_pipeline(
             &config, &db, &task_id, &short, &repo, &branch, &base, has_preview, &git_id, &created_by, tx.clone(),
         )
@@ -1861,7 +1869,15 @@ pub async fn reopen_task(
         if let Err(e) = &result {
             let _ = update_task_status(&db, &task_id, "failed", Some(&e.to_string())).await;
             let _ = tx.send(format!("[ERROR] Reopen failed: {e}"));
-            let _ = shell::destroy_agent(&config, &agent_name).await;
+            if let Ok(Some(name)) = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT agent_name FROM tasks WHERE id = $1"
+            )
+            .bind(&task_id)
+            .fetch_one(&db)
+            .await
+            {
+                let _ = shell::release_agent(&config, &name).await;
+            }
         }
 
         let channels2 = channels;
@@ -1986,20 +2002,35 @@ async fn run_reopen_pipeline(
     created_by: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
-    let agent_name = format!("a-{short_id}");
+    // Check if the previous agent container is still alive (e.g. server crashed mid-run).
+    // Look up the last-known agent_name from the DB.
+    let prev_agent = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT agent_name FROM tasks WHERE id = $1"
+    )
+    .bind(task_id)
+    .fetch_one(db)
+    .await
+    .ok()
+    .flatten();
 
-    // If the container is still alive (e.g. server crashed mid-run), reuse it so Claude's
-    // --continue conversation history is preserved. Otherwise create a fresh one.
-    let container_exists = shell::agent_ip_public(&agent_name).is_ok();
+    let container_exists = prev_agent
+        .as_deref()
+        .map(|n| shell::agent_ip_public(n).is_ok())
+        .unwrap_or(false);
 
-    if container_exists {
-        log_and_send(db, task_id, &tx, &format!("[STEP] Reusing existing agent container '{agent_name}'..."));
-        update_task_field(db, task_id, "agent_name", &agent_name).await?;
+    let agent_name = if container_exists {
+        let name = prev_agent.unwrap();
+        log_and_send(db, task_id, &tx, &format!("[STEP] Reusing existing agent container '{name}'..."));
+        update_task_field(db, task_id, "agent_name", &name).await?;
+        name
     } else {
-        // Step 1: Create agent container
-        log_and_send(db, task_id, &tx, &format!("[STEP] Creating agent container '{agent_name}' (reopen)..."));
-        shell::create_agent(config, &agent_name).await?;
-        update_task_field(db, task_id, "agent_name", &agent_name).await?;
+        // Step 1: Claim agent container from pool
+        log_and_send(db, task_id, &tx, "[STEP] Claiming agent container from pool (reopen)...");
+        let claim_start = std::time::Instant::now();
+        let name = shell::claim_agent(config).await?;
+        let claim_ms = claim_start.elapsed().as_millis();
+        log_and_send(db, task_id, &tx, &format!("[STEP] Acquired agent '{}' in {}ms", name, claim_ms));
+        update_task_field(db, task_id, "agent_name", &name).await?;
 
         // Step 2: Clone repo and checkout existing branch
         update_task_status(db, task_id, "cloning", None).await?;
@@ -2014,15 +2045,16 @@ async fn run_reopen_pipeline(
              cd repo && git checkout '{branch_name}' && \
              git config user.name '{escaped_name}' && git config user.email '{escaped_email}'"
         );
-        shell::agent_exec(&agent_name, &clone_cmd, tx.clone()).await?;
+        shell::agent_exec(&name, &clone_cmd, tx.clone()).await?;
 
         // Step 2b: Load and inject secrets
         let repo_secrets = secrets::load_secrets_for_repo(db, &config.secrets_encryption_key, repo).await?;
         if !repo_secrets.is_empty() {
             log_and_send(db, task_id, &tx, &format!("[STEP] Injecting {} secret(s)...", repo_secrets.len()));
-            write_secrets_env_file(&agent_name, &repo_secrets, tx.clone()).await?;
+            write_secrets_env_file(&name, &repo_secrets, tx.clone()).await?;
         }
-    }
+        name
+    };
 
     // Step 3: Go straight into follow-up loop
     // branch_pushed starts as true since the branch already exists on GitHub
@@ -2030,9 +2062,9 @@ async fn run_reopen_pipeline(
     let mut preview_created = had_preview;
     follow_up_loop(config, db, task_id, short_id, &agent_name, repo, branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, &tx).await?;
 
-    // Step 4: Destroy agent
-    log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
-    let _ = shell::destroy_agent(config, &agent_name).await;
+    // Step 4: Release agent back to pool
+    log_and_send(db, task_id, &tx, "[STEP] Releasing agent container back to pool...");
+    let _ = shell::release_agent(config, &agent_name).await;
 
     update_task_status(db, task_id, "completed", None).await?;
     log_and_send(db, task_id, &tx, "[DONE] Task completed.");
@@ -2142,7 +2174,15 @@ pub async fn recover_interrupted_tasks(
                         )
                         .await;
                         let _ = tx.send(format!("[ERROR] Recovery failed: {e}"));
-                        let _ = shell::destroy_agent(&cfg, &format!("a-{short_id}")).await;
+                        if let Ok(Some(name)) = sqlx::query_scalar::<_, Option<String>>(
+                            "SELECT agent_name FROM tasks WHERE id = $1"
+                        )
+                        .bind(&task_id)
+                        .fetch_one(&db2)
+                        .await
+                        {
+                            let _ = shell::release_agent(&cfg, &name).await;
+                        }
                     }
                     tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -2213,7 +2253,15 @@ pub async fn recover_interrupted_tasks(
                         )
                         .await;
                         let _ = tx.send(format!("[ERROR] Recovery failed: {e}"));
-                        let _ = shell::destroy_agent(&cfg, &format!("a-{short_id}")).await;
+                        if let Ok(Some(name)) = sqlx::query_scalar::<_, Option<String>>(
+                            "SELECT agent_name FROM tasks WHERE id = $1"
+                        )
+                        .bind(&task_id)
+                        .fetch_one(&db2)
+                        .await
+                        {
+                            let _ = shell::release_agent(&cfg, &name).await;
+                        }
                     }
                     tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
