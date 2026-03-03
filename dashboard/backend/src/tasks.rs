@@ -2036,11 +2036,7 @@ async fn generate_pr_body(
         )));
     }
 
-    let mut body = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    body.push_str(&format!(
-        "\n\n---\n*Created via [Tekton Dashboard](https://dashboard.hipermegared.link/tasks/{})*",
-        task.id
-    ));
+    let body = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
     Ok(body)
 }
@@ -2086,10 +2082,7 @@ pub async fn create_pr(
     let body = generate_pr_body(&state.db, &state.config.secrets_encryption_key, &git_id.token, &task, &user.0.sub).await
         .unwrap_or_else(|e| {
             tracing::warn!("Failed to generate PR body via Claude: {e}, using fallback");
-            format!(
-                "## Task\n\n{}\n\n---\n*Created via [Tekton Dashboard](https://dashboard.hipermegared.link/tasks/{})*",
-                task.prompt, task.id
-            )
+            format!("## Task\n\n{}", task.prompt)
         });
 
     // Create PR via GitHub API

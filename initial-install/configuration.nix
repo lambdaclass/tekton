@@ -39,7 +39,7 @@
       interface = "enp3s0";
     };
 
-    nameservers = [ "185.12.64.1" "185.12.64.2" ];
+    nameservers = [ "1.1.1.1" "1.0.0.1" ];
   };
 
   # SSH
