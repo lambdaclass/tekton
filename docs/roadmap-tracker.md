@@ -64,13 +64,13 @@ These are independent of the P0 dependency chain and can be done as palette clea
 |-------|-------|--------|
 | [#39](https://github.com/lambdaclass/tekton/issues/39) | Conversational threads | Not started |
 | [#33](https://github.com/lambdaclass/tekton/issues/33) | Queue management and priority | Not started |
-| [#34](https://github.com/lambdaclass/tekton/issues/34) | Cost tracking and budgets | Not started |
-| [#35](https://github.com/lambdaclass/tekton/issues/35) | Audit log baseline | Not started |
+| [#34](https://github.com/lambdaclass/tekton/issues/34) | Cost tracking and budgets | **Done** |
+| [#35](https://github.com/lambdaclass/tekton/issues/35) | Audit log baseline | **Done** |
 | [#38](https://github.com/lambdaclass/tekton/issues/38) | Constrained approval ergonomics | Not started |
 | [#36](https://github.com/lambdaclass/tekton/issues/36) | Trajectory inspection and evaluation tooling | Not started |
 | [#37](https://github.com/lambdaclass/tekton/issues/37) | Deterministic task replay | Not started |
 | [#40](https://github.com/lambdaclass/tekton/issues/40) | Playbooks from successful runs | Not started |
-| [#32](https://github.com/lambdaclass/tekton/issues/32) | Prewarmed sandbox image pipeline | Not started |
+| [#32](https://github.com/lambdaclass/tekton/issues/32) | Prewarmed sandbox image pipeline | **Done** |
 | [#31](https://github.com/lambdaclass/tekton/issues/31) | Elastic infrastructure (multi-node scaling) | Not started |
 
 ## P2: Workflow distribution and automation (after P1)
