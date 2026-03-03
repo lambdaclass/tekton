@@ -12,6 +12,9 @@ import {
   createPolicy,
   deletePolicy,
   getMe,
+  getPoolStatus,
+  resizePool,
+  refillPool,
 } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -26,7 +29,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
-import { Users, KeyRound, Shield, Trash2, Plus, X, Settings } from 'lucide-react';
+import { Users, KeyRound, Shield, Trash2, Plus, X, Settings, Server } from 'lucide-react';
 import { Navigate } from 'react-router-dom';
 
 const ROLES = ['admin', 'member', 'viewer'] as const;
@@ -42,10 +45,125 @@ export default function Admin() {
   return (
     <div className="space-y-8">
       <h1 className="text-2xl font-bold">Admin</h1>
+      <PoolSection queryClient={queryClient} />
       <UsersSection queryClient={queryClient} />
       <SecretsSection queryClient={queryClient} />
       <PoliciesSection queryClient={queryClient} />
     </div>
+  );
+}
+
+function PoolSection({ queryClient }: { queryClient: ReturnType<typeof useQueryClient> }) {
+  const { data: pool, isLoading } = useQuery({
+    queryKey: ['admin-pool'],
+    queryFn: getPoolStatus,
+    refetchInterval: 10000,
+  });
+
+  const [newTarget, setNewTarget] = useState('');
+
+  const resizeMutation = useMutation({
+    mutationFn: (target: number) => resizePool(target),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-pool'] });
+      setNewTarget('');
+    },
+  });
+
+  const refillMutation = useMutation({
+    mutationFn: () => refillPool(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-pool'] });
+    },
+  });
+
+  const statusColor = !pool
+    ? 'bg-muted'
+    : pool.available === 0
+      ? 'bg-red-500'
+      : pool.available < pool.target
+        ? 'bg-yellow-500'
+        : 'bg-green-500';
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Server className="size-5" />
+          Agent Pool
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {isLoading ? (
+          <p className="text-muted-foreground text-sm">Loading pool status...</p>
+        ) : pool ? (
+          <>
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <span className={`inline-block size-3 rounded-full ${statusColor}`} />
+                <span className="text-sm font-medium">
+                  {pool.available} / {pool.target} available
+                </span>
+              </div>
+              {pool.available < pool.target && (
+                <Badge variant="outline" className="text-yellow-600">
+                  {pool.target - pool.available} deficit
+                </Badge>
+              )}
+            </div>
+
+            {pool.containers.length > 0 && (
+              <div className="text-sm text-muted-foreground">
+                <p className="font-medium text-foreground mb-1">Ready containers:</p>
+                <div className="flex flex-wrap gap-2">
+                  {pool.containers.map((c) => (
+                    <Badge key={c.name} variant="secondary">
+                      {c.name} {c.ip ? `(${c.ip})` : ''}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-end gap-2 pt-2">
+              <div className="space-y-1">
+                <Label htmlFor="pool-target" className="text-xs">Target size</Label>
+                <Input
+                  id="pool-target"
+                  type="number"
+                  min={0}
+                  max={20}
+                  value={newTarget}
+                  onChange={(e) => setNewTarget(e.target.value)}
+                  placeholder={String(pool.target)}
+                  className="w-24"
+                />
+              </div>
+              <Button
+                size="sm"
+                onClick={() => {
+                  const val = parseInt(newTarget, 10);
+                  if (!isNaN(val) && val >= 0 && val <= 20) resizeMutation.mutate(val);
+                }}
+                disabled={resizeMutation.isPending || !newTarget}
+              >
+                {resizeMutation.isPending ? 'Resizing...' : 'Resize'}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => refillMutation.mutate()}
+                disabled={refillMutation.isPending}
+              >
+                {refillMutation.isPending ? 'Refilling...' : 'Refill Now'}
+              </Button>
+            </div>
+          </>
+        ) : (
+          <p className="text-muted-foreground text-sm">Could not load pool status.</p>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

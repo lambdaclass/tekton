@@ -306,6 +306,22 @@ export const createBudget = (data: { scope_type: string; scope_value: string; mo
 export const deleteBudget = (id: number) =>
   apiFetch<{ deleted: boolean }>(`/api/admin/budgets/${id}`, { method: 'DELETE' });
 
+// Agent Pool
+export interface PoolContainer {
+  name: string;
+  ip: string;
+}
+export interface PoolStatus {
+  target: number;
+  available: number;
+  containers: PoolContainer[];
+}
+export const getPoolStatus = () => apiFetch<PoolStatus>('/api/admin/pool/status');
+export const resizePool = (target: number) =>
+  apiFetch<PoolStatus>('/api/admin/pool/resize', { method: 'POST', body: JSON.stringify({ target }) });
+export const refillPool = () =>
+  apiFetch<PoolStatus>('/api/admin/pool/refill', { method: 'POST' });
+
 // Audit log
 export interface AuditLogEntry {
   id: number;

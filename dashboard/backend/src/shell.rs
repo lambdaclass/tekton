@@ -238,6 +238,11 @@ pub async fn pool_status(config: &Config) -> Result<String, AppError> {
     run_cmd(&config.agent_bin, &["pool-status"]).await
 }
 
+/// Run an arbitrary agent command with the given arguments.
+pub async fn run_agent_cmd(config: &Config, args: &[&str]) -> Result<String, AppError> {
+    run_cmd(&config.agent_bin, args).await
+}
+
 /// Get the container IP for an agent from its tracking file (public for use in tasks.rs).
 pub fn agent_ip_public(name: &str) -> Result<String, AppError> {
     agent_ip(name)

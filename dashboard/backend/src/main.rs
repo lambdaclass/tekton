@@ -6,6 +6,7 @@ mod db;
 mod error;
 mod models;
 mod policies;
+mod pool;
 mod previews;
 mod public_config;
 mod secrets;
@@ -110,6 +111,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/admin/budgets", post(cost::create_budget))
         .route("/admin/budgets/{id}", put(cost::update_budget))
         .route("/admin/budgets/{id}", delete(cost::delete_budget))
+        // Admin: Agent Pool
+        .route("/admin/pool/status", get(pool::get_pool_status))
+        .route("/admin/pool/resize", post(pool::resize_pool))
+        .route("/admin/pool/refill", post(pool::refill_pool))
         // Admin: Audit Log
         .route("/admin/audit-log", get(audit::list_audit_log))
         // Settings
