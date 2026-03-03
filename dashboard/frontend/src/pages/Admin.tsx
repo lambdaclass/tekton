@@ -11,8 +11,14 @@ import {
   listPolicies,
   createPolicy,
   deletePolicy,
+  listOrgPolicies,
+  createOrgPolicy,
+  deleteOrgPolicy,
+  listPresets,
+  applyPreset,
   getMe,
 } from '@/lib/api';
+import type { PolicyPreset } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -26,7 +32,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
-import { Users, KeyRound, Shield, Trash2, Plus, X, Settings } from 'lucide-react';
+import { Users, KeyRound, Shield, Building, Trash2, Plus, X, Settings } from 'lucide-react';
 import { Navigate } from 'react-router-dom';
 
 const ROLES = ['admin', 'member', 'viewer'] as const;
@@ -45,6 +51,7 @@ export default function Admin() {
       <UsersSection queryClient={queryClient} />
       <SecretsSection queryClient={queryClient} />
       <PoliciesSection queryClient={queryClient} />
+      <OrgPoliciesSection queryClient={queryClient} />
     </div>
   );
 }
@@ -394,20 +401,140 @@ function SecretsSection({ queryClient }: { queryClient: ReturnType<typeof useQue
   );
 }
 
+type ToolMode = 'none' | 'deny' | 'allow';
+type NetworkMode = 'none' | 'allowlist' | 'denylist';
+
+interface PolicyFormState {
+  repo: string;
+  protected_branches: string[];
+  max_cost_usd: string;
+  require_approval_above_usd: string;
+  tool_mode: ToolMode;
+  tool_list: string[];
+  network_mode: NetworkMode;
+  network_domains: string[];
+}
+
+const INITIAL_POLICY_FORM: PolicyFormState = {
+  repo: '',
+  protected_branches: ['main', 'master'],
+  max_cost_usd: '',
+  require_approval_above_usd: '',
+  tool_mode: 'none',
+  tool_list: [],
+  network_mode: 'none',
+  network_domains: [],
+};
+
+function TagListInput({
+  items,
+  onAdd,
+  onRemove,
+  placeholder,
+  label,
+}: {
+  items: string[];
+  onAdd: (item: string) => void;
+  onRemove: (item: string) => void;
+  placeholder: string;
+  label?: string;
+}) {
+  const [input, setInput] = useState('');
+
+  const handleAdd = () => {
+    const trimmed = input.trim();
+    if (!trimmed || items.includes(trimmed)) return;
+    onAdd(trimmed);
+    setInput('');
+  };
+
+  return (
+    <div className="space-y-2">
+      {label && <Label>{label}</Label>}
+      {items.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {items.map((item) => (
+            <Badge key={item} variant="secondary" className="gap-1 pr-1">
+              {item}
+              <button
+                type="button"
+                onClick={() => onRemove(item)}
+                className="ml-1 rounded-full hover:bg-muted p-0.5"
+              >
+                <X className="size-3" />
+              </button>
+            </Badge>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <Input
+          placeholder={placeholder}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              handleAdd();
+            }
+          }}
+        />
+        <Button type="button" size="sm" onClick={handleAdd} disabled={!input.trim()}>
+          <Plus className="size-4" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function applyPresetToForm(preset: PolicyPreset): Omit<PolicyFormState, 'repo'> {
+  let tool_mode: ToolMode = 'none';
+  let tool_list: string[] = [];
+  if (preset.allowed_tools?.deny?.length) {
+    tool_mode = 'deny';
+    tool_list = preset.allowed_tools.deny;
+  } else if (preset.allowed_tools?.allow?.length) {
+    tool_mode = 'allow';
+    tool_list = preset.allowed_tools.allow;
+  }
+
+  let network_mode: NetworkMode = 'none';
+  let network_domains: string[] = [];
+  const net = preset.network_egress;
+  if (net) {
+    if (net.denylist?.length) {
+      network_mode = 'denylist';
+      network_domains = net.denylist;
+    } else if ((net.allowlist?.length) || (net.allow?.length)) {
+      network_mode = 'allowlist';
+      network_domains = net.allowlist ?? net.allow ?? [];
+    }
+  }
+
+  return {
+    protected_branches: preset.protected_branches,
+    max_cost_usd: preset.max_cost_usd != null ? String(preset.max_cost_usd) : '',
+    require_approval_above_usd: preset.require_approval_above_usd != null ? String(preset.require_approval_above_usd) : '',
+    tool_mode,
+    tool_list,
+    network_mode,
+    network_domains,
+  };
+}
+
 function PoliciesSection({ queryClient }: { queryClient: ReturnType<typeof useQueryClient> }) {
   const [showAdd, setShowAdd] = useState(false);
   const [deleteId, setDeleteId] = useState<number | null>(null);
-  const [newPolicy, setNewPolicy] = useState({
-    repo: '',
-    protected_branches: ['main', 'master'] as string[],
-    max_cost_usd: '' as string,
-    require_approval_above_usd: '' as string,
-  });
-  const [branchInput, setBranchInput] = useState('');
+  const [newPolicy, setNewPolicy] = useState<PolicyFormState>({ ...INITIAL_POLICY_FORM });
 
   const { data: policies, isLoading } = useQuery({
     queryKey: ['admin-policies'],
     queryFn: () => listPolicies(),
+  });
+
+  const { data: presets } = useQuery({
+    queryKey: ['policy-presets'],
+    queryFn: () => listPresets(),
   });
 
   const createMutation = useMutation({
@@ -415,13 +542,7 @@ function PoliciesSection({ queryClient }: { queryClient: ReturnType<typeof useQu
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin-policies'] });
       setShowAdd(false);
-      setNewPolicy({
-        repo: '',
-        protected_branches: ['main', 'master'],
-        max_cost_usd: '',
-        require_approval_above_usd: '',
-      });
-      setBranchInput('');
+      setNewPolicy({ ...INITIAL_POLICY_FORM });
     },
   });
 
@@ -435,23 +556,43 @@ function PoliciesSection({ queryClient }: { queryClient: ReturnType<typeof useQu
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
+
+    let allowed_tools: { allow?: string[]; deny?: string[] } | undefined;
+    if (newPolicy.tool_mode === 'allow' && newPolicy.tool_list.length > 0) {
+      allowed_tools = { allow: newPolicy.tool_list };
+    } else if (newPolicy.tool_mode === 'deny' && newPolicy.tool_list.length > 0) {
+      allowed_tools = { deny: newPolicy.tool_list };
+    }
+
+    let network_egress: { allowlist?: string[]; denylist?: string[] } | undefined;
+    if (newPolicy.network_mode === 'allowlist' && newPolicy.network_domains.length > 0) {
+      network_egress = { allowlist: newPolicy.network_domains };
+    } else if (newPolicy.network_mode === 'denylist' && newPolicy.network_domains.length > 0) {
+      network_egress = { denylist: newPolicy.network_domains };
+    }
+
     createMutation.mutate({
       repo: newPolicy.repo,
       protected_branches: newPolicy.protected_branches,
       max_cost_usd: newPolicy.max_cost_usd ? Number(newPolicy.max_cost_usd) : null,
       require_approval_above_usd: newPolicy.require_approval_above_usd ? Number(newPolicy.require_approval_above_usd) : null,
+      allowed_tools,
+      network_egress,
     });
   };
 
-  const addBranch = () => {
-    const trimmed = branchInput.trim();
-    if (!trimmed || newPolicy.protected_branches.includes(trimmed)) return;
-    setNewPolicy((p) => ({ ...p, protected_branches: [...p.protected_branches, trimmed] }));
-    setBranchInput('');
+  const formatToolPolicy = (p: { allow?: string[]; deny?: string[] } | null) => {
+    if (!p) return null;
+    if (p.deny?.length) return { label: 'Denied', items: p.deny, variant: 'destructive' as const };
+    if (p.allow?.length) return { label: 'Allow only', items: p.allow, variant: 'default' as const };
+    return null;
   };
 
-  const removeBranch = (branch: string) => {
-    setNewPolicy((p) => ({ ...p, protected_branches: p.protected_branches.filter((b) => b !== branch) }));
+  const formatNetworkPolicy = (p: { allowlist?: string[]; denylist?: string[] } | null) => {
+    if (!p) return null;
+    if (p.denylist?.length) return { label: 'Denied', items: p.denylist, variant: 'destructive' as const };
+    if (p.allowlist?.length) return { label: 'Allow only', items: p.allowlist, variant: 'default' as const };
+    return null;
   };
 
   return (
@@ -480,38 +621,68 @@ function PoliciesSection({ queryClient }: { queryClient: ReturnType<typeof useQu
                 <tr className="border-b text-left text-muted-foreground">
                   <th className="pb-2 pr-4 font-medium">Repo</th>
                   <th className="pb-2 pr-4 font-medium">Protected Branches</th>
+                  <th className="pb-2 pr-4 font-medium">Tools</th>
+                  <th className="pb-2 pr-4 font-medium">Network</th>
                   <th className="pb-2 pr-4 font-medium">Max Cost</th>
                   <th className="pb-2 pr-4 font-medium">Created By</th>
                   <th className="pb-2 font-medium"></th>
                 </tr>
               </thead>
               <tbody>
-                {policies.map((p) => (
-                  <tr key={p.id} className="border-b border-border/50">
-                    <td className="py-2 pr-4 font-mono">{p.repo}</td>
-                    <td className="py-2 pr-4">
-                      <div className="flex flex-wrap gap-1">
-                        {p.protected_branches?.map((b) => (
-                          <Badge key={b} variant="secondary">{b}</Badge>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="py-2 pr-4">
-                      {p.max_cost_usd != null ? `$${p.max_cost_usd}` : '-'}
-                    </td>
-                    <td className="py-2 pr-4">{p.created_by ?? '-'}</td>
-                    <td className="py-2">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setDeleteId(p.id)}
-                        className="text-destructive hover:text-destructive"
-                      >
-                        <Trash2 className="size-4" />
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
+                {policies.map((p) => {
+                  const toolInfo = formatToolPolicy(p.allowed_tools);
+                  const netInfo = formatNetworkPolicy(p.network_egress);
+                  return (
+                    <tr key={p.id} className="border-b border-border/50">
+                      <td className="py-2 pr-4 font-mono">{p.repo}</td>
+                      <td className="py-2 pr-4">
+                        <div className="flex flex-wrap gap-1">
+                          {p.protected_branches?.map((b) => (
+                            <Badge key={b} variant="secondary">{b}</Badge>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="py-2 pr-4">
+                        {toolInfo ? (
+                          <div className="flex flex-wrap gap-1">
+                            <span className="text-xs text-muted-foreground mr-1">{toolInfo.label}:</span>
+                            {toolInfo.items.map((t) => (
+                              <Badge key={t} variant={toolInfo.variant} className="text-xs">{t}</Badge>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-4">
+                        {netInfo ? (
+                          <div className="flex flex-wrap gap-1">
+                            <span className="text-xs text-muted-foreground mr-1">{netInfo.label}:</span>
+                            {netInfo.items.map((d) => (
+                              <Badge key={d} variant={netInfo.variant} className="text-xs">{d}</Badge>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-4">
+                        {p.max_cost_usd != null ? `$${p.max_cost_usd}` : '-'}
+                      </td>
+                      <td className="py-2 pr-4">{p.created_by ?? '-'}</td>
+                      <td className="py-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setDeleteId(p.id)}
+                          className="text-destructive hover:text-destructive"
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -519,11 +690,11 @@ function PoliciesSection({ queryClient }: { queryClient: ReturnType<typeof useQu
 
         {/* Add Policy Dialog */}
         <Dialog open={showAdd} onOpenChange={setShowAdd}>
-          <DialogContent>
+          <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
             <DialogHeader>
               <DialogTitle>Add Policy</DialogTitle>
               <DialogDescription>
-                Create a new policy for a repository to enforce branch protection and cost limits.
+                Create a new policy for a repository to enforce branch protection, tool restrictions, network controls, and cost limits.
               </DialogDescription>
             </DialogHeader>
             <form onSubmit={handleCreate} className="space-y-4">
@@ -537,41 +708,83 @@ function PoliciesSection({ queryClient }: { queryClient: ReturnType<typeof useQu
                   required
                 />
               </div>
-              <div className="space-y-2">
-                <Label>Protected Branches</Label>
-                {newPolicy.protected_branches.length > 0 && (
-                  <div className="flex flex-wrap gap-2">
-                    {newPolicy.protected_branches.map((b) => (
-                      <Badge key={b} variant="secondary" className="gap-1 pr-1">
-                        {b}
-                        <button
-                          type="button"
-                          onClick={() => removeBranch(b)}
-                          className="ml-1 rounded-full hover:bg-muted p-0.5"
-                        >
-                          <X className="size-3" />
-                        </button>
-                      </Badge>
-                    ))}
-                  </div>
-                )}
-                <div className="flex gap-2">
-                  <Input
-                    placeholder="branch name"
-                    value={branchInput}
-                    onChange={(e) => setBranchInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        addBranch();
+
+              {/* Preset Selector */}
+              {presets && presets.length > 0 && (
+                <div className="space-y-2">
+                  <Label>Start from Preset</Label>
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      const preset = presets.find((p) => p.name === e.target.value);
+                      if (preset) {
+                        setNewPolicy((prev) => ({ ...prev, ...applyPresetToForm(preset) }));
                       }
                     }}
-                  />
-                  <Button type="button" size="sm" onClick={addBranch} disabled={!branchInput.trim()}>
-                    <Plus className="size-4" />
-                  </Button>
+                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="">Custom (no preset)</option>
+                    {presets.map((p) => (
+                      <option key={p.name} value={p.name}>{p.name} - {p.description}</option>
+                    ))}
+                  </select>
                 </div>
+              )}
+
+              {/* Protected Branches */}
+              <TagListInput
+                label="Protected Branches"
+                items={newPolicy.protected_branches}
+                onAdd={(b) => setNewPolicy((p) => ({ ...p, protected_branches: [...p.protected_branches, b] }))}
+                onRemove={(b) => setNewPolicy((p) => ({ ...p, protected_branches: p.protected_branches.filter((x) => x !== b) }))}
+                placeholder="branch name"
+              />
+
+              {/* Tool Policy */}
+              <div className="space-y-2">
+                <Label>Tool Restrictions</Label>
+                <select
+                  value={newPolicy.tool_mode}
+                  onChange={(e) => setNewPolicy((p) => ({ ...p, tool_mode: e.target.value as ToolMode, tool_list: [] }))}
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                >
+                  <option value="none">No tool restrictions</option>
+                  <option value="deny">Deny specific tools</option>
+                  <option value="allow">Allow only specific tools</option>
+                </select>
+                {newPolicy.tool_mode !== 'none' && (
+                  <TagListInput
+                    items={newPolicy.tool_list}
+                    onAdd={(t) => setNewPolicy((p) => ({ ...p, tool_list: [...p.tool_list, t] }))}
+                    onRemove={(t) => setNewPolicy((p) => ({ ...p, tool_list: p.tool_list.filter((x) => x !== t) }))}
+                    placeholder={newPolicy.tool_mode === 'deny' ? 'Tool name to deny (e.g. Bash)' : 'Tool name to allow (e.g. Read)'}
+                  />
+                )}
               </div>
+
+              {/* Network Egress Policy */}
+              <div className="space-y-2">
+                <Label>Network Egress</Label>
+                <select
+                  value={newPolicy.network_mode}
+                  onChange={(e) => setNewPolicy((p) => ({ ...p, network_mode: e.target.value as NetworkMode, network_domains: [] }))}
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                >
+                  <option value="none">No network restrictions</option>
+                  <option value="denylist">Deny specific domains</option>
+                  <option value="allowlist">Allow only specific domains</option>
+                </select>
+                {newPolicy.network_mode !== 'none' && (
+                  <TagListInput
+                    items={newPolicy.network_domains}
+                    onAdd={(d) => setNewPolicy((p) => ({ ...p, network_domains: [...p.network_domains, d] }))}
+                    onRemove={(d) => setNewPolicy((p) => ({ ...p, network_domains: p.network_domains.filter((x) => x !== d) }))}
+                    placeholder={newPolicy.network_mode === 'denylist' ? 'Domain to deny (e.g. evil.com)' : 'Domain to allow (e.g. github.com)'}
+                  />
+                )}
+              </div>
+
+              {/* Cost Limits */}
               <div className="space-y-2">
                 <Label htmlFor="policy-max-cost">Max Cost (USD)</Label>
                 <Input
@@ -620,6 +833,363 @@ function PoliciesSection({ queryClient }: { queryClient: ReturnType<typeof useQu
               <DialogTitle>Delete Policy</DialogTitle>
               <DialogDescription>
                 Are you sure you want to delete this policy? This action cannot be undone.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDeleteId(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => deleteId !== null && deleteMutation.mutate(deleteId)}
+                disabled={deleteMutation.isPending}
+              >
+                {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </CardContent>
+    </Card>
+  );
+}
+
+interface OrgPolicyFormState {
+  org: string;
+  protected_branches: string[];
+  max_cost_usd: string;
+  require_approval_above_usd: string;
+  tool_mode: ToolMode;
+  tool_list: string[];
+  network_mode: NetworkMode;
+  network_domains: string[];
+}
+
+const INITIAL_ORG_POLICY_FORM: OrgPolicyFormState = {
+  org: '',
+  protected_branches: ['main', 'master'],
+  max_cost_usd: '',
+  require_approval_above_usd: '',
+  tool_mode: 'none',
+  tool_list: [],
+  network_mode: 'none',
+  network_domains: [],
+};
+
+function OrgPoliciesSection({ queryClient }: { queryClient: ReturnType<typeof useQueryClient> }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [newPolicy, setNewPolicy] = useState<OrgPolicyFormState>({ ...INITIAL_ORG_POLICY_FORM });
+
+  const { data: orgPolicies, isLoading } = useQuery({
+    queryKey: ['admin-org-policies'],
+    queryFn: () => listOrgPolicies(),
+  });
+
+  const { data: presets } = useQuery({
+    queryKey: ['policy-presets'],
+    queryFn: () => listPresets(),
+  });
+
+  const createMutation = useMutation({
+    mutationFn: (data: Parameters<typeof createOrgPolicy>[0]) => createOrgPolicy(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-org-policies'] });
+      setShowAdd(false);
+      setNewPolicy({ ...INITIAL_ORG_POLICY_FORM });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => deleteOrgPolicy(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-org-policies'] });
+      setDeleteId(null);
+    },
+  });
+
+  const handleCreate = (e: React.FormEvent) => {
+    e.preventDefault();
+
+    let allowed_tools: { allow?: string[]; deny?: string[] } | undefined;
+    if (newPolicy.tool_mode === 'allow' && newPolicy.tool_list.length > 0) {
+      allowed_tools = { allow: newPolicy.tool_list };
+    } else if (newPolicy.tool_mode === 'deny' && newPolicy.tool_list.length > 0) {
+      allowed_tools = { deny: newPolicy.tool_list };
+    }
+
+    let network_egress: { allowlist?: string[]; denylist?: string[] } | undefined;
+    if (newPolicy.network_mode === 'allowlist' && newPolicy.network_domains.length > 0) {
+      network_egress = { allowlist: newPolicy.network_domains };
+    } else if (newPolicy.network_mode === 'denylist' && newPolicy.network_domains.length > 0) {
+      network_egress = { denylist: newPolicy.network_domains };
+    }
+
+    createMutation.mutate({
+      org: newPolicy.org,
+      protected_branches: newPolicy.protected_branches,
+      max_cost_usd: newPolicy.max_cost_usd ? Number(newPolicy.max_cost_usd) : null,
+      require_approval_above_usd: newPolicy.require_approval_above_usd ? Number(newPolicy.require_approval_above_usd) : null,
+      allowed_tools,
+      network_egress,
+    });
+  };
+
+  const formatToolPolicy = (p: { allow?: string[]; deny?: string[] } | null) => {
+    if (!p) return null;
+    if (p.deny?.length) return { label: 'Denied', items: p.deny, variant: 'destructive' as const };
+    if (p.allow?.length) return { label: 'Allow only', items: p.allow, variant: 'default' as const };
+    return null;
+  };
+
+  const formatNetworkPolicy = (p: { allowlist?: string[]; denylist?: string[] } | null) => {
+    if (!p) return null;
+    if (p.denylist?.length) return { label: 'Denied', items: p.denylist, variant: 'destructive' as const };
+    if (p.allowlist?.length) return { label: 'Allow only', items: p.allowlist, variant: 'default' as const };
+    return null;
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <CardTitle className="flex items-center gap-2">
+            <Building className="size-5" />
+            Org Policies
+          </CardTitle>
+          <Button size="sm" onClick={() => setShowAdd(true)}>
+            <Plus className="size-4 mr-1" />
+            Add Org Policy
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <p className="text-muted-foreground text-xs mb-4">
+          Org policies apply as defaults to all repositories under the organization. Repo-level policies override org-level settings.
+        </p>
+        {isLoading ? (
+          <p className="text-muted-foreground text-sm">Loading org policies...</p>
+        ) : !orgPolicies?.length ? (
+          <p className="text-muted-foreground text-sm">No org policies configured.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-muted-foreground">
+                  <th className="pb-2 pr-4 font-medium">Org</th>
+                  <th className="pb-2 pr-4 font-medium">Protected Branches</th>
+                  <th className="pb-2 pr-4 font-medium">Tools</th>
+                  <th className="pb-2 pr-4 font-medium">Network</th>
+                  <th className="pb-2 pr-4 font-medium">Max Cost</th>
+                  <th className="pb-2 pr-4 font-medium">Created By</th>
+                  <th className="pb-2 font-medium"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {orgPolicies.map((p) => {
+                  const toolInfo = formatToolPolicy(p.allowed_tools);
+                  const netInfo = formatNetworkPolicy(p.network_egress);
+                  return (
+                    <tr key={p.id} className="border-b border-border/50">
+                      <td className="py-2 pr-4 font-mono">{p.org}</td>
+                      <td className="py-2 pr-4">
+                        <div className="flex flex-wrap gap-1">
+                          {p.protected_branches?.map((b) => (
+                            <Badge key={b} variant="secondary">{b}</Badge>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="py-2 pr-4">
+                        {toolInfo ? (
+                          <div className="flex flex-wrap gap-1">
+                            <span className="text-xs text-muted-foreground mr-1">{toolInfo.label}:</span>
+                            {toolInfo.items.map((t) => (
+                              <Badge key={t} variant={toolInfo.variant} className="text-xs">{t}</Badge>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-4">
+                        {netInfo ? (
+                          <div className="flex flex-wrap gap-1">
+                            <span className="text-xs text-muted-foreground mr-1">{netInfo.label}:</span>
+                            {netInfo.items.map((d) => (
+                              <Badge key={d} variant={netInfo.variant} className="text-xs">{d}</Badge>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-4">
+                        {p.max_cost_usd != null ? `$${p.max_cost_usd}` : '-'}
+                      </td>
+                      <td className="py-2 pr-4">{p.created_by ?? '-'}</td>
+                      <td className="py-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setDeleteId(p.id)}
+                          className="text-destructive hover:text-destructive"
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Add Org Policy Dialog */}
+        <Dialog open={showAdd} onOpenChange={setShowAdd}>
+          <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Add Org Policy</DialogTitle>
+              <DialogDescription>
+                Create an organization-wide policy. These settings apply as defaults to all repos under the org and can be overridden per-repo.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleCreate} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="org-policy-org">Organization</Label>
+                <Input
+                  id="org-policy-org"
+                  placeholder="my-org"
+                  value={newPolicy.org}
+                  onChange={(e) => setNewPolicy((p) => ({ ...p, org: e.target.value }))}
+                  required
+                />
+              </div>
+
+              {/* Preset Selector */}
+              {presets && presets.length > 0 && (
+                <div className="space-y-2">
+                  <Label>Start from Preset</Label>
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      const preset = presets.find((pr) => pr.name === e.target.value);
+                      if (preset) {
+                        setNewPolicy((prev) => ({ ...prev, ...applyPresetToForm(preset) }));
+                      }
+                    }}
+                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="">Custom (no preset)</option>
+                    {presets.map((pr) => (
+                      <option key={pr.name} value={pr.name}>{pr.name} - {pr.description}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* Protected Branches */}
+              <TagListInput
+                label="Protected Branches"
+                items={newPolicy.protected_branches}
+                onAdd={(b) => setNewPolicy((p) => ({ ...p, protected_branches: [...p.protected_branches, b] }))}
+                onRemove={(b) => setNewPolicy((p) => ({ ...p, protected_branches: p.protected_branches.filter((x) => x !== b) }))}
+                placeholder="branch name"
+              />
+
+              {/* Tool Policy */}
+              <div className="space-y-2">
+                <Label>Tool Restrictions</Label>
+                <select
+                  value={newPolicy.tool_mode}
+                  onChange={(e) => setNewPolicy((p) => ({ ...p, tool_mode: e.target.value as ToolMode, tool_list: [] }))}
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                >
+                  <option value="none">No tool restrictions</option>
+                  <option value="deny">Deny specific tools</option>
+                  <option value="allow">Allow only specific tools</option>
+                </select>
+                {newPolicy.tool_mode !== 'none' && (
+                  <TagListInput
+                    items={newPolicy.tool_list}
+                    onAdd={(t) => setNewPolicy((p) => ({ ...p, tool_list: [...p.tool_list, t] }))}
+                    onRemove={(t) => setNewPolicy((p) => ({ ...p, tool_list: p.tool_list.filter((x) => x !== t) }))}
+                    placeholder={newPolicy.tool_mode === 'deny' ? 'Tool name to deny (e.g. Bash)' : 'Tool name to allow (e.g. Read)'}
+                  />
+                )}
+              </div>
+
+              {/* Network Egress Policy */}
+              <div className="space-y-2">
+                <Label>Network Egress</Label>
+                <select
+                  value={newPolicy.network_mode}
+                  onChange={(e) => setNewPolicy((p) => ({ ...p, network_mode: e.target.value as NetworkMode, network_domains: [] }))}
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                >
+                  <option value="none">No network restrictions</option>
+                  <option value="denylist">Deny specific domains</option>
+                  <option value="allowlist">Allow only specific domains</option>
+                </select>
+                {newPolicy.network_mode !== 'none' && (
+                  <TagListInput
+                    items={newPolicy.network_domains}
+                    onAdd={(d) => setNewPolicy((p) => ({ ...p, network_domains: [...p.network_domains, d] }))}
+                    onRemove={(d) => setNewPolicy((p) => ({ ...p, network_domains: p.network_domains.filter((x) => x !== d) }))}
+                    placeholder={newPolicy.network_mode === 'denylist' ? 'Domain to deny (e.g. evil.com)' : 'Domain to allow (e.g. github.com)'}
+                  />
+                )}
+              </div>
+
+              {/* Cost Limits */}
+              <div className="space-y-2">
+                <Label htmlFor="org-policy-max-cost">Max Cost (USD)</Label>
+                <Input
+                  id="org-policy-max-cost"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  placeholder="Optional"
+                  value={newPolicy.max_cost_usd}
+                  onChange={(e) => setNewPolicy((p) => ({ ...p, max_cost_usd: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="org-policy-approval-above">Require Approval Above (USD)</Label>
+                <Input
+                  id="org-policy-approval-above"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  placeholder="Optional"
+                  value={newPolicy.require_approval_above_usd}
+                  onChange={(e) => setNewPolicy((p) => ({ ...p, require_approval_above_usd: e.target.value }))}
+                />
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setShowAdd(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={createMutation.isPending}>
+                  {createMutation.isPending ? 'Creating...' : 'Create Org Policy'}
+                </Button>
+              </DialogFooter>
+              {createMutation.isError && (
+                <p className="text-destructive text-sm">
+                  {(createMutation.error as Error).message}
+                </p>
+              )}
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        {/* Delete Confirmation Dialog */}
+        <Dialog open={deleteId !== null} onOpenChange={(open) => { if (!open) setDeleteId(null); }}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Delete Org Policy</DialogTitle>
+              <DialogDescription>
+                Are you sure you want to delete this org policy? This action cannot be undone.
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>

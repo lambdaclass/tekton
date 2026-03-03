@@ -1,10 +1,11 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ChevronLeft, RotateCcw, GitPullRequest, ExternalLink } from 'lucide-react';
+import { ChevronLeft, RotateCcw, GitPullRequest, ExternalLink, ShieldCheck, ShieldAlert, Shield } from 'lucide-react';
 import LogViewer from '@/components/LogViewer';
 import TaskChat from '@/components/TaskChat';
-import { getTask, listSubtasks, getMe, parseImageUrls, reopenTask, createPR } from '@/lib/api';
+import { getTask, listSubtasks, listTaskActions, getMe, parseImageUrls, reopenTask, createPR } from '@/lib/api';
+import type { TaskAction } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -35,6 +36,13 @@ export default function TaskDetail() {
   const { data: me } = useQuery({
     queryKey: ['me'],
     queryFn: getMe,
+  });
+
+  const { data: actions } = useQuery({
+    queryKey: ['task-actions', id],
+    queryFn: () => listTaskActions(id!),
+    enabled: !!id,
+    refetchInterval: 5000,
   });
 
   const onConnectionChange = useCallback((c: boolean) => setConnected(c), []);
@@ -277,6 +285,8 @@ export default function TaskDetail() {
         </Card>
       )}
 
+      <PolicyActionsSection actions={actions} />
+
       <Card>
         <CardHeader className="py-3">
           <CardTitle className="text-base">Live Logs</CardTitle>
@@ -295,5 +305,59 @@ export default function TaskDetail() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+function PolicyActionsSection({ actions }: { actions: TaskAction[] | undefined }) {
+  if (!actions) return null;
+
+  const policyActions = actions.filter(
+    (a) => a.action_type === 'policy_violation' || a.action_type === 'policy_check'
+  );
+
+  if (policyActions.length === 0) return null;
+
+  return (
+    <Card className="mb-6">
+      <CardHeader className="py-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Shield className="size-4" />
+          Policy Checks
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="pt-0">
+        <div className="space-y-2">
+          {policyActions.map((a) => {
+            const isViolation = a.action_type === 'policy_violation';
+            return (
+              <div
+                key={a.id}
+                className={`flex items-start gap-2 rounded-md border px-3 py-2 text-sm ${
+                  isViolation
+                    ? 'border-destructive/50 bg-destructive/10 text-destructive'
+                    : 'border-green-500/50 bg-green-500/10 text-green-400'
+                }`}
+              >
+                {isViolation ? (
+                  <ShieldAlert className="size-4 mt-0.5 shrink-0" />
+                ) : (
+                  <ShieldCheck className="size-4 mt-0.5 shrink-0" />
+                )}
+                <div>
+                  <span className="font-medium">
+                    {isViolation ? 'Violation' : 'Pass'}
+                    {a.tool_name ? `: ${a.tool_name}` : ''}
+                  </span>
+                  {a.summary && <p className="mt-0.5 text-xs opacity-80">{a.summary}</p>}
+                  <p className="mt-0.5 text-xs opacity-60">
+                    {new Date(a.created_at).toLocaleString()}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
   );
 }

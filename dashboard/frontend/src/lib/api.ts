@@ -244,6 +244,44 @@ export const updatePolicy = (id: number, data: { protected_branches?: string[]; 
 export const deletePolicy = (id: number) =>
   apiFetch<{ deleted: boolean }>(`/api/admin/policies/${id}`, { method: 'DELETE' });
 
+export interface OrgPolicy {
+  id: number;
+  org: string;
+  protected_branches: string[];
+  allowed_tools: { allow?: string[]; deny?: string[] } | null;
+  network_egress: { allowlist?: string[]; denylist?: string[]; default?: string } | null;
+  max_cost_usd: number | null;
+  require_approval_above_usd: number | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export const listOrgPolicies = () => apiFetch<OrgPolicy[]>('/api/admin/org-policies');
+export const createOrgPolicy = (data: { org: string; protected_branches?: string[]; allowed_tools?: any; network_egress?: any; max_cost_usd?: number | null; require_approval_above_usd?: number | null }) =>
+  apiFetch<OrgPolicy>('/api/admin/org-policies', { method: 'POST', body: JSON.stringify(data) });
+export const updateOrgPolicy = (id: number, data: { protected_branches?: string[]; allowed_tools?: any; network_egress?: any; max_cost_usd?: number | null; require_approval_above_usd?: number | null }) =>
+  apiFetch<OrgPolicy>(`/api/admin/org-policies/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+export const deleteOrgPolicy = (id: number) =>
+  apiFetch<{ deleted: boolean }>(`/api/admin/org-policies/${id}`, { method: 'DELETE' });
+
+export interface PolicyPreset {
+  name: string;
+  description: string;
+  protected_branches: string[];
+  allowed_tools: { allow?: string[]; deny?: string[] } | null;
+  network_egress: { allowlist?: string[]; denylist?: string[]; allow?: string[] } | null;
+  max_cost_usd: number | null;
+  require_approval_above_usd: number | null;
+}
+
+export const listPresets = () => apiFetch<PolicyPreset[]>('/api/admin/policy-presets');
+export const applyPreset = (data: { preset: string; repo?: string; org?: string }) =>
+  apiFetch<{ preset: string; repo_policy?: RepoPolicy; org_policy?: OrgPolicy }>('/api/admin/policies/from-preset', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+
 // AI Settings
 export const getAiSettings = () =>
   apiFetch<{ provider: string | null; has_api_key: boolean; model: string | null }>('/api/settings/ai');
