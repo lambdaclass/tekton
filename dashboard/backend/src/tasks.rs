@@ -380,31 +380,15 @@ pub async fn create_task(
     // Get the user's git identity (GitHub token, name, email)
     let git_id = get_git_identity(&state.db, &created_by).await?;
 
-    // Prewarm preview: create the preview container immediately using the base branch.
-    // It will start building deps in the background while the agent works.
+    // Save preview_slug and preview_url to the DB right away so the frontend can show the link
     let preview_slug = format!("t-{short_id}");
     let preview_url = format!("https://{preview_slug}.{}", state.config.preview_domain);
-
-    // Save preview_slug and preview_url to the DB right away
     sqlx::query("UPDATE tasks SET preview_slug = $1, preview_url = $2 WHERE id = $3")
         .bind(&preview_slug)
         .bind(&preview_url)
         .bind(&id)
         .execute(&state.db)
         .await?;
-
-    {
-        let config = state.config.clone();
-        let repo = req.repo.clone();
-        let base = base_branch.to_string();
-        let slug = preview_slug.clone();
-        let token = git_id.token.clone();
-        tokio::spawn(async move {
-            if let Err(e) = shell::create_preview(&config, &repo, &base, Some(&slug), &token).await {
-                tracing::warn!("Preview prewarm failed for {slug}: {e}");
-            }
-        });
-    }
 
     // Create broadcast channel for this task
     let (tx, _) = broadcast::channel(1024);
@@ -548,6 +532,33 @@ async fn run_task_pipeline(
     shell::agent_exec(&agent_name, &clone_cmd, tx.clone()).await?;
     update_task_field(db, task_id, "branch_name", &branch_name).await?;
 
+    // Step 2a: Push the empty branch to GitHub, then start the preview on it.
+    // The branch has the same commit as base_branch — no code changes yet.
+    let base_sha = shell::agent_exec_capture(
+        &agent_name,
+        &format!("cd /home/agent/repo && git rev-parse 'origin/{base_branch}'"),
+    )
+    .await?
+    .trim()
+    .to_string();
+    create_github_branch(&git_id.token, repo, &branch_name, &base_sha).await?;
+    log_and_send(db, task_id, &tx, &format!("[STEP] Pushed branch '{branch_name}' to GitHub"));
+
+    // Prewarm preview: create it on the feature branch so it's already on the right
+    // branch when the agent finishes. Runs in background while Claude works.
+    {
+        let config2 = config.clone();
+        let repo2 = repo.to_string();
+        let branch2 = branch_name.clone();
+        let slug = format!("t-{short_id}");
+        let token = git_id.token.clone();
+        tokio::spawn(async move {
+            if let Err(e) = shell::create_preview(&config2, &repo2, &branch2, Some(&slug), &token).await {
+                tracing::warn!("Preview prewarm failed for {slug}: {e}");
+            }
+        });
+    }
+
     // Step 2b: Load and inject secrets
     let repo_secrets = secrets::load_secrets_for_repo(db, &config.secrets_encryption_key, repo).await?;
     if !repo_secrets.is_empty() {
@@ -661,9 +672,9 @@ async fn run_task_pipeline(
     // the user will see the question in chat and respond via the follow-up loop)
     let _ = commit_changes_in_agent(&agent_name, prompt, tx.clone()).await?;
 
-    // Step 3c: Push and update preview (preview was prewarmed at task creation)
+    // Step 3c: Push changes and update preview
     let mut preview_created = true;
-    let mut branch_pushed = false;
+    let mut branch_pushed = true;
     let pushed = push_and_preview(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, &tx).await?;
     if pushed {
         save_system_message(db, task_id, "Changes pushed and preview updated ✓").await?;
