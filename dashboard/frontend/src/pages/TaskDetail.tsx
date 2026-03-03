@@ -4,7 +4,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, RotateCcw, GitPullRequest, ExternalLink } from 'lucide-react';
 import LogViewer from '@/components/LogViewer';
 import TaskChat from '@/components/TaskChat';
-import { getTask, listSubtasks, getMe, parseImageUrls, reopenTask, createPR } from '@/lib/api';
+import DiffViewer from '@/components/DiffViewer';
+import { getTask, listSubtasks, getMe, parseImageUrls, reopenTask, createPR, getTaskDiff } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -35,6 +36,13 @@ export default function TaskDetail() {
   const { data: me } = useQuery({
     queryKey: ['me'],
     queryFn: getMe,
+  });
+
+  const { data: diffData } = useQuery({
+    queryKey: ['task-diff', id],
+    queryFn: () => getTaskDiff(id!),
+    enabled: !!task?.branch_name,
+    staleTime: 30_000,
   });
 
   const onConnectionChange = useCallback((c: boolean) => setConnected(c), []);
@@ -277,23 +285,38 @@ export default function TaskDetail() {
         </Card>
       )}
 
-      <Card>
-        <CardHeader className="py-3">
-          <CardTitle className="text-base">Live Logs</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          <LogViewer taskId={id!} onConnectionChange={onConnectionChange} />
-        </CardContent>
-      </Card>
-
-      <Card className="mt-6">
-        <CardHeader className="py-3">
-          <CardTitle className="text-base">Preview Logs</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          <LogViewer previewSlug={`t-${id!.slice(0, 6)}`} />
-        </CardContent>
-      </Card>
+      <div className={task?.branch_name ? 'grid grid-cols-2 gap-6' : 'space-y-6'}>
+        <div className="space-y-6">
+          <Card>
+            <CardHeader className="py-3">
+              <CardTitle className="text-base">Live Logs</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              <LogViewer taskId={id!} onConnectionChange={onConnectionChange} />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="py-3">
+              <CardTitle className="text-base">Preview Logs</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              <LogViewer previewSlug={`t-${id!.slice(0, 6)}`} />
+            </CardContent>
+          </Card>
+        </div>
+        {task?.branch_name && (
+          <Card className="self-start sticky top-4">
+            <CardHeader className="py-3">
+              <CardTitle className="text-base">Code Diff</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              {diffData?.diff
+                ? <DiffViewer diff={diffData.diff} />
+                : <p className="p-4 text-sm text-muted-foreground">No diff available yet.</p>}
+            </CardContent>
+          </Card>
+        )}
+      </div>
     </div>
   );
 }

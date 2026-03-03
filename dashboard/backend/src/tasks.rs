@@ -1862,6 +1862,50 @@ pub async fn reopen_task(
     Ok(Json(task))
 }
 
+pub async fn get_task_diff(
+    user: AuthUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+
+    let task = sqlx::query_as::<_, Task>(
+        "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
+         preview_slug, preview_url, error_message, \
+         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         parent_task_id, created_by, screenshot_url, image_url, \
+         total_input_tokens, total_output_tokens, name, pr_url, pr_number \
+         FROM tasks WHERE id = $1",
+    )
+    .bind(&id)
+    .fetch_one(&state.db)
+    .await?;
+
+    let Some(branch_name) = task.branch_name.as_deref().filter(|b| !b.is_empty()) else {
+        return Ok(Json(serde_json::json!({ "diff": "" })));
+    };
+
+    let git_id = get_git_identity(&state.db, &user.0.sub).await?;
+    let client = reqwest::Client::new();
+    let diff = match client
+        .get(format!(
+            "https://api.github.com/repos/{}/compare/{}...{}",
+            task.repo, task.base_branch, branch_name
+        ))
+        .header("Authorization", format!("token {}", git_id.token))
+        .header("User-Agent", "tekton-dashboard")
+        .header("Accept", "application/vnd.github.v3.diff")
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => resp.text().await.unwrap_or_default(),
+        _ => String::new(),
+    };
+
+    Ok(Json(serde_json::json!({ "diff": diff })))
+}
+
 pub async fn update_task_name(
     user: MemberUser,
     State(state): State<crate::AppState>,
