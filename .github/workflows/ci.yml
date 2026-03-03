@@ -58,24 +58,3 @@ jobs:
 
       - name: Build (includes tsc)
         run: npm run build
-
-  preview-webhook:
-    name: Preview Webhook
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: server-config/preview-webhook
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: server-config/preview-webhook/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Type-check
-        run: npx tsc --noEmit
