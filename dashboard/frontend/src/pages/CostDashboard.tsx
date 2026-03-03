@@ -145,7 +145,7 @@ function SpendChart({ days }: { days: number }) {
         ) : !trends?.length ? (
           <p className="text-muted-foreground text-sm">No data for this period.</p>
         ) : (
-          <div className="flex items-end gap-px h-48">
+          <div className="flex items-end gap-1 h-48">
             {trends.map((t: CostTrend) => {
               const pct = (t.estimated_cost_usd / maxCost) * 100;
               const date = new Date(t.day);
@@ -153,19 +153,17 @@ function SpendChart({ days }: { days: number }) {
               return (
                 <div
                   key={t.day}
-                  className="flex-1 flex flex-col items-center justify-end h-full group relative"
+                  className="flex flex-col items-center justify-end h-full"
+                  style={{ width: `${100 / Math.max(trends.length, 7)}%` }}
                 >
                   <div
                     className="w-full bg-primary/80 rounded-t-sm min-h-[2px] transition-all hover:bg-primary"
                     style={{ height: `${Math.max(pct, 1)}%` }}
                     title={`${label}: $${t.estimated_cost_usd.toFixed(2)} (${t.task_count} tasks)`}
                   />
-                  {/* Show label every few bars to avoid crowding */}
-                  {(trends.length <= 14 || trends.indexOf(t) % Math.ceil(trends.length / 10) === 0) && (
-                    <span className="text-[10px] text-muted-foreground mt-1 leading-none">
-                      {label}
-                    </span>
-                  )}
+                  <span className="text-[10px] text-muted-foreground mt-1 leading-none">
+                    {label}
+                  </span>
                 </div>
               );
             })}
