@@ -474,7 +474,8 @@ async fn run_task_pipeline(
         );
     }
 
-    // Step 1: Create agent container
+    // Step 1: Create agent container (destroy first in case it already exists from a previous run)
+    let _ = shell::destroy_agent(config, &agent_name).await;
     update_task_status(db, task_id, "creating_agent", None).await?;
     log_and_send(db, task_id, &tx, &format!("[STEP] Creating agent container '{agent_name}'..."));
     shell::create_agent(config, &agent_name).await?;
@@ -1919,7 +1920,8 @@ async fn run_reopen_pipeline(
 ) -> Result<(), AppError> {
     let agent_name = format!("a-{short_id}");
 
-    // Step 1: Create agent container
+    // Step 1: Create agent container (destroy first in case it already exists from a previous run)
+    let _ = shell::destroy_agent(config, &agent_name).await;
     log_and_send(db, task_id, &tx, &format!("[STEP] Creating agent container '{agent_name}' (reopen)..."));
     shell::create_agent(config, &agent_name).await?;
     update_task_field(db, task_id, "agent_name", &agent_name).await?;
