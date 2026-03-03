@@ -28,15 +28,17 @@ const PROVIDERS = [
 type ProviderValue = (typeof PROVIDERS)[number]['value'];
 
 const OPENROUTER_MODELS = [
-  { value: 'anthropic/claude-sonnet-4.6', label: 'Claude Sonnet 4.6 (recommended)' },
-  { value: 'anthropic/claude-opus-4.6', label: 'Claude Opus 4.6' },
-  { value: 'openai/gpt-4o', label: 'GPT-4o' },
-  { value: 'openai/o3', label: 'o3' },
-  { value: 'google/gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
-  { value: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-  { value: 'meta-llama/llama-3.3-70b-instruct', label: 'Llama 3.3 70B' },
-  { value: 'deepseek/deepseek-r1', label: 'DeepSeek R1' },
-  { value: 'moonshotai/kimi-k2', label: 'Kimi K2' },
+  { value: 'anthropic/claude-sonnet-4.6', label: 'Claude Sonnet 4.6 (recommended)', free: false },
+  { value: 'anthropic/claude-opus-4.6', label: 'Claude Opus 4.6', free: false },
+  { value: 'openai/gpt-4o', label: 'GPT-4o', free: false },
+  { value: 'openai/o3', label: 'o3', free: false },
+  { value: 'google/gemini-2.5-flash', label: 'Gemini 2.5 Flash', free: false },
+  { value: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro', free: false },
+  { value: 'meta-llama/llama-3.3-70b-instruct', label: 'Llama 3.3 70B', free: false },
+  { value: 'deepseek/deepseek-r1', label: 'DeepSeek R1', free: false },
+  { value: 'moonshotai/kimi-k2', label: 'Kimi K2', free: false },
+  { value: 'nvidia/nemotron-3-nano-30b-a3b:free', label: 'Nvidia Nemotron 3 Nano 30B (free)', free: true },
+  { value: 'arcee-ai/trinity-large-preview:free', label: 'Arcee Trinity Large (free)', free: true },
 ];
 
 export default function Settings() {
@@ -185,6 +187,15 @@ export default function Settings() {
                       </option>
                     ))}
                   </select>
+                  {OPENROUTER_MODELS.find((m) => m.value === selectedModel)?.free && (
+                    <div className="rounded-md border border-destructive/50 bg-destructive/10 px-4 py-3">
+                      <p className="text-sm font-semibold text-destructive">⚠ Free models will not work reliably</p>
+                      <p className="mt-1 text-xs text-destructive/80">
+                        Free tier models lack the tool use capabilities required by Claude Code. Tasks will likely
+                        fail or produce no output. Add credits to your OpenRouter account to use a capable model.
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
 
