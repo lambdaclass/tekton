@@ -674,7 +674,7 @@ async fn run_task_pipeline(
 
     // Step 3c: Push changes and update preview
     let mut preview_created = true;
-    let mut branch_pushed = true;
+    let mut branch_pushed = false;
     let pushed = push_and_preview(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, &tx).await?;
     if pushed {
         save_system_message(db, task_id, "Changes pushed and preview updated ✓").await?;
@@ -1448,8 +1448,12 @@ async fn create_github_branch(
     })
     .await?;
 
-    if !resp.status().is_success() {
-        let status = resp.status();
+    let status = resp.status();
+    if !status.is_success() {
+        // 422 = branch already exists, which is fine (e.g. we created it early for preview prewarm)
+        if status.as_u16() == 422 {
+            return Ok(());
+        }
         let body = resp.text().await.unwrap_or_default();
         return Err(AppError::Internal(format!(
             "GitHub create branch failed ({status}): {body}"
