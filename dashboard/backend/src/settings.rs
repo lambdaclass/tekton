@@ -81,7 +81,7 @@ pub struct AiSettingsResponse {
 #[derive(Deserialize)]
 pub struct SetAiSettingsRequest {
     pub provider: String,
-    pub api_key: String,
+    pub api_key: Option<String>,
     pub model: Option<String>,
 }
 
@@ -131,19 +131,29 @@ pub async fn put_ai_settings(
         )));
     }
 
-    if req.api_key.is_empty() {
-        return Err(AppError::BadRequest("API key cannot be empty".into()));
-    }
+    let api_key = req.api_key.as_deref().unwrap_or("").trim().to_string();
 
-    set_user_ai_config(
-        &state.db,
-        &state.config.secrets_encryption_key,
-        &user.0.sub,
-        &req.provider,
-        &req.api_key,
-        req.model.as_deref(),
-    )
-    .await?;
+    if api_key.is_empty() {
+        // No new key supplied — only update provider and model, keep existing key.
+        sqlx::query(
+            "UPDATE users SET ai_provider = $1, ai_model = $2 WHERE github_login = $3",
+        )
+        .bind(&req.provider)
+        .bind(req.model.as_deref())
+        .bind(&user.0.sub)
+        .execute(&state.db)
+        .await?;
+    } else {
+        set_user_ai_config(
+            &state.db,
+            &state.config.secrets_encryption_key,
+            &user.0.sub,
+            &req.provider,
+            &api_key,
+            req.model.as_deref(),
+        )
+        .await?;
+    }
 
     Ok(Json(AiSettingsResponse {
         provider: Some(req.provider),

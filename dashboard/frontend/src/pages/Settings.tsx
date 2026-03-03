@@ -57,7 +57,7 @@ export default function Settings() {
   }, [settings]);
 
   const saveMutation = useMutation({
-    mutationFn: (data: { provider: string; api_key: string; model?: string }) => setAiSettings(data),
+    mutationFn: (data: { provider: string; api_key?: string; model?: string }) => setAiSettings(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['ai-settings'] });
       setApiKey('');
@@ -82,9 +82,10 @@ export default function Settings() {
       toast.error('API key cannot be empty');
       return;
     }
+    const trimmed = apiKey.trim();
     saveMutation.mutate({
       provider: selectedProvider,
-      api_key: apiKey.trim(),
+      ...(trimmed ? { api_key: trimmed } : {}),
       model: selectedProvider === 'openrouter' ? selectedModel : undefined,
     });
   };
