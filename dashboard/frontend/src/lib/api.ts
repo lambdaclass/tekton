@@ -294,34 +294,29 @@ export interface CostSummary {
   total_output_tokens: number;
 }
 export interface CostTrend {
-  date: string;
-  cost_usd: number;
-  tasks: number;
-}
-export interface CostByUser {
-  user: string;
-  tasks: number;
-  input_tokens: number;
-  output_tokens: number;
+  day: string;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_compute_seconds: number;
   estimated_cost_usd: number;
-  compute_time_seconds: number;
+  task_count: number;
 }
-export interface CostByRepo {
-  repo: string;
-  tasks: number;
-  input_tokens: number;
-  output_tokens: number;
+export interface CostGroupRow {
+  group_key: string;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_compute_seconds: number;
   estimated_cost_usd: number;
-  compute_time_seconds: number;
 }
 export interface Budget {
   id: number;
   scope_type: string;
-  scope_value: string;
+  scope: string;
   monthly_limit_usd: number;
   alert_threshold_pct: number;
   created_by: string | null;
   created_at: string;
+  updated_at: string;
 }
 export const getCostSummary = (days?: number) => {
   const qs = days ? `?days=${days}` : '';
@@ -333,14 +328,14 @@ export const getCostTrends = (days?: number) => {
 };
 export const getCostByUser = (days?: number) => {
   const qs = days ? `?days=${days}` : '';
-  return apiFetch<CostByUser[]>(`/api/admin/cost/by-user${qs}`);
+  return apiFetch<CostGroupRow[]>(`/api/admin/cost/by-user${qs}`);
 };
 export const getCostByRepo = (days?: number) => {
   const qs = days ? `?days=${days}` : '';
-  return apiFetch<CostByRepo[]>(`/api/admin/cost/by-repo${qs}`);
+  return apiFetch<CostGroupRow[]>(`/api/admin/cost/by-repo${qs}`);
 };
 export const listBudgets = () => apiFetch<Budget[]>('/api/admin/budgets');
-export const createBudget = (data: { scope_type: string; scope_value: string; monthly_limit_usd: number; alert_threshold_pct: number }) =>
+export const createBudget = (data: { scope_type: string; scope: string; monthly_limit_usd: number; alert_threshold_pct: number }) =>
   apiFetch<Budget>('/api/admin/budgets', { method: 'POST', body: JSON.stringify(data) });
 export const deleteBudget = (id: number) =>
   apiFetch<{ deleted: boolean }>(`/api/admin/budgets/${id}`, { method: 'DELETE' });

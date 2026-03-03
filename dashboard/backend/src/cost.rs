@@ -5,7 +5,7 @@ use sqlx::PgPool;
 use crate::auth::AdminUser;
 use crate::error::AppError;
 use crate::models::{
-    Budget, CostByQuery, CostSummaryResponse, CostSummaryRow, CreateBudgetRequest, DailyCostRow,
+    Budget, CostByQuery, CostSummaryRow, CreateBudgetRequest, DailyCostRow,
     UpdateBudgetRequest,
 };
 
@@ -25,8 +25,11 @@ fn cost_per_output_token() -> f64 {
         .unwrap_or(15.0 / 1_000_000.0)
 }
 
-/// Parse a period string like "7d", "30d", "90d" into a number of days (default 30).
-fn parse_period_days(period: Option<&str>) -> i32 {
+/// Parse days from either `days` (integer) or `period` (e.g. "7d", "30d", "90d"). Default 30.
+fn parse_days(days: Option<i32>, period: Option<&str>) -> i32 {
+    if let Some(d) = days {
+        return d;
+    }
     match period {
         Some("7d") => 7,
         Some("90d") => 90,
@@ -36,16 +39,61 @@ fn parse_period_days(period: Option<&str>) -> i32 {
 
 // ── Cost aggregation endpoints ──
 
-/// GET /api/admin/cost/summary
-/// Aggregate token usage across all tasks, grouped by user and by repo.
+/// GET /api/admin/cost/summary?days={n}
+/// Flat aggregate: total spend, total tasks, average cost per task.
 pub async fn cost_summary(
     _admin: AdminUser,
     State(state): State<crate::AppState>,
-) -> Result<Json<CostSummaryResponse>, AppError> {
+    Query(q): Query<CostByQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let days = parse_days(q.days, q.period.as_deref());
     let input_price = cost_per_input_token();
     let output_price = cost_per_output_token();
 
-    let by_user = sqlx::query_as::<_, CostSummaryRow>(
+    let row: (i64, i64, i64) = sqlx::query_as(
+        "SELECT \
+            COALESCE(SUM(total_input_tokens), 0)::BIGINT, \
+            COALESCE(SUM(total_output_tokens), 0)::BIGINT, \
+            COUNT(*)::BIGINT \
+         FROM tasks \
+         WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL",
+    )
+    .bind(days.to_string())
+    .fetch_one(&state.db)
+    .await?;
+
+    let total_input_tokens = row.0;
+    let total_output_tokens = row.1;
+    let total_tasks = row.2;
+    let total_cost_usd =
+        total_input_tokens as f64 * input_price + total_output_tokens as f64 * output_price;
+    let avg_cost_per_task = if total_tasks > 0 {
+        total_cost_usd / total_tasks as f64
+    } else {
+        0.0
+    };
+
+    Ok(Json(serde_json::json!({
+        "total_cost_usd": total_cost_usd,
+        "total_tasks": total_tasks,
+        "avg_cost_per_task": avg_cost_per_task,
+        "total_input_tokens": total_input_tokens,
+        "total_output_tokens": total_output_tokens
+    })))
+}
+
+/// GET /api/admin/cost/by-user?user={login}&days={n}
+/// If user is omitted, returns aggregated cost per user (not daily breakdown).
+pub async fn cost_by_user(
+    _admin: AdminUser,
+    State(state): State<crate::AppState>,
+    Query(q): Query<CostByQuery>,
+) -> Result<Json<Vec<CostSummaryRow>>, AppError> {
+    let days = parse_days(q.days, q.period.as_deref());
+    let input_price = cost_per_input_token();
+    let output_price = cost_per_output_token();
+
+    let rows = sqlx::query_as::<_, CostSummaryRow>(
         "SELECT \
             COALESCE(created_by, 'unknown') as group_key, \
             COALESCE(SUM(total_input_tokens), 0)::BIGINT as total_input_tokens, \
@@ -53,62 +101,12 @@ pub async fn cost_summary(
             COALESCE(SUM(compute_seconds), 0)::BIGINT as total_compute_seconds, \
             (COALESCE(SUM(total_input_tokens), 0) * $1 + COALESCE(SUM(total_output_tokens), 0) * $2) as estimated_cost_usd \
          FROM tasks \
+         WHERE created_at >= NOW() - ($3 || ' days')::INTERVAL \
          GROUP BY created_by \
          ORDER BY estimated_cost_usd DESC",
     )
     .bind(input_price)
     .bind(output_price)
-    .fetch_all(&state.db)
-    .await?;
-
-    let by_repo = sqlx::query_as::<_, CostSummaryRow>(
-        "SELECT \
-            repo as group_key, \
-            COALESCE(SUM(total_input_tokens), 0)::BIGINT as total_input_tokens, \
-            COALESCE(SUM(total_output_tokens), 0)::BIGINT as total_output_tokens, \
-            COALESCE(SUM(compute_seconds), 0)::BIGINT as total_compute_seconds, \
-            (COALESCE(SUM(total_input_tokens), 0) * $1 + COALESCE(SUM(total_output_tokens), 0) * $2) as estimated_cost_usd \
-         FROM tasks \
-         GROUP BY repo \
-         ORDER BY estimated_cost_usd DESC",
-    )
-    .bind(input_price)
-    .bind(output_price)
-    .fetch_all(&state.db)
-    .await?;
-
-    Ok(Json(CostSummaryResponse { by_user, by_repo }))
-}
-
-/// GET /api/admin/cost/by-user?user={login}&period={7d|30d|90d}
-pub async fn cost_by_user(
-    _admin: AdminUser,
-    State(state): State<crate::AppState>,
-    Query(q): Query<CostByQuery>,
-) -> Result<Json<Vec<DailyCostRow>>, AppError> {
-    let login = q
-        .user
-        .as_deref()
-        .ok_or_else(|| AppError::BadRequest("Missing 'user' query parameter".into()))?;
-    let days = parse_period_days(q.period.as_deref());
-    let input_price = cost_per_input_token();
-    let output_price = cost_per_output_token();
-
-    let rows = sqlx::query_as::<_, DailyCostRow>(
-        "SELECT \
-            TO_CHAR(created_at::date, 'YYYY-MM-DD') as day, \
-            COALESCE(SUM(total_input_tokens), 0)::BIGINT as total_input_tokens, \
-            COALESCE(SUM(total_output_tokens), 0)::BIGINT as total_output_tokens, \
-            COALESCE(SUM(compute_seconds), 0)::BIGINT as total_compute_seconds, \
-            (COALESCE(SUM(total_input_tokens), 0) * $1 + COALESCE(SUM(total_output_tokens), 0) * $2) as estimated_cost_usd \
-         FROM tasks \
-         WHERE created_by = $3 AND created_at >= NOW() - ($4 || ' days')::INTERVAL \
-         GROUP BY created_at::date \
-         ORDER BY day",
-    )
-    .bind(input_price)
-    .bind(output_price)
-    .bind(login)
     .bind(days.to_string())
     .fetch_all(&state.db)
     .await?;
@@ -116,35 +114,31 @@ pub async fn cost_by_user(
     Ok(Json(rows))
 }
 
-/// GET /api/admin/cost/by-repo?repo={owner/repo}&period={7d|30d|90d}
+/// GET /api/admin/cost/by-repo?repo={owner/repo}&days={n}
+/// If repo is omitted, returns aggregated cost per repo (not daily breakdown).
 pub async fn cost_by_repo(
     _admin: AdminUser,
     State(state): State<crate::AppState>,
     Query(q): Query<CostByQuery>,
-) -> Result<Json<Vec<DailyCostRow>>, AppError> {
-    let repo = q
-        .repo
-        .as_deref()
-        .ok_or_else(|| AppError::BadRequest("Missing 'repo' query parameter".into()))?;
-    let days = parse_period_days(q.period.as_deref());
+) -> Result<Json<Vec<CostSummaryRow>>, AppError> {
+    let days = parse_days(q.days, q.period.as_deref());
     let input_price = cost_per_input_token();
     let output_price = cost_per_output_token();
 
-    let rows = sqlx::query_as::<_, DailyCostRow>(
+    let rows = sqlx::query_as::<_, CostSummaryRow>(
         "SELECT \
-            TO_CHAR(created_at::date, 'YYYY-MM-DD') as day, \
+            repo as group_key, \
             COALESCE(SUM(total_input_tokens), 0)::BIGINT as total_input_tokens, \
             COALESCE(SUM(total_output_tokens), 0)::BIGINT as total_output_tokens, \
             COALESCE(SUM(compute_seconds), 0)::BIGINT as total_compute_seconds, \
             (COALESCE(SUM(total_input_tokens), 0) * $1 + COALESCE(SUM(total_output_tokens), 0) * $2) as estimated_cost_usd \
          FROM tasks \
-         WHERE repo = $3 AND created_at >= NOW() - ($4 || ' days')::INTERVAL \
-         GROUP BY created_at::date \
-         ORDER BY day",
+         WHERE created_at >= NOW() - ($3 || ' days')::INTERVAL \
+         GROUP BY repo \
+         ORDER BY estimated_cost_usd DESC",
     )
     .bind(input_price)
     .bind(output_price)
-    .bind(repo)
     .bind(days.to_string())
     .fetch_all(&state.db)
     .await?;
@@ -159,7 +153,7 @@ pub async fn cost_trends(
     State(state): State<crate::AppState>,
     Query(q): Query<CostByQuery>,
 ) -> Result<Json<Vec<DailyCostRow>>, AppError> {
-    let days = parse_period_days(q.period.as_deref());
+    let days = parse_days(q.days, q.period.as_deref());
     let input_price = cost_per_input_token();
     let output_price = cost_per_output_token();
 
@@ -169,7 +163,8 @@ pub async fn cost_trends(
             COALESCE(SUM(total_input_tokens), 0)::BIGINT as total_input_tokens, \
             COALESCE(SUM(total_output_tokens), 0)::BIGINT as total_output_tokens, \
             COALESCE(SUM(compute_seconds), 0)::BIGINT as total_compute_seconds, \
-            (COALESCE(SUM(total_input_tokens), 0) * $1 + COALESCE(SUM(total_output_tokens), 0) * $2) as estimated_cost_usd \
+            (COALESCE(SUM(total_input_tokens), 0) * $1 + COALESCE(SUM(total_output_tokens), 0) * $2) as estimated_cost_usd, \
+            COUNT(*)::BIGINT as task_count \
          FROM tasks \
          WHERE created_at >= NOW() - ($3 || ' days')::INTERVAL \
          GROUP BY created_at::date \

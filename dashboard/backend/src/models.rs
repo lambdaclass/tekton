@@ -283,17 +283,13 @@ pub struct CostSummaryRow {
     pub estimated_cost_usd: f64,
 }
 
-#[derive(Debug, Serialize)]
-pub struct CostSummaryResponse {
-    pub by_user: Vec<CostSummaryRow>,
-    pub by_repo: Vec<CostSummaryRow>,
-}
 
 #[derive(Debug, Deserialize)]
 pub struct CostByQuery {
     pub user: Option<String>,
     pub repo: Option<String>,
     pub period: Option<String>,
+    pub days: Option<i32>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -303,6 +299,7 @@ pub struct DailyCostRow {
     pub total_output_tokens: i64,
     pub total_compute_seconds: i64,
     pub estimated_cost_usd: f64,
+    pub task_count: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]

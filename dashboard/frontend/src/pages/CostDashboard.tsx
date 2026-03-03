@@ -11,7 +11,7 @@ import {
   createBudget,
   deleteBudget,
 } from '@/lib/api';
-import type { CostTrend, CostByUser, CostByRepo } from '@/lib/api';
+import type { CostTrend, CostGroupRow } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -128,7 +128,7 @@ function SpendChart({ days }: { days: number }) {
   });
 
   const maxCost = trends?.length
-    ? Math.max(...trends.map((t: CostTrend) => t.cost_usd), 0.01)
+    ? Math.max(...trends.map((t: CostTrend) => t.estimated_cost_usd), 0.01)
     : 1;
 
   return (
@@ -147,18 +147,18 @@ function SpendChart({ days }: { days: number }) {
         ) : (
           <div className="flex items-end gap-px h-48">
             {trends.map((t: CostTrend) => {
-              const pct = (t.cost_usd / maxCost) * 100;
-              const date = new Date(t.date);
+              const pct = (t.estimated_cost_usd / maxCost) * 100;
+              const date = new Date(t.day);
               const label = `${date.getMonth() + 1}/${date.getDate()}`;
               return (
                 <div
-                  key={t.date}
+                  key={t.day}
                   className="flex-1 flex flex-col items-center justify-end h-full group relative"
                 >
                   <div
                     className="w-full bg-primary/80 rounded-t-sm min-h-[2px] transition-all hover:bg-primary"
                     style={{ height: `${Math.max(pct, 1)}%` }}
-                    title={`${label}: $${t.cost_usd.toFixed(2)} (${t.tasks} tasks)`}
+                    title={`${label}: $${t.estimated_cost_usd.toFixed(2)} (${t.task_count} tasks)`}
                   />
                   {/* Show label every few bars to avoid crowding */}
                   {(trends.length <= 14 || trends.indexOf(t) % Math.ceil(trends.length / 10) === 0) && (
@@ -210,7 +210,6 @@ function CostByUserTable({ days }: { days: number }) {
               <thead>
                 <tr className="border-b text-left text-muted-foreground">
                   <th className="pb-2 pr-4 font-medium">User</th>
-                  <th className="pb-2 pr-4 font-medium text-right">Tasks</th>
                   <th className="pb-2 pr-4 font-medium text-right">Input Tokens</th>
                   <th className="pb-2 pr-4 font-medium text-right">Output Tokens</th>
                   <th className="pb-2 pr-4 font-medium text-right">Est. Cost</th>
@@ -218,14 +217,13 @@ function CostByUserTable({ days }: { days: number }) {
                 </tr>
               </thead>
               <tbody>
-                {data.map((row: CostByUser) => (
-                  <tr key={row.user} className="border-b border-border/50">
-                    <td className="py-2 pr-4 font-mono">{row.user}</td>
-                    <td className="py-2 pr-4 text-right">{row.tasks}</td>
-                    <td className="py-2 pr-4 text-right">{row.input_tokens.toLocaleString()}</td>
-                    <td className="py-2 pr-4 text-right">{row.output_tokens.toLocaleString()}</td>
+                {data.map((row: CostGroupRow) => (
+                  <tr key={row.group_key} className="border-b border-border/50">
+                    <td className="py-2 pr-4 font-mono">{row.group_key}</td>
+                    <td className="py-2 pr-4 text-right">{row.total_input_tokens.toLocaleString()}</td>
+                    <td className="py-2 pr-4 text-right">{row.total_output_tokens.toLocaleString()}</td>
                     <td className="py-2 pr-4 text-right font-medium">${row.estimated_cost_usd.toFixed(2)}</td>
-                    <td className="py-2 text-right">{formatDuration(row.compute_time_seconds)}</td>
+                    <td className="py-2 text-right">{formatDuration(row.total_compute_seconds)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -262,7 +260,6 @@ function CostByRepoTable({ days }: { days: number }) {
               <thead>
                 <tr className="border-b text-left text-muted-foreground">
                   <th className="pb-2 pr-4 font-medium">Repository</th>
-                  <th className="pb-2 pr-4 font-medium text-right">Tasks</th>
                   <th className="pb-2 pr-4 font-medium text-right">Input Tokens</th>
                   <th className="pb-2 pr-4 font-medium text-right">Output Tokens</th>
                   <th className="pb-2 pr-4 font-medium text-right">Est. Cost</th>
@@ -270,14 +267,13 @@ function CostByRepoTable({ days }: { days: number }) {
                 </tr>
               </thead>
               <tbody>
-                {data.map((row: CostByRepo) => (
-                  <tr key={row.repo} className="border-b border-border/50">
-                    <td className="py-2 pr-4 font-mono">{row.repo}</td>
-                    <td className="py-2 pr-4 text-right">{row.tasks}</td>
-                    <td className="py-2 pr-4 text-right">{row.input_tokens.toLocaleString()}</td>
-                    <td className="py-2 pr-4 text-right">{row.output_tokens.toLocaleString()}</td>
+                {data.map((row: CostGroupRow) => (
+                  <tr key={row.group_key} className="border-b border-border/50">
+                    <td className="py-2 pr-4 font-mono">{row.group_key}</td>
+                    <td className="py-2 pr-4 text-right">{row.total_input_tokens.toLocaleString()}</td>
+                    <td className="py-2 pr-4 text-right">{row.total_output_tokens.toLocaleString()}</td>
                     <td className="py-2 pr-4 text-right font-medium">${row.estimated_cost_usd.toFixed(2)}</td>
-                    <td className="py-2 text-right">{formatDuration(row.compute_time_seconds)}</td>
+                    <td className="py-2 text-right">{formatDuration(row.total_compute_seconds)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -295,7 +291,7 @@ function BudgetsSection() {
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const [newBudget, setNewBudget] = useState({
     scope_type: 'user',
-    scope_value: '',
+    scope: '',
     monthly_limit_usd: '',
     alert_threshold_pct: '80',
   });
@@ -310,7 +306,7 @@ function BudgetsSection() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['budgets'] });
       setShowAdd(false);
-      setNewBudget({ scope_type: 'user', scope_value: '', monthly_limit_usd: '', alert_threshold_pct: '80' });
+      setNewBudget({ scope_type: 'user', scope: '', monthly_limit_usd: '', alert_threshold_pct: '80' });
     },
   });
 
@@ -326,7 +322,7 @@ function BudgetsSection() {
     e.preventDefault();
     createMutation.mutate({
       scope_type: newBudget.scope_type,
-      scope_value: newBudget.scope_value,
+      scope: newBudget.scope,
       monthly_limit_usd: Number(newBudget.monthly_limit_usd),
       alert_threshold_pct: Number(newBudget.alert_threshold_pct),
     });
@@ -372,7 +368,7 @@ function BudgetsSection() {
                         {b.scope_type}
                       </span>
                     </td>
-                    <td className="py-2 pr-4 font-mono">{b.scope_value}</td>
+                    <td className="py-2 pr-4 font-mono">{b.scope}</td>
                     <td className="py-2 pr-4 text-right font-medium">${b.monthly_limit_usd.toFixed(2)}</td>
                     <td className="py-2 pr-4 text-right">{b.alert_threshold_pct}%</td>
                     <td className="py-2 pr-4">{b.created_by ?? '-'}</td>
@@ -425,8 +421,8 @@ function BudgetsSection() {
                 <Input
                   id="budget-scope-value"
                   placeholder={newBudget.scope_type === 'user' ? 'github-login' : 'org-name'}
-                  value={newBudget.scope_value}
-                  onChange={(e) => setNewBudget((s) => ({ ...s, scope_value: e.target.value }))}
+                  value={newBudget.scope}
+                  onChange={(e) => setNewBudget((s) => ({ ...s, scope: e.target.value }))}
                   required
                 />
               </div>
