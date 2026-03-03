@@ -458,8 +458,8 @@ async fn run_task_pipeline(
         }
     };
 
-    // Load repo policy (if any) for branch protection and tool constraints
-    let policy = policies::load_policy_for_repo(db, repo).await?;
+    // Load effective policy (org + repo merged) for branch protection and tool constraints
+    let policy = policies::load_effective_policy(db, repo).await?;
     if let Some(ref pol) = policy {
         // Verify the feature branch name doesn't collide with a protected branch
         if pol.protected_branches.contains(&branch_name) {
