@@ -934,6 +934,42 @@ async fn follow_up_loop(
     // Track conversation history for context (used as fallback if --continue fails)
     let mut conversation_history: Vec<String> = Vec::new();
 
+    // If the task has a preview, inject a preview-logs helper script into the agent container
+    // so Claude can fetch live preview output on demand during follow-ups.
+    let preview_slug: Option<String> = sqlx::query_scalar(
+        "SELECT preview_slug FROM tasks WHERE id = $1",
+    )
+    .bind(task_id)
+    .fetch_optional(db)
+    .await?
+    .flatten();
+
+    let has_preview_tool = if let Some(ref slug) = preview_slug {
+        match shell::agent_host_ip(agent_name) {
+            Ok(host_ip) => {
+                let script = format!(
+                    "#!/bin/sh\ncurl -sf \"http://{host_ip}:3200/internal/preview-logs/{slug}\" || echo \"Preview logs unavailable\"\n"
+                );
+                let escaped = script.replace('\'', "'\\''");
+                let write_cmd = format!(
+                    "mkdir -p /home/agent/bin && printf '%s' '{escaped}' > /home/agent/bin/preview-logs && chmod +x /home/agent/bin/preview-logs"
+                );
+                if let Err(e) = shell::agent_exec_capture(agent_name, &write_cmd).await {
+                    tracing::warn!("Failed to inject preview-logs script: {e}");
+                    false
+                } else {
+                    true
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Could not get agent host IP for preview-logs tool: {e}");
+                false
+            }
+        }
+    } else {
+        false
+    };
+
     update_task_status(db, task_id, "awaiting_followup", None).await?;
     let _ = tx.send("[STATUS] Waiting for follow-up messages (click 'Mark Done' to finish)...".to_string());
 
@@ -976,7 +1012,14 @@ async fn follow_up_loop(
             combined_parts.push(effective);
             conversation_history.push(format!("{}: {}", msg.sender, msg.content));
         }
-        let combined_prompt = combined_parts.join("\n\n---\n\n");
+        let mut combined_prompt = combined_parts.join("\n\n---\n\n");
+        if has_preview_tool {
+            combined_prompt = format!(
+                "Note: you have a `~/bin/preview-logs` command that prints the last 100 lines \
+                 of the live preview app output. Use it when the user reports an error or \
+                 something not working as expected.\n\n{combined_prompt}"
+            );
+        }
 
         // Run Claude with --continue to maintain conversation context
         save_system_message(db, task_id, "Running Claude with your follow-up...").await?;

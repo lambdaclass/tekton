@@ -4,6 +4,16 @@ import { FitAddon } from '@xterm/addon-fit';
 import { connectTaskOutput, connectPreviewLogs } from '@/lib/api';
 import '@xterm/xterm/css/xterm.css';
 
+const ERROR_LINE_RE = /\b(error|exception|fatal|panic|traceback|critical)\b/i;
+
+function writeLine(term: Terminal, line: string) {
+  if (ERROR_LINE_RE.test(line)) {
+    term.writeln(`\x1b[31m${line}\x1b[0m`);
+  } else {
+    term.writeln(line);
+  }
+}
+
 const TERM_OPTIONS = {
   convertEol: true,
   fontSize: 13,
@@ -102,7 +112,7 @@ export default function LogViewer({ taskId, previewSlug, ws, onConnectionChange 
       currentSocket = socket;
 
       socket.addEventListener('message', (ev) => {
-        term.writeln(ev.data);
+        writeLine(term, ev.data);
       });
       socket.addEventListener('close', () => {
         if (!disposed) {
@@ -154,7 +164,7 @@ export default function LogViewer({ taskId, previewSlug, ws, onConnectionChange 
     if (taskId || previewSlug || !ws || !termRef.current) return;
 
     const term = termRef.current;
-    const onMessage = (ev: MessageEvent) => term.writeln(ev.data);
+    const onMessage = (ev: MessageEvent) => writeLine(term, ev.data);
     const onClose = () => term.writeln('\r\n\x1b[90m--- Connection closed ---\x1b[0m');
 
     ws.addEventListener('message', onMessage);
