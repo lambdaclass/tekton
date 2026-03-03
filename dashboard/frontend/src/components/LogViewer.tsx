@@ -66,7 +66,7 @@ export default function LogViewer({ taskId, previewSlug, ws, onConnectionChange 
         onConnectionChange?.(true);
       });
       socket.addEventListener('message', (ev) => {
-        writeLine(term, ev.data);
+        term.writeln(ev.data);
       });
       socket.addEventListener('close', () => {
         onConnectionChange?.(false);
