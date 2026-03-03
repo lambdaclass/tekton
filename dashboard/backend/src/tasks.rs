@@ -474,8 +474,7 @@ async fn run_task_pipeline(
         );
     }
 
-    // Step 1: Create agent container (destroy first in case it already exists from a previous run)
-    let _ = shell::destroy_agent(config, &agent_name).await;
+    // Step 1: Create agent container
     update_task_status(db, task_id, "creating_agent", None).await?;
     log_and_send(db, task_id, &tx, &format!("[STEP] Creating agent container '{agent_name}'..."));
     shell::create_agent(config, &agent_name).await?;
@@ -1920,32 +1919,40 @@ async fn run_reopen_pipeline(
 ) -> Result<(), AppError> {
     let agent_name = format!("a-{short_id}");
 
-    // Step 1: Create agent container (destroy first in case it already exists from a previous run)
-    let _ = shell::destroy_agent(config, &agent_name).await;
-    log_and_send(db, task_id, &tx, &format!("[STEP] Creating agent container '{agent_name}' (reopen)..."));
-    shell::create_agent(config, &agent_name).await?;
-    update_task_field(db, task_id, "agent_name", &agent_name).await?;
+    // If the container is still alive (e.g. server crashed mid-run), reuse it so Claude's
+    // --continue conversation history is preserved. Otherwise create a fresh one.
+    let container_exists = shell::agent_ip_public(&agent_name).is_ok();
 
-    // Step 2: Clone repo and checkout existing branch
-    update_task_status(db, task_id, "cloning", None).await?;
-    log_and_send(db, task_id, &tx, &format!("[STEP] Cloning {repo} and checking out existing branch {branch_name}..."));
+    if container_exists {
+        log_and_send(db, task_id, &tx, &format!("[STEP] Reusing existing agent container '{agent_name}'..."));
+        update_task_field(db, task_id, "agent_name", &agent_name).await?;
+    } else {
+        // Step 1: Create agent container
+        log_and_send(db, task_id, &tx, &format!("[STEP] Creating agent container '{agent_name}' (reopen)..."));
+        shell::create_agent(config, &agent_name).await?;
+        update_task_field(db, task_id, "agent_name", &agent_name).await?;
 
-    let clone_url = format!("https://x-access-token:{}@github.com/{repo}.git", git_id.token);
+        // Step 2: Clone repo and checkout existing branch
+        update_task_status(db, task_id, "cloning", None).await?;
+        log_and_send(db, task_id, &tx, &format!("[STEP] Cloning {repo} and checking out existing branch {branch_name}..."));
 
-    let escaped_name = git_id.name.replace('\'', "'\\''");
-    let escaped_email = git_id.email.replace('\'', "'\\''");
-    let clone_cmd = format!(
-        "cd /home/agent && git clone '{clone_url}' repo && \
-         cd repo && git checkout '{branch_name}' && \
-         git config user.name '{escaped_name}' && git config user.email '{escaped_email}'"
-    );
-    shell::agent_exec(&agent_name, &clone_cmd, tx.clone()).await?;
+        let clone_url = format!("https://x-access-token:{}@github.com/{repo}.git", git_id.token);
 
-    // Step 2b: Load and inject secrets
-    let repo_secrets = secrets::load_secrets_for_repo(db, &config.secrets_encryption_key, repo).await?;
-    if !repo_secrets.is_empty() {
-        log_and_send(db, task_id, &tx, &format!("[STEP] Injecting {} secret(s)...", repo_secrets.len()));
-        write_secrets_env_file(&agent_name, &repo_secrets, tx.clone()).await?;
+        let escaped_name = git_id.name.replace('\'', "'\\''");
+        let escaped_email = git_id.email.replace('\'', "'\\''");
+        let clone_cmd = format!(
+            "cd /home/agent && git clone '{clone_url}' repo && \
+             cd repo && git checkout '{branch_name}' && \
+             git config user.name '{escaped_name}' && git config user.email '{escaped_email}'"
+        );
+        shell::agent_exec(&agent_name, &clone_cmd, tx.clone()).await?;
+
+        // Step 2b: Load and inject secrets
+        let repo_secrets = secrets::load_secrets_for_repo(db, &config.secrets_encryption_key, repo).await?;
+        if !repo_secrets.is_empty() {
+            log_and_send(db, task_id, &tx, &format!("[STEP] Injecting {} secret(s)...", repo_secrets.len()));
+            write_secrets_env_file(&agent_name, &repo_secrets, tx.clone()).await?;
+        }
     }
 
     // Step 3: Go straight into follow-up loop
