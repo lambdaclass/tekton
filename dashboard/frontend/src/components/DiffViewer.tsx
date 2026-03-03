@@ -9,9 +9,9 @@ export default function DiffViewer({ diff }: { diff: string }) {
   useEffect(() => {
     if (!ref.current || !diff) return;
     ref.current.innerHTML = diff2htmlHtml(diff, {
-      drawFileList: true,
+      drawFileList: false,
       outputFormat: 'line-by-line',
-      matching: 'lines',
+      matching: 'none',
       colorScheme: ColorSchemeType.DARK,
     });
   }, [diff]);
