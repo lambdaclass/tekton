@@ -474,6 +474,13 @@ async fn run_task_pipeline(
         );
     }
 
+    // Resolve the user's configured model for cost estimation
+    let user_model: Option<String> = settings::get_user_ai_config(db, &config.secrets_encryption_key, created_by)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|cfg| cfg.model);
+
     // Step 1: Create agent container
     update_task_status(db, task_id, "creating_agent", None).await?;
     log_and_send(db, task_id, &tx, &format!("[STEP] Creating agent container '{agent_name}'..."));
@@ -548,6 +555,16 @@ async fn run_task_pipeline(
     }
 
     update_task_status(db, task_id, "running_claude", None).await?;
+    // Log which tools are blocked before running Claude so it's visible in the agent logs
+    if let Some(ref pol) = policy {
+        let denied = get_denied_tools(pol);
+        if !denied.is_empty() {
+            log_and_send(db, task_id, &tx, &format!(
+                "[POLICY] Blocked tools: {}. Claude will not have access to these.",
+                denied.join(", ")
+            ));
+        }
+    }
     log_and_send(db, task_id, &tx, "[STEP] Running Claude...");
     let result = match run_claude_streaming(db, &config.secrets_encryption_key, created_by, &agent_name, &effective_prompt, tx.clone(), policy.as_ref()).await {
         Ok(r) => r,
@@ -579,7 +596,7 @@ async fn run_task_pipeline(
     // Check cost limit after initial run (can't undo this call, but we can prevent follow-ups)
     if let Some(ref pol) = policy {
         if let Some(max_cost) = pol.max_cost_usd {
-            if check_cost_limit(db, task_id, max_cost, &tx).await? {
+            if check_cost_limit(db, task_id, max_cost, user_model.as_deref(), &tx).await? {
                 log_and_send(db, task_id, &tx, "[POLICY] Cost limit exceeded after initial run — follow-ups will be blocked.");
             }
         }
@@ -598,7 +615,7 @@ async fn run_task_pipeline(
     }
 
     // Step 4: Follow-up loop
-    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, policy.as_ref(), &tx).await?;
+    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, &branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, policy.as_ref(), user_model.as_deref(), &tx).await?;
 
     // Step 5: Destroy agent
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
@@ -919,10 +936,32 @@ async fn increment_token_usage(db: &PgPool, task_id: &str, usage: &shell::TokenU
     .await;
 }
 
-/// Estimate accumulated cost in USD from token counts.
-/// Uses Sonnet pricing as a conservative default ($3/M input, $15/M output).
-fn estimate_cost_usd(input_tokens: i64, output_tokens: i64) -> f64 {
-    (input_tokens as f64 * 3.0 / 1_000_000.0) + (output_tokens as f64 * 15.0 / 1_000_000.0)
+/// Per-million-token pricing (input, output) for known Anthropic models.
+/// When the model is unknown or from a third-party provider, we fall back to
+/// the most expensive tier (Opus) so the cost cap errs on the side of caution.
+fn model_pricing_per_million(model: Option<&str>) -> (f64, f64) {
+    let m = match model {
+        Some(s) => s.to_lowercase(),
+        None => return (15.0, 75.0), // unknown → Opus rates
+    };
+
+    if m.contains("haiku") {
+        (0.80, 4.0)
+    } else if m.contains("sonnet") {
+        (3.0, 15.0)
+    } else if m.contains("opus") {
+        (15.0, 75.0)
+    } else {
+        // Unknown model — use Opus pricing as conservative upper bound
+        (15.0, 75.0)
+    }
+}
+
+/// Estimate accumulated cost in USD from token counts and model.
+fn estimate_cost_usd(input_tokens: i64, output_tokens: i64, model: Option<&str>) -> f64 {
+    let (input_rate, output_rate) = model_pricing_per_million(model);
+    (input_tokens as f64 * input_rate / 1_000_000.0)
+        + (output_tokens as f64 * output_rate / 1_000_000.0)
 }
 
 /// Check whether the task has exceeded its cost limit.
@@ -931,6 +970,7 @@ async fn check_cost_limit(
     db: &PgPool,
     task_id: &str,
     max_cost_usd: f64,
+    model: Option<&str>,
     tx: &broadcast::Sender<String>,
 ) -> Result<bool, AppError> {
     let row = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
@@ -942,11 +982,11 @@ async fn check_cost_limit(
 
     let input_tokens = row.0.unwrap_or(0);
     let output_tokens = row.1.unwrap_or(0);
-    let cost = estimate_cost_usd(input_tokens, output_tokens);
+    let cost = estimate_cost_usd(input_tokens, output_tokens, model);
 
     if cost >= max_cost_usd {
         let msg = format!(
-            "[POLICY] Cost limit reached: ${:.4} spent >= ${:.4} limit (input: {}, output: {})",
+            "[POLICY] Cost limit reached: ~${:.4} estimated >= ${:.4} limit (input: {}, output: {})",
             cost, max_cost_usd, input_tokens, output_tokens
         );
         tracing::warn!("Task {task_id}: {msg}");
@@ -1098,6 +1138,7 @@ async fn follow_up_loop(
     git_id: &GitIdentity,
     created_by: &str,
     policy: Option<&crate::models::RepoPolicy>,
+    user_model: Option<&str>,
     tx: &broadcast::Sender<String>,
 ) -> Result<FollowUpOutcome, AppError> {
     let mut last_seen_id: i64 = 0;
@@ -1195,7 +1236,7 @@ async fn follow_up_loop(
         // Check cost limit before running follow-up
         if let Some(pol) = policy {
             if let Some(max_cost) = pol.max_cost_usd {
-                if check_cost_limit(db, task_id, max_cost, tx).await? {
+                if check_cost_limit(db, task_id, max_cost, user_model, tx).await? {
                     save_system_message(db, task_id, "Cost limit reached — follow-up blocked by policy.").await?;
                     return Ok(FollowUpOutcome::Done);
                 }
@@ -2196,11 +2237,18 @@ async fn run_reopen_pipeline(
         }
     }
 
+    // Resolve the user's configured model for cost estimation
+    let user_model: Option<String> = settings::get_user_ai_config(db, &config.secrets_encryption_key, created_by)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|cfg| cfg.model);
+
     // Step 3: Go straight into follow-up loop
     // branch_pushed starts as true since the branch already exists on GitHub
     let mut branch_pushed = true;
     let mut preview_created = had_preview;
-    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, policy.as_ref(), &tx).await?;
+    follow_up_loop(config, db, task_id, short_id, &agent_name, repo, branch_name, base_branch, &mut branch_pushed, &mut preview_created, git_id, created_by, policy.as_ref(), user_model.as_deref(), &tx).await?;
 
     // Step 4: Destroy agent
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
