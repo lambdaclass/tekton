@@ -21,8 +21,6 @@ const VIEW_STORAGE_KEY = 'tekton-task-view';
 
 const STATUS_OPTIONS = ['all', 'pending', 'creating_agent', 'cloning', 'running_claude', 'pushing', 'creating_preview', 'awaiting_followup', 'completed', 'failed'];
 
-const RUNNING_STATUSES = new Set(['running_claude', 'creating_agent', 'cloning', 'pushing', 'creating_preview']);
-
 function SkeletonCard() {
   return (
     <Card>
@@ -266,7 +264,7 @@ export default function Tasks() {
       </div>
 
       {showCreate && (
-        <Card className="mb-8 glass-card">
+        <Card className="mb-8">
           <CardHeader>
             <CardTitle>New Task</CardTitle>
           </CardHeader>
@@ -377,7 +375,7 @@ export default function Tasks() {
                   />
                 </div>
               </div>
-              <Button type="submit" disabled={createMutation.isPending || uploading} className="btn-gradient">
+              <Button type="submit" disabled={createMutation.isPending || uploading}>
                 {uploading ? 'Uploading images...' : createMutation.isPending ? 'Creating...' : 'Submit Task'}
               </Button>
               {createMutation.isError && (
@@ -465,7 +463,7 @@ export default function Tasks() {
                 to={`/tasks/${t.id}`}
                 ref={(el) => { cardRefs.current[index] = el; }}
               >
-                <Card className={`card-hover hover:border-muted-foreground/25 transition-colors ${index === selectedIndex ? 'ring-2 ring-ring' : ''} ${RUNNING_STATUSES.has(t.status) ? 'gradient-border' : ''}`}>
+                <Card className={`hover:bg-secondary/30 transition-colors ${index === selectedIndex ? 'ring-1 ring-ring' : ''}`}>
                   <CardContent className="py-4">
                     <div className="flex items-center justify-between mb-2">
                       <span className="font-mono text-sm text-muted-foreground">
@@ -547,7 +545,7 @@ export default function Tasks() {
                 key={t.id}
                 to={`/tasks/${t.id}`}
                 ref={(el) => { cardRefs.current[index] = el; }}
-                className={`flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-primary/5 transition-all duration-150 ${
+                className={`flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-secondary/40 transition-colors ${
                   index === selectedIndex ? 'bg-accent/70' : ''
                 } ${index > 0 ? 'border-t border-border' : ''}`}
               >
