@@ -2695,6 +2695,19 @@ async fn recover_to_followup(
         &format!("[STEP] Reconnected to existing agent container '{agent_name}'"),
     );
 
+    // Refresh the git remote URL with a fresh token so pushes/fetches work
+    let clone_url = format!(
+        "https://x-access-token:{}@github.com/{repo}.git",
+        ctx.git_id.token
+    );
+    let remote_cmd = format!(
+        "cd /home/agent/repo && git remote set-url origin '{}'",
+        clone_url.replace('\'', "'\\''")
+    );
+    if let Err(e) = shell::agent_exec_capture(&agent_name, &remote_cmd).await {
+        tracing::warn!("Failed to refresh git remote URL: {e}");
+    }
+
     // Load effective policy for enforcement during follow-ups
     let policy = policies::load_effective_policy(db, repo).await?;
 
