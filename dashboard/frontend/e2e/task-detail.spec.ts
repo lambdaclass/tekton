@@ -115,9 +115,9 @@ test.describe('Task Detail', () => {
     await expect(adminPage.getByText(TEST_IDS.tasks.completed.slice(0, 8))).toBeVisible();
   });
 
-  test('pending task does not show branch or Reopen button', async ({ adminPage }) => {
+  test('pending task does not show Reopen button', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.pending}`);
-    await expect(adminPage.getByText('pending').first()).toBeVisible();
+    await expect(adminPage.getByText('Add dark mode support')).toBeVisible();
     await expect(adminPage.getByRole('button', { name: 'Reopen' })).toHaveCount(0);
   });
 

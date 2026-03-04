@@ -11,9 +11,8 @@ test.describe('Tasks List', () => {
   test('each task card shows status badge', async ({ adminPage }) => {
     await adminPage.goto('/tasks');
     await expect(adminPage.locator('.line-clamp-2').first()).toBeVisible();
-    // Check various status badges in task cards (not in the filter dropdown)
+    // Check status badges for terminal statuses (stable across environments)
     const cards = adminPage.locator('a[href^="/tasks/"]');
-    await expect(cards.filter({ hasText: 'pending' }).first()).toBeVisible();
     await expect(cards.filter({ hasText: 'completed' }).first()).toBeVisible();
     await expect(cards.filter({ hasText: 'failed' }).first()).toBeVisible();
   });

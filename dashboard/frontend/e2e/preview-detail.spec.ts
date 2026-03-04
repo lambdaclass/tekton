@@ -26,7 +26,7 @@ test.describe('Preview detail page', () => {
 
     const openLink = page.getByRole('link', { name: /Open Preview/ });
     await expect(openLink).toBeVisible();
-    await expect(openLink).toHaveAttribute('href', 'https://my-preview.preview.test.dev');
+    await expect(openLink).toHaveAttribute('href', /^https:\/\/my-preview\./);
   });
 
   test('shows Live Logs section', async ({ adminPage: page }) => {

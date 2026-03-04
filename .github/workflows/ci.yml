@@ -93,6 +93,7 @@ jobs:
       PREVIEW_DOMAIN: test.example.com
       LISTEN_ADDR: 0.0.0.0:3200
       TEST_MODE: "true"
+      SECRETS_ENCRYPTION_KEY: test-encryption-key-32chars-ok!
     steps:
       - uses: actions/checkout@v4
 
