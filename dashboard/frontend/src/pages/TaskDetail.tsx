@@ -43,12 +43,10 @@ import { formatCost, timeAgo } from '@/lib/utils';
 const CHAT_STATUSES = ['awaiting_followup', 'running_claude', 'pushing', 'creating_preview'];
 
 function defaultTab(status: string | undefined): string {
-  if (!status) return 'activity';
+  if (!status) return 'logs';
   if (['running_claude', 'awaiting_followup'].includes(status)) return 'conversation';
-  if (['creating_agent', 'cloning'].includes(status)) return 'activity';
-  if (['pushing', 'creating_preview'].includes(status)) return 'logs';
   if (['completed', 'failed'].includes(status)) return 'diff';
-  return 'activity';
+  return 'logs';
 }
 
 export default function TaskDetail() {
