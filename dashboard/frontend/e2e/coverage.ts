@@ -10,6 +10,7 @@ const __dirname = path.dirname(__filename);
 const NYC_OUTPUT = path.resolve(__dirname, '..', '.nyc_output');
 
 export async function collectCoverage(page: Page): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const coverage = await page.evaluate(() => (window as any).__coverage__);
   if (!coverage) return;
 

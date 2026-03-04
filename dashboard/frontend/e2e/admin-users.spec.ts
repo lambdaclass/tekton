@@ -1,4 +1,4 @@
-import { test, expect, TEST_IDS } from './fixtures';
+import { test, expect } from './fixtures';
 
 test.describe('Admin - Users section', () => {
   test('renders Admin heading and Users section', async ({ adminPage: page }) => {

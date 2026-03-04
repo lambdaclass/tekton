@@ -11,7 +11,7 @@ const DATABASE_URL =
   process.env.DATABASE_URL ||
   "postgres://tekton:tekton_test_password@localhost:5432/tekton_test";
 
-async function globalTeardown(_config: FullConfig): Promise<void> {
+async function globalTeardown(_config: FullConfig): Promise<void> { // eslint-disable-line @typescript-eslint/no-unused-vars
   // Drop all seeded tables to leave the database clean
   console.log("Cleaning up test database...");
   const dropSql = `

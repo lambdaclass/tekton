@@ -1,4 +1,4 @@
-import { test, expect, TEST_IDS } from './fixtures';
+import { test, expect } from './fixtures';
 
 test.describe('Cost Dashboard', () => {
   test('renders Cost Dashboard heading', async ({ adminPage: page }) => {

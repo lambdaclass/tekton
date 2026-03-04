@@ -1,4 +1,4 @@
-import { test, expect, TEST_IDS } from './fixtures';
+import { test, expect } from './fixtures';
 
 test.describe('Audit Log', () => {
   test('renders Audit Log heading', async ({ adminPage: page }) => {
