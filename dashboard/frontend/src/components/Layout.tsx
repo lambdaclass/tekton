@@ -45,6 +45,7 @@ export default function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
+  const { theme, toggleTheme } = useTheme();
   const { data: user, isLoading, error } = useQuery({
     queryKey: ['me'],
     queryFn: getMe,
@@ -163,8 +164,6 @@ export default function Layout() {
       </div>
     );
   }
-
-  const { theme, toggleTheme } = useTheme();
 
   const handleLogout = async () => {
     await logout();
