@@ -131,4 +131,27 @@ test.describe('Task Detail', () => {
     // The heading falls back to showing the truncated ID
     await expect(adminPage.locator('h1')).toContainText('nonexist');
   });
+
+  test('shows policy violation banner', async ({ adminPage }) => {
+    await adminPage.goto(`/tasks/${TEST_IDS.tasks.completed}`);
+    await expect(adminPage.getByText(/policy violation[s]? detected/)).toBeVisible();
+    await expect(adminPage.getByText('Bash').first()).toBeVisible();
+  });
+
+  test('shows Create PR button for completed task without PR', async ({ adminPage }) => {
+    await adminPage.goto(`/tasks/${TEST_IDS.tasks.completedNoPR}`);
+    await expect(adminPage.getByRole('button', { name: 'Create PR' })).toBeVisible();
+  });
+
+  test('shows task reference images when image_url is set', async ({ adminPage }) => {
+    await adminPage.goto(`/tasks/${TEST_IDS.tasks.running}`);
+    const images = adminPage.locator('img[alt^="Task reference image"]');
+    await expect(images.first()).toBeVisible();
+  });
+
+  test('shows preview slug link on task with preview', async ({ adminPage }) => {
+    await adminPage.goto(`/tasks/${TEST_IDS.tasks.awaiting}`);
+    await expect(adminPage.getByText('Preview')).toBeVisible();
+    await expect(adminPage.getByRole('link', { name: 'fix-button', exact: true })).toBeVisible();
+  });
 });

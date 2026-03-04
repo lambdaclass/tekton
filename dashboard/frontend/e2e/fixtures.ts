@@ -15,6 +15,10 @@ export const TEST_IDS = {
     failed: "task-failed-1",
     completed2: "task-completed-2",
     subtask: "task-subtask-1",
+    awaiting: "task-awaiting-1",
+    completedNoPR: "task-completed-nopr",
+    tinyCost: "task-tiny-cost",
+    old: "task-old",
   },
   users: {
     admin: "testadmin",

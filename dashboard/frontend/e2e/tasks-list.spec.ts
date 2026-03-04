@@ -178,4 +178,37 @@ test.describe('Tasks List', () => {
     await adminPage.locator('select').selectOption('failed');
     await expect(adminPage.getByText('Migrate database to v2 schema')).toBeVisible();
   });
+
+  test('formatCost shows <$0.01 for tiny cost', async ({ adminPage }) => {
+    await adminPage.goto('/tasks');
+    await expect(adminPage.locator('.line-clamp-2').first()).toBeVisible();
+    await expect(adminPage.getByText('<$0.01')).toBeVisible();
+  });
+
+  test('timeAgo shows months for old tasks', async ({ adminPage }) => {
+    await adminPage.goto('/tasks');
+    await expect(adminPage.locator('.line-clamp-2').first()).toBeVisible();
+    // task-old was created 65 days ago = ~2mo ago
+    await expect(adminPage.getByText(/\dmo ago/)).toBeVisible();
+  });
+
+  test('member user can see New Task button', async ({ memberPage }) => {
+    await memberPage.goto('/tasks');
+    await expect(memberPage.getByRole('button', { name: 'New Task' })).toBeVisible();
+  });
+
+  test('preview URL is shown in task card', async ({ adminPage }) => {
+    await adminPage.goto('/tasks');
+    await expect(adminPage.locator('.line-clamp-2').first()).toBeVisible();
+    // The awaiting task has preview_url set — should show truncated URL
+    await expect(adminPage.getByText('my-preview.test.exampl').first()).toBeVisible();
+  });
+
+  test('awaiting_followup status badge appears', async ({ adminPage }) => {
+    await adminPage.goto('/tasks');
+    await expect(adminPage.locator('.line-clamp-2').first()).toBeVisible();
+    // The awaiting_followup badge has amber styling — target the badge not the <option>
+    const cards = adminPage.locator('a[href^="/tasks/"]');
+    await expect(cards.filter({ hasText: 'awaiting_followup' }).first()).toBeVisible();
+  });
 });

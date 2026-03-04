@@ -134,6 +134,69 @@ test.describe.serial('Admin - Org Policy CRUD', () => {
   });
 });
 
+test.describe('Admin - Org Policy form details', () => {
+  test('Add Org Policy dialog has full form fields', async ({ adminPage: page }) => {
+    await page.goto('/admin');
+
+    await page.getByRole('button', { name: /Add Org Policy/ }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByLabel('Organization')).toBeVisible();
+    await expect(dialog.getByText('Protected Branches').first()).toBeVisible();
+    await expect(dialog.getByText('Tool Restrictions', { exact: true })).toBeVisible();
+    await expect(dialog.getByText('Network Egress', { exact: true })).toBeVisible();
+    await expect(dialog.getByLabel('Max Cost (USD)')).toBeVisible();
+    await expect(dialog.getByLabel('Require Approval Above (USD)')).toBeVisible();
+  });
+
+  test('selecting deny tool mode shows tool input', async ({ adminPage: page }) => {
+    await page.goto('/admin');
+
+    await page.getByRole('button', { name: /Add Org Policy/ }).click();
+
+    const dialog = page.getByRole('dialog');
+    const toolSelect = dialog.locator('select').filter({ hasText: 'No tool restrictions' });
+    await toolSelect.selectOption('deny');
+
+    await expect(dialog.getByPlaceholder('Tool name to deny (e.g. Bash)')).toBeVisible();
+  });
+
+  test('selecting allowlist network mode shows domain input', async ({ adminPage: page }) => {
+    await page.goto('/admin');
+
+    await page.getByRole('button', { name: /Add Org Policy/ }).click();
+
+    const dialog = page.getByRole('dialog');
+    const networkSelect = dialog.locator('select').filter({ hasText: 'No network restrictions' });
+    await networkSelect.selectOption('allowlist');
+
+    await expect(dialog.getByPlaceholder('Domain to allow (e.g. github.com)')).toBeVisible();
+  });
+
+  test('org policy form has preset selector', async ({ adminPage: page }) => {
+    await page.goto('/admin');
+
+    await page.getByRole('button', { name: /Add Org Policy/ }).click();
+
+    const dialog = page.getByRole('dialog');
+    const presetSelect = dialog.locator('select').filter({ hasText: 'Custom (no preset)' });
+    await expect(presetSelect).toBeVisible();
+  });
+
+  test('selecting org policy preset fills form fields', async ({ adminPage: page }) => {
+    await page.goto('/admin');
+
+    await page.getByRole('button', { name: /Add Org Policy/ }).click();
+
+    const dialog = page.getByRole('dialog');
+    const presetSelect = dialog.locator('select').filter({ hasText: 'Custom (no preset)' });
+    await presetSelect.selectOption('strict');
+
+    await expect(dialog.getByLabel('Max Cost (USD)')).toHaveValue('25');
+  });
+});
+
 test.describe('Admin - Policy presets', () => {
   test('selecting a preset fills form fields', async ({ adminPage: page }) => {
     await page.goto('/admin');

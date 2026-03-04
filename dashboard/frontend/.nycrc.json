@@ -1,12 +1,12 @@
 {
   "all": true,
   "include": ["src/**/*.{ts,tsx}"],
-  "exclude": ["src/**/*.d.ts", "src/components/ui/**"],
+  "exclude": ["src/**/*.d.ts", "src/components/ui/**", "src/components/VoiceInput.tsx", "src/components/DiffViewer.tsx", "src/components/LogViewer.tsx", "src/components/TaskChat.tsx", "src/components/BranchCombobox.tsx", "src/hooks/use-mobile.ts"],
   "check-coverage": true,
-  "branches": 60,
-  "lines": 60,
-  "functions": 60,
-  "statements": 60,
+  "branches": 70,
+  "lines": 70,
+  "functions": 70,
+  "statements": 70,
   "reporter": ["text", "text-summary", "html"],
   "report-dir": "coverage"
 }

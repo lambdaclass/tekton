@@ -170,11 +170,44 @@ VALUES
     ('task-failed-1', 'Migrate database to v2 schema', 'testorg/testrepo', 'main', 'chore/db-migrate', 'claude', 'failed', 'testadmin', 10000, 4000, 0.30, 120, 'DB migration', NOW() - INTERVAL '3 hours', NOW() - INTERVAL '2 hours'),
     ('task-completed-2', 'Add search functionality', 'testorg/frontend', 'main', 'feat/search', 'claude', 'completed', 'testmember', 30000, 15000, 0.95, 200, 'Search feature', NOW() - INTERVAL '2 days', NOW() - INTERVAL '1 day');
 
+-- Task in awaiting_followup status (enables TaskChat rendering)
+INSERT INTO tasks (id, prompt, repo, base_branch, branch_name, agent_name, status, created_by,
+  total_input_tokens, total_output_tokens, total_cost_usd, name, preview_url, preview_slug, created_at, updated_at)
+VALUES ('task-awaiting-1', 'Fix button alignment on mobile', 'testorg/testrepo', 'main',
+  'fix/button-align', 'claude', 'awaiting_followup', 'testadmin',
+  12000, 5000, 0.35, 'Button alignment fix', 'https://my-preview.test.example.com/fix-button', 'fix-button',
+  NOW() - INTERVAL '30 minutes', NOW() - INTERVAL '5 minutes');
+
+-- Completed task without PR (enables "Create PR" button)
+INSERT INTO tasks (id, prompt, repo, base_branch, branch_name, agent_name, status, created_by,
+  total_input_tokens, total_output_tokens, total_cost_usd, name, created_at, updated_at)
+VALUES ('task-completed-nopr', 'Add footer component', 'testorg/testrepo', 'main',
+  'feat/footer', 'claude', 'completed', 'testadmin',
+  15000, 7000, 0.45, 'Footer component',
+  NOW() - INTERVAL '4 hours', NOW() - INTERVAL '2 hours');
+
+-- Task with tiny cost (exercises formatCost "<$0.01" branch)
+INSERT INTO tasks (id, prompt, repo, base_branch, status, created_by,
+  total_input_tokens, total_output_tokens, total_cost_usd, name, created_at, updated_at)
+VALUES ('task-tiny-cost', 'Quick typo fix', 'testorg/testrepo', 'main',
+  'completed', 'testmember', 500, 200, 0.005, 'Typo fix',
+  NOW() - INTERVAL '1 hour', NOW() - INTERVAL '55 minutes');
+
+-- Old task (exercises timeAgo ">30 days" branch)
+INSERT INTO tasks (id, prompt, repo, base_branch, status, created_by,
+  total_input_tokens, total_output_tokens, total_cost_usd, name, created_at, updated_at)
+VALUES ('task-old', 'Initial project setup', 'testorg/testrepo', 'main',
+  'completed', 'testadmin', 20000, 10000, 0.60, 'Project setup',
+  NOW() - INTERVAL '65 days', NOW() - INTERVAL '65 days');
+
 -- Set error_message on the failed task
 UPDATE tasks SET error_message = 'Migration failed: column "legacy_data" does not exist' WHERE id = 'task-failed-1';
 
 -- Set PR info on a completed task
 UPDATE tasks SET pr_url = 'https://github.com/testorg/testrepo/pull/42', pr_number = 42 WHERE id = 'task-completed-1';
+
+-- Set image_url on running task (exercises parseImageUrls in TaskDetail)
+UPDATE tasks SET image_url = '["https://example.com/screenshot1.png","https://example.com/screenshot2.png"]' WHERE id = 'task-running-1';
 
 -- A subtask
 INSERT INTO tasks (id, prompt, repo, base_branch, branch_name, agent_name, status, created_by, parent_task_id, total_input_tokens, total_output_tokens, total_cost_usd, compute_seconds, name, created_at, updated_at)
@@ -202,6 +235,12 @@ VALUES
     ('task-completed-1', 'user', 'Please also add email notification preferences', NOW() - INTERVAL '20 hours'),
     ('task-completed-1', 'assistant', 'I have added the email notification preferences section to the settings page. Users can now toggle email notifications for task completions and failures.', NOW() - INTERVAL '19 hours');
 
+-- Messages for the awaiting task (exercises TaskChat message rendering)
+INSERT INTO task_messages (task_id, sender, content, created_at) VALUES
+  ('task-awaiting-1', 'claude', 'I have fixed the button alignment. The issue was a missing flex-wrap on the container.', NOW() - INTERVAL '20 minutes'),
+  ('task-awaiting-1', 'testadmin', 'Looks good, but can you also center it vertically?', NOW() - INTERVAL '15 minutes'),
+  ('task-awaiting-1', 'system', 'Claude is thinking...', NOW() - INTERVAL '5 minutes');
+
 -- ============================================================
 -- Seed: Task actions (for the completed task)
 -- ============================================================
@@ -211,6 +250,11 @@ VALUES
     ('task-completed-1', 'tool_use', 'Read', '{"file_path": "src/pages/Settings.tsx"}', 'Read the existing settings page', NOW() - INTERVAL '23 hours'),
     ('task-completed-1', 'tool_use', 'Write', '{"file_path": "src/pages/UserSettings.tsx"}', 'Created the user settings component', NOW() - INTERVAL '22 hours'),
     ('task-completed-1', 'tool_use', 'Bash', '{"command": "npm test"}', 'Ran the test suite', NOW() - INTERVAL '13 hours');
+
+-- Policy violation action (exercises PolicyActionsSection in TaskDetail)
+INSERT INTO task_actions (task_id, action_type, tool_name, summary, created_at)
+VALUES ('task-completed-1', 'policy_violation', 'Bash',
+  'POLICY VIOLATION: Bash — command matched blocked pattern: rm -rf /', NOW() - INTERVAL '13 hours');
 
 -- ============================================================
 -- Seed: Task state transitions

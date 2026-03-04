@@ -126,4 +126,9 @@ test.describe('Navigation', () => {
     await expect(adminPage.locator('[data-sidebar="sidebar"]').first()).toBeVisible();
     await expect(adminPage.locator('main').first()).toBeVisible();
   });
+
+  test('logout button is visible in sidebar', async ({ adminPage }) => {
+    await adminPage.goto('/');
+    await expect(adminPage.getByText('Logout')).toBeVisible();
+  });
 });

@@ -125,9 +125,6 @@ jobs:
         working-directory: dashboard/frontend
         run: npx playwright install --with-deps chromium
 
-      - name: Seed database
-        run: psql "$DATABASE_URL" -f dashboard/frontend/e2e/seed.sql
-
       - name: Start backend
         working-directory: dashboard/backend
         run: |
@@ -151,7 +148,7 @@ jobs:
         working-directory: dashboard/frontend
         run: npx nyc report --reporter=text-summary
 
-      - name: Check coverage threshold (60%)
+      - name: Check coverage threshold (70%)
         working-directory: dashboard/frontend
         run: npx nyc check-coverage
 

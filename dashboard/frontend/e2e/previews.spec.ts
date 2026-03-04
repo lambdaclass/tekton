@@ -40,6 +40,23 @@ test.describe('Previews page', () => {
     await expect(page.getByText('New Preview')).not.toBeVisible();
   });
 
+  test('create preview form slug field is editable', async ({ adminPage: page }) => {
+    await page.goto('/previews');
+
+    await page.getByRole('button', { name: 'Create Preview' }).click();
+    const slugInput = page.getByLabel('Slug (optional)');
+    await slugInput.fill('my-custom-slug');
+    await expect(slugInput).toHaveValue('my-custom-slug');
+  });
+
+  test('create preview form repo and branch are required', async ({ adminPage: page }) => {
+    await page.goto('/previews');
+
+    await page.getByRole('button', { name: 'Create Preview' }).click();
+    await expect(page.getByLabel('Repository')).toHaveAttribute('required', '');
+    await expect(page.getByLabel('Branch')).toHaveAttribute('required', '');
+  });
+
   test('create preview form submission shows error', async ({ adminPage: page }) => {
     await page.goto('/previews');
 
