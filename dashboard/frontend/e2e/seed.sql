@@ -256,6 +256,16 @@ INSERT INTO task_actions (task_id, action_type, tool_name, summary, created_at)
 VALUES ('task-completed-1', 'policy_violation', 'Bash',
   'POLICY VIOLATION: Bash — command matched blocked pattern: rm -rf /', NOW() - INTERVAL '13 hours');
 
+-- Actions for the awaiting task (exercises ActivityTimeline rendering)
+INSERT INTO task_actions (task_id, action_type, tool_name, tool_input, summary, created_at)
+VALUES
+    ('task-awaiting-1', 'clone', NULL, NULL, 'Cloned testorg/testrepo', NOW() - INTERVAL '25 minutes'),
+    ('task-awaiting-1', 'tool_use', 'Read', '{"file_path": "src/components/Button.tsx"}', 'Reading /src/components/Button.tsx', NOW() - INTERVAL '22 minutes'),
+    ('task-awaiting-1', 'tool_use', 'Read', '{"file_path": "src/styles/layout.css"}', 'Reading /src/styles/layout.css', NOW() - INTERVAL '21 minutes'),
+    ('task-awaiting-1', 'file_edit', 'Write', '{"file_path": "src/components/Button.tsx"}', 'Edited src/components/Button.tsx', NOW() - INTERVAL '18 minutes'),
+    ('task-awaiting-1', 'commit', NULL, NULL, 'Created commit: fix button alignment', NOW() - INTERVAL '16 minutes'),
+    ('task-awaiting-1', 'push', NULL, NULL, 'Pushed to branch fix/button-align', NOW() - INTERVAL '15 minutes');
+
 -- ============================================================
 -- Seed: Task state transitions
 -- ============================================================
