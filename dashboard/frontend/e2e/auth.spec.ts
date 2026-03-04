@@ -61,6 +61,20 @@ test.describe('Authentication', () => {
   });
 });
 
+test.describe('Logout', () => {
+  test('clicking logout redirects to sign-in page', async ({ adminPage }) => {
+    await adminPage.goto('/');
+    await expect(adminPage.getByText('testadmin')).toBeVisible();
+
+    // Click the logout button
+    await adminPage.getByText('Logout').click();
+
+    // Should redirect to sign-in page
+    await expect(adminPage.getByText('Sign in with your GitHub account')).toBeVisible({ timeout: 10000 });
+    await expect(adminPage.getByRole('link', { name: 'Sign in with GitHub' })).toBeVisible();
+  });
+});
+
 baseTest.describe('Unauthenticated', () => {
   baseTest('unauthenticated user sees sign-in page', async ({ page }) => {
     await page.goto('/');

@@ -112,6 +112,65 @@ test.describe('Tasks List', () => {
     await expect(adminPage.getByText('PR #42')).toBeVisible();
   });
 
+  test('keyboard shortcut n toggles new task form', async ({ adminPage }) => {
+    await adminPage.goto('/tasks');
+    await expect(adminPage.locator('.line-clamp-2').first()).toBeVisible();
+
+    // Press 'n' to open the form
+    await adminPage.keyboard.press('n');
+    await expect(adminPage.getByLabel('Prompt')).toBeVisible();
+
+    // Press Escape to close
+    await adminPage.keyboard.press('Escape');
+    await expect(adminPage.getByLabel('Prompt')).toHaveCount(0);
+  });
+
+  test('keyboard shortcut j/k navigates task cards', async ({ adminPage }) => {
+    await adminPage.goto('/tasks');
+    await expect(adminPage.locator('.line-clamp-2').first()).toBeVisible();
+
+    // Press j to select first card — the Card inside should get ring-2 class
+    await adminPage.keyboard.press('j');
+    const cardLinks = adminPage.locator('a[href^="/tasks/"]');
+    // The Card component (direct child div) inside the first link gets the ring
+    await expect(cardLinks.first().locator('[class*="ring-2"]')).toBeVisible();
+
+    // Press j again to move to the second card
+    await adminPage.keyboard.press('j');
+    // First card should no longer be selected, second should be
+    await expect(cardLinks.first().locator('[class*="ring-2"]')).toHaveCount(0);
+    await expect(cardLinks.nth(1).locator('[class*="ring-2"]')).toBeVisible();
+
+    // Press k to go back up
+    await adminPage.keyboard.press('k');
+    await expect(cardLinks.first().locator('[class*="ring-2"]')).toBeVisible();
+  });
+
+  test('keyboard shortcut Enter opens selected task', async ({ adminPage }) => {
+    await adminPage.goto('/tasks');
+    await expect(adminPage.locator('.line-clamp-2').first()).toBeVisible();
+
+    // Press j to select first card, then Enter to navigate
+    await adminPage.keyboard.press('j');
+    await adminPage.keyboard.press('Enter');
+
+    // Should navigate to a task detail page
+    await expect(adminPage).toHaveURL(/\/tasks\//);
+  });
+
+  test('keyboard shortcuts do not fire when typing in search', async ({ adminPage }) => {
+    await adminPage.goto('/tasks');
+    await expect(adminPage.locator('.line-clamp-2').first()).toBeVisible();
+
+    // Focus the search input and type 'n' — should NOT open the form
+    const searchInput = adminPage.getByPlaceholder('Search prompts...');
+    await searchInput.click();
+    await searchInput.fill('n');
+
+    // The form should NOT be open
+    await expect(adminPage.getByLabel('Prompt')).toHaveCount(0);
+  });
+
   test('filter resets to page 1 when status changes', async ({ adminPage }) => {
     await adminPage.goto('/tasks');
     await expect(adminPage.locator('.line-clamp-2').first()).toBeVisible();

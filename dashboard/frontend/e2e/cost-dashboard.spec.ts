@@ -73,6 +73,33 @@ test.describe('Cost Dashboard', () => {
     await expect(page.getByText('Are you sure you want to delete this budget?')).toBeVisible();
   });
 
+  test('switching time range to 7 days updates data', async ({ adminPage: page }) => {
+    await page.goto('/cost');
+
+    // Click the shadcn Select trigger (shows "Last 30 days" by default)
+    await page.getByRole('combobox').click();
+
+    // Select "Last 7 days" option from the popover
+    await page.getByRole('option', { name: 'Last 7 days' }).click();
+
+    // Verify the trigger now shows "Last 7 days"
+    await expect(page.getByRole('combobox')).toHaveText('Last 7 days');
+
+    // Data sections should still render (with potentially different values)
+    await expect(page.getByText('Total Spend')).toBeVisible();
+    await expect(page.getByText('Daily Spend')).toBeVisible();
+  });
+
+  test('switching time range to 90 days updates data', async ({ adminPage: page }) => {
+    await page.goto('/cost');
+
+    await page.getByRole('combobox').click();
+    await page.getByRole('option', { name: 'Last 90 days' }).click();
+
+    await expect(page.getByRole('combobox')).toHaveText('Last 90 days');
+    await expect(page.getByText('Total Spend')).toBeVisible();
+  });
+
   test('non-admin user is redirected away from cost dashboard', async ({ memberPage: page }) => {
     await page.goto('/cost');
     await expect(page).toHaveURL('/');

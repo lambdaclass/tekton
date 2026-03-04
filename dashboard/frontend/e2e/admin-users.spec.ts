@@ -58,6 +58,62 @@ test.describe('Admin - Users section', () => {
   });
 });
 
+test.describe.serial('Admin - User repo permissions modification', () => {
+  test('add repo to testviewer', async ({ adminPage: page }) => {
+    await page.goto('/admin');
+
+    const testviewerRow = page.locator('tr').filter({ hasText: 'testviewer' });
+    await testviewerRow.getByRole('button', { name: /Manage/ }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByText('Repo permissions for testviewer')).toBeVisible();
+
+    // Add a new repo
+    await dialog.getByPlaceholder('owner/repo').fill('testorg/e2e-temp-repo');
+    await dialog.getByPlaceholder('owner/repo').press('Enter');
+
+    // Verify it appears as a badge
+    await expect(dialog.getByText('testorg/e2e-temp-repo')).toBeVisible({ timeout: 5000 });
+  });
+
+  test('verify added repo persists for testviewer', async ({ adminPage: page }) => {
+    await page.goto('/admin');
+
+    const testviewerRow = page.locator('tr').filter({ hasText: 'testviewer' });
+    await testviewerRow.getByRole('button', { name: /Manage/ }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByText('testorg/e2e-temp-repo')).toBeVisible();
+  });
+
+  test('remove added repo from testviewer', async ({ adminPage: page }) => {
+    await page.goto('/admin');
+
+    const testviewerRow = page.locator('tr').filter({ hasText: 'testviewer' });
+    await testviewerRow.getByRole('button', { name: /Manage/ }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByText('testorg/e2e-temp-repo')).toBeVisible();
+
+    // Click the X button on the e2e-temp-repo badge
+    const badge = dialog.locator('span').filter({ hasText: 'testorg/e2e-temp-repo' });
+    await badge.locator('button').click();
+
+    // Verify it's removed
+    await expect(dialog.getByText('testorg/e2e-temp-repo')).not.toBeVisible({ timeout: 5000 });
+  });
+
+  test('verify removed repo does not persist', async ({ adminPage: page }) => {
+    await page.goto('/admin');
+
+    const testviewerRow = page.locator('tr').filter({ hasText: 'testviewer' });
+    await testviewerRow.getByRole('button', { name: /Manage/ }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByText('testorg/e2e-temp-repo')).not.toBeVisible();
+  });
+});
+
 test.describe.serial('Admin - Users role change', () => {
   test('change testmember role to viewer', async ({ adminPage: page }) => {
     await page.goto('/admin');

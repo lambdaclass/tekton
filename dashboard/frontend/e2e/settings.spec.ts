@@ -62,13 +62,47 @@ test.describe('Settings page', () => {
 });
 
 test.describe.serial('Settings - AI provider CRUD', () => {
+  // OpenRouter save + verify + disconnect
+  test('save OpenRouter with specific model', async ({ adminPage: page }) => {
+    await page.goto('/settings');
+
+    await page.locator('label').filter({ hasText: 'OpenRouter' }).click();
+
+    const modelSelect = page.locator('#model-select');
+    await expect(modelSelect).toBeVisible();
+    await modelSelect.selectOption('openai/gpt-4o');
+
+    await page.getByLabel(/API Key/).fill('sk-or-test-key-for-e2e');
+    await page.getByRole('button', { name: 'Save' }).click();
+
+    await expect(page.getByText('(API key stored)')).toBeVisible({ timeout: 10000 });
+  });
+
+  test('verify OpenRouter model persists after reload', async ({ adminPage: page }) => {
+    await page.goto('/settings');
+
+    const connected = page.getByText('Connected provider:').locator('..');
+    await expect(connected).toBeVisible();
+    await expect(connected.getByText('OpenRouter')).toBeVisible();
+    await expect(connected.getByText('GPT-4o')).toBeVisible();
+  });
+
+  test('disconnect OpenRouter setting', async ({ adminPage: page }) => {
+    await page.goto('/settings');
+
+    await page.getByRole('button', { name: 'Disconnect' }).click();
+
+    await expect(page.getByRole('button', { name: 'Save' })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('(API key stored)')).not.toBeVisible();
+  });
+
+  // Anthropic save + verify + disconnect
   test('save Anthropic API key', async ({ adminPage: page }) => {
     await page.goto('/settings');
 
     await page.getByLabel(/API Key/).fill('sk-ant-test-key-for-e2e');
     await page.getByRole('button', { name: 'Save' }).click();
 
-    // After saving, the page should show the connected state
     await expect(page.getByText('(API key stored)')).toBeVisible({ timeout: 10000 });
   });
 
@@ -92,7 +126,6 @@ test.describe.serial('Settings - AI provider CRUD', () => {
 
     await page.getByRole('button', { name: 'Disconnect' }).click();
 
-    // Should go back to initial state
     await expect(page.getByRole('button', { name: 'Save' })).toBeVisible({ timeout: 10000 });
     await expect(page.getByText('(API key stored)')).not.toBeVisible();
   });

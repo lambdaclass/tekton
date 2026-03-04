@@ -1,2 +1,9 @@
 # Setup env file contains secrets
 setup.env
+
+# Playwright test artifacts
+playwright-report/
+test-results/
+
+# Claude Code
+.claude/

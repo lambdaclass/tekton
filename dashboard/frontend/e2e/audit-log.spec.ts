@@ -92,6 +92,46 @@ test.describe('Audit Log', () => {
     await expect(page.getByRole('cell', { name: 'system' })).not.toBeVisible({ timeout: 5000 });
   });
 
+  test('event type filter narrows results', async ({ adminPage: page }) => {
+    await page.goto('/audit');
+
+    // Open the shadcn Select for event type
+    await page.getByRole('combobox').click();
+
+    // Select admin.user_repos_changed — exists in both dropdown and seed data
+    await page.getByRole('option', { name: 'admin.user_repos_changed' }).click();
+
+    // Verify filter applied — matching entries visible
+    await expect(page.getByText('admin.user_repos_changed').first()).toBeVisible();
+    // auth.login entries should be gone
+    await expect(page.getByText('auth.login')).not.toBeVisible({ timeout: 5000 });
+  });
+
+  test('target filter filters results', async ({ adminPage: page }) => {
+    await page.goto('/audit');
+
+    await page.getByPlaceholder('Filter by target...').fill('task-completed-1');
+
+    // Should show entries targeting task-completed-1
+    await expect(page.getByRole('link', { name: 'task-completed-1' }).first()).toBeVisible();
+    // Entries for other targets should be gone
+    await expect(page.getByText('task-pending-1')).not.toBeVisible({ timeout: 5000 });
+  });
+
+  test('combining filters narrows results further', async ({ adminPage: page }) => {
+    await page.goto('/audit');
+
+    // Filter by actor=testadmin AND target=task-completed-1
+    await page.getByPlaceholder('Filter by actor...').fill('testadmin');
+    await page.getByPlaceholder('Filter by target...').fill('task-completed-1');
+
+    // Should only show testadmin entries targeting task-completed-1
+    await expect(page.getByRole('cell', { name: 'testadmin' }).first()).toBeVisible();
+    await expect(page.getByRole('link', { name: 'task-completed-1' }).first()).toBeVisible();
+    // Should NOT show entries from other actors
+    await expect(page.getByRole('cell', { name: 'system' })).not.toBeVisible({ timeout: 5000 });
+  });
+
   test('non-admin user is redirected away from audit log', async ({ memberPage: page }) => {
     await page.goto('/audit');
     await expect(page).toHaveURL('/');

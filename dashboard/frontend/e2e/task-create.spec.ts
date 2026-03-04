@@ -124,4 +124,49 @@ test.describe('Task Create', () => {
     const repoField = adminPage.getByLabel('Repository');
     await expect(repoField).toHaveAttribute('required', '');
   });
+
+  test('image upload shows preview in form', async ({ adminPage }) => {
+    await adminPage.goto('/tasks');
+    await adminPage.getByRole('button', { name: 'New Task' }).click();
+
+    // Create a 1x1 red PNG in memory
+    const pngBuffer = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==',
+      'base64'
+    );
+
+    // Set the file on the hidden file input
+    const fileInput = adminPage.locator('input[type="file"]');
+    await fileInput.setInputFiles({
+      name: 'test-image.png',
+      mimeType: 'image/png',
+      buffer: pngBuffer,
+    });
+
+    // An image preview should appear
+    await expect(adminPage.locator('img[alt="Upload preview 1"]')).toBeVisible({ timeout: 5000 });
+  });
+});
+
+test.describe.serial('Task Create - E2E', () => {
+  test('create task and verify it appears in task list', async ({ adminPage }) => {
+    await adminPage.goto('/tasks');
+    await adminPage.getByRole('button', { name: 'New Task' }).click();
+
+    await adminPage.getByLabel('Prompt').fill('E2E test task — automated creation test');
+    await adminPage.getByLabel('Repository').fill('testorg/testrepo');
+    await adminPage.getByRole('button', { name: 'Submit Task' }).click();
+
+    // Form should close after submission
+    await expect(adminPage.getByLabel('Prompt')).toHaveCount(0, { timeout: 10000 });
+
+    // Task should appear in the list with pending status
+    await expect(adminPage.getByText('E2E test task — automated creation test')).toBeVisible({ timeout: 10000 });
+  });
+
+  test('verify created task persists on page reload', async ({ adminPage }) => {
+    await adminPage.goto('/tasks');
+
+    await expect(adminPage.getByText('E2E test task — automated creation test')).toBeVisible();
+  });
 });
