@@ -665,7 +665,12 @@ async fn run_task_pipeline(
     // Plan phase: if plan_mode is enabled, run Claude in read-only mode first
     if plan_mode {
         update_task_status(db, task_id, "planning", None).await?;
-        log_and_send(db, task_id, &tx, "[STEP] Running Claude in plan mode (read-only)...");
+        log_and_send(
+            db,
+            task_id,
+            &tx,
+            "[STEP] Running Claude in plan mode (read-only)...",
+        );
 
         let plan_prompt = build_plan_prompt(prompt);
         let plan_result = run_claude_plan_streaming(
@@ -694,9 +699,15 @@ async fn run_task_pipeline(
         .await?
         {
             PlanApprovalOutcome::Approved(plan_text) => {
-                log_and_send(db, task_id, &tx, "[STEP] Plan approved, proceeding to execution...");
+                log_and_send(
+                    db,
+                    task_id,
+                    &tx,
+                    "[STEP] Plan approved, proceeding to execution...",
+                );
                 // Plan text will be prepended to the effective prompt below
-                save_system_message(db, task_id, "Plan approved — starting implementation...").await?;
+                save_system_message(db, task_id, "Plan approved — starting implementation...")
+                    .await?;
                 // Store approved plan to prepend later
                 // We use a local variable that gets picked up below
                 let _ = sqlx::query(
@@ -706,7 +717,9 @@ async fn run_task_pipeline(
                 .execute(db)
                 .await;
                 // Prepend plan to prompt for the execution phase
-                let augmented = augment_prompt_with_images(config, &agent_name, image_url_json, prompt, &tx).await?;
+                let augmented =
+                    augment_prompt_with_images(config, &agent_name, image_url_json, prompt, &tx)
+                        .await?;
                 let mut effective_prompt = format!(
                     "APPROVED IMPLEMENTATION PLAN (follow this plan):\n{plan_text}\n\nORIGINAL REQUEST:\n{augmented}"
                 );
@@ -724,11 +737,15 @@ async fn run_task_pipeline(
                         if let Some(deny) = tools.get("deny").and_then(|v| v.as_array()) {
                             let names: Vec<&str> = deny.iter().filter_map(|v| v.as_str()).collect();
                             if !names.is_empty() {
-                                constraints.push(format!("DENIED TOOLS (do NOT use): {}", names.join(", ")));
+                                constraints.push(format!(
+                                    "DENIED TOOLS (do NOT use): {}",
+                                    names.join(", ")
+                                ));
                             }
                         }
                         if let Some(allow) = tools.get("allow").and_then(|v| v.as_array()) {
-                            let names: Vec<&str> = allow.iter().filter_map(|v| v.as_str()).collect();
+                            let names: Vec<&str> =
+                                allow.iter().filter_map(|v| v.as_str()).collect();
                             if !names.is_empty() {
                                 constraints.push(format!(
                                     "ALLOWED TOOLS (use ONLY these): {}",
@@ -739,8 +756,9 @@ async fn run_task_pipeline(
                     }
                     if !constraints.is_empty() {
                         let policy_block = constraints.join("\n");
-                        effective_prompt =
-                            format!("REPO POLICY CONSTRAINTS:\n{policy_block}\n\n{effective_prompt}");
+                        effective_prompt = format!(
+                            "REPO POLICY CONSTRAINTS:\n{policy_block}\n\n{effective_prompt}"
+                        );
                     }
                 }
 
@@ -750,16 +768,27 @@ async fn run_task_pipeline(
                     let denied = get_denied_tools(pol);
                     if !denied.is_empty() {
                         log_and_send(
-                            db, task_id, &tx,
-                            &format!("[POLICY] Blocked tools: {}. Claude will not have access to these.", denied.join(", ")),
+                            db,
+                            task_id,
+                            &tx,
+                            &format!(
+                                "[POLICY] Blocked tools: {}. Claude will not have access to these.",
+                                denied.join(", ")
+                            ),
                         );
                     }
                 }
                 log_and_send(db, task_id, &tx, "[STEP] Running Claude (execution)...");
                 let result = run_claude_streaming(
-                    db, &config.secrets_encryption_key, created_by,
-                    &agent_name, &effective_prompt, tx.clone(), policy.as_ref(),
-                ).await;
+                    db,
+                    &config.secrets_encryption_key,
+                    created_by,
+                    &agent_name,
+                    &effective_prompt,
+                    tx.clone(),
+                    policy.as_ref(),
+                )
+                .await;
                 let result = match result {
                     Ok(r) => r,
                     Err(e) => {
@@ -775,7 +804,11 @@ async fn run_task_pipeline(
                                 shell::ClaudeStreamResult {
                                     text: String::new(),
                                     actions: Vec::new(),
-                                    usage: shell::TokenUsage { input_tokens: 0, output_tokens: 0, cost_usd: 0.0 },
+                                    usage: shell::TokenUsage {
+                                        input_tokens: 0,
+                                        output_tokens: 0,
+                                        cost_usd: 0.0,
+                                    },
                                 }
                             } else {
                                 return Err(e);
@@ -804,36 +837,71 @@ async fn run_task_pipeline(
 
                 let mut preview_created = true;
                 let mut branch_pushed = false;
-                let pushed = push_and_preview(ctx, &agent_name, &branch_name, &mut branch_pushed, &mut preview_created, &tx).await?;
+                let pushed = push_and_preview(
+                    ctx,
+                    &agent_name,
+                    &branch_name,
+                    &mut branch_pushed,
+                    &mut preview_created,
+                    &tx,
+                )
+                .await?;
                 if pushed {
-                    save_system_message(db, task_id, "Changes pushed and preview updated ✓").await?;
+                    save_system_message(db, task_id, "Changes pushed and preview updated ✓")
+                        .await?;
                 }
 
-                follow_up_loop(ctx, &agent_name, &branch_name, &mut branch_pushed, &mut preview_created, created_by, &tx).await?;
+                follow_up_loop(
+                    ctx,
+                    &agent_name,
+                    &branch_name,
+                    &mut branch_pushed,
+                    &mut preview_created,
+                    created_by,
+                    &tx,
+                )
+                .await?;
 
                 log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
                 let _ = shell::destroy_agent(config, &agent_name).await;
 
                 let compute_secs = pipeline_start.elapsed().as_secs() as i32;
                 let _ = sqlx::query("UPDATE tasks SET compute_seconds = $1 WHERE id = $2")
-                    .bind(compute_secs).bind(task_id).execute(db).await;
+                    .bind(compute_secs)
+                    .bind(task_id)
+                    .execute(db)
+                    .await;
 
                 let preview_url = format!("https://t-{short_id}.{}", config.preview_domain);
                 update_task_status(db, task_id, "completed", None).await?;
-                log_and_send(db, task_id, &tx, &format!("[DONE] Preview available at {preview_url}"));
+                log_and_send(
+                    db,
+                    task_id,
+                    &tx,
+                    &format!("[DONE] Preview available at {preview_url}"),
+                );
                 return Ok(());
             }
             PlanApprovalOutcome::Rejected => {
                 log_and_send(db, task_id, &tx, "[STEP] Plan rejected, cleaning up...");
-                save_system_message(db, task_id, "Plan rejected — no code changes were made.").await?;
+                save_system_message(db, task_id, "Plan rejected — no code changes were made.")
+                    .await?;
                 let _ = shell::destroy_agent(config, &agent_name).await;
 
                 let compute_secs = pipeline_start.elapsed().as_secs() as i32;
                 let _ = sqlx::query("UPDATE tasks SET compute_seconds = $1 WHERE id = $2")
-                    .bind(compute_secs).bind(task_id).execute(db).await;
+                    .bind(compute_secs)
+                    .bind(task_id)
+                    .execute(db)
+                    .await;
 
                 update_task_status(db, task_id, "completed", None).await?;
-                log_and_send(db, task_id, &tx, "[DONE] Task completed (plan rejected, no changes).");
+                log_and_send(
+                    db,
+                    task_id,
+                    &tx,
+                    "[DONE] Task completed (plan rejected, no changes).",
+                );
                 return Ok(());
             }
         }
@@ -1243,7 +1311,12 @@ async fn run_claude_plan_streaming(
 
     // Start with write tools that must always be blocked in plan mode
     let mut denied: Vec<&str> = vec![
-        "Bash", "Write", "Edit", "MultiEdit", "TodoWrite", "NotebookEdit",
+        "Bash",
+        "Write",
+        "Edit",
+        "MultiEdit",
+        "TodoWrite",
+        "NotebookEdit",
     ];
 
     // Merge any policy-denied tools
@@ -1311,7 +1384,9 @@ async fn plan_approval_loop(
     let mut last_seen_id: i64 = 0;
 
     update_task_status(db, task_id, "awaiting_plan_approval", None).await?;
-    let _ = tx.send("[STATUS] Plan ready for review. Approve, reject, or send revision comments.".to_string());
+    let _ = tx.send(
+        "[STATUS] Plan ready for review. Approve, reject, or send revision comments.".to_string(),
+    );
 
     loop {
         let new_messages: Vec<TaskMessage> = sqlx::query_as::<_, TaskMessage>(
@@ -1334,7 +1409,10 @@ async fn plan_approval_loop(
         last_seen_id = new_messages.last().unwrap().id;
 
         // Check for approval
-        if new_messages.iter().any(|m| m.content.trim() == "__approve__") {
+        if new_messages
+            .iter()
+            .any(|m| m.content.trim() == "__approve__")
+        {
             let _ = tx.send("[STATUS] Plan approved.".to_string());
             // Retrieve the latest Claude plan message
             let plan_text: String = sqlx::query_scalar(
@@ -1349,7 +1427,10 @@ async fn plan_approval_loop(
         }
 
         // Check for rejection
-        if new_messages.iter().any(|m| m.content.trim() == "__reject__") {
+        if new_messages
+            .iter()
+            .any(|m| m.content.trim() == "__reject__")
+        {
             let _ = tx.send("[STATUS] Plan rejected.".to_string());
             return Ok(PlanApprovalOutcome::Rejected);
         }
@@ -1371,7 +1452,13 @@ async fn plan_approval_loop(
         let _ = tx.send("[STEP] Revising plan...".to_string());
 
         let result = run_claude_continue(
-            db, encryption_key, created_by, agent_name, &revision_prompt, tx.clone(), policy,
+            db,
+            encryption_key,
+            created_by,
+            agent_name,
+            &revision_prompt,
+            tx.clone(),
+            policy,
         )
         .await;
 
