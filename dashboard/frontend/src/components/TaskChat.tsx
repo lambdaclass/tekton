@@ -1,19 +1,30 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Send, CheckCircle, ExternalLink, ImagePlus, X, Loader2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { listTaskMessages, sendTaskMessage, uploadImage, parseImageUrls } from '@/lib/api';
+import { listTaskMessages, sendTaskMessage, uploadImage, parseImageUrls, type TaskMessage } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { timeAgo } from '@/lib/utils';
 
 interface TaskChatProps {
   taskId: string;
   currentUserEmail: string;
   previewUrl?: string;
+  taskStatus?: string;
 }
 
-export default function TaskChat({ taskId, currentUserEmail, previewUrl }: TaskChatProps) {
+/** Replace fenced code blocks in Claude messages with collapsible <details> elements */
+function processMessageContent(content: string, sender: string): string {
+  if (sender !== 'claude') return content;
+  return content.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang: string, code: string) => {
+    const summary = lang ? `Code (${lang})` : 'Code block';
+    return `<details><summary>${summary}</summary>\n\n\`\`\`${lang}\n${code}\`\`\`\n</details>`;
+  });
+}
+
+export default function TaskChat({ taskId, currentUserEmail, previewUrl, taskStatus }: TaskChatProps) {
   const queryClient = useQueryClient();
   const [message, setMessage] = useState('');
   const [chatImages, setChatImages] = useState<File[]>([]);
@@ -55,11 +66,37 @@ export default function TaskChat({ taskId, currentUserEmail, previewUrl }: TaskC
     mutationFn: async ({ content, image_urls }: { content: string; image_urls?: string[] }) => {
       return sendTaskMessage(taskId, content, image_urls);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['task-messages', taskId] });
+    onMutate: async ({ content }) => {
+      await queryClient.cancelQueries({ queryKey: ['task-messages', taskId] });
+      const previousMessages = queryClient.getQueryData<TaskMessage[]>(['task-messages', taskId]);
+
+      const optimisticMessage: TaskMessage = {
+        id: Date.now(),
+        task_id: taskId,
+        sender: currentUserEmail,
+        content,
+        created_at: new Date().toISOString(),
+        image_url: null,
+      };
+
+      queryClient.setQueryData<TaskMessage[]>(
+        ['task-messages', taskId],
+        (old) => [...(old ?? []), optimisticMessage],
+      );
+
       setMessage('');
       setChatImages([]);
       setChatImagePreviews([]);
+
+      return { previousMessages };
+    },
+    onError: (_err, _variables, context) => {
+      if (context?.previousMessages) {
+        queryClient.setQueryData(['task-messages', taskId], context.previousMessages);
+      }
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['task-messages', taskId] });
     },
   });
 
@@ -87,11 +124,14 @@ export default function TaskChat({ taskId, currentUserEmail, previewUrl }: TaskC
     sendMutation.mutate({ content: '__done__', image_urls: undefined });
   };
 
-  const senderColor = (sender: string) => {
-    if (sender === currentUserEmail) return 'bg-primary/10 border-primary/20';
-    if (sender === 'claude') return 'bg-muted border-border';
-    return 'bg-secondary/30 border-secondary';
-  };
+  const isTyping = taskStatus === 'running_claude';
+
+  const processedMessages = useMemo(() => {
+    return messages?.map((msg) => ({
+      ...msg,
+      processedContent: processMessageContent(msg.content, msg.sender),
+    }));
+  }, [messages]);
 
   return (
     <div
@@ -131,17 +171,17 @@ export default function TaskChat({ taskId, currentUserEmail, previewUrl }: TaskC
             </a>
           </div>
         )}
-        {!messages?.length && (
+        {!processedMessages?.length && !isTyping && (
           <p className="text-sm text-muted-foreground text-center py-4">
             {previewUrl
               ? 'Check the preview above, then send a follow-up if something needs fixing.'
               : 'No messages yet. Send a follow-up to Claude.'}
           </p>
         )}
-        {messages?.map((msg, idx) =>
+        {processedMessages?.map((msg) =>
           msg.sender === 'system' ? (
-            <div key={msg.id} className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground py-1">
-              {msg.content.endsWith('...') && messages && idx === messages.length - 1 && (
+            <div key={msg.id} className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground italic py-1">
+              {msg.content.endsWith('...') && processedMessages && msg === processedMessages[processedMessages.length - 1] && (
                 <Loader2 className="size-3 animate-spin" />
               )}
               {msg.content}
@@ -149,34 +189,52 @@ export default function TaskChat({ taskId, currentUserEmail, previewUrl }: TaskC
           ) : (
             <div
               key={msg.id}
-              className={`rounded-lg border p-3 text-sm ${senderColor(msg.sender)}`}
+              className={`flex ${msg.sender === currentUserEmail ? 'justify-end' : 'justify-start'}`}
             >
-              <div className="flex items-center justify-between mb-1">
-                <span className="font-medium text-xs text-muted-foreground">
-                  {msg.sender === currentUserEmail ? 'You' : msg.sender}
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  {new Date(msg.created_at).toLocaleTimeString()}
-                </span>
-              </div>
-              <div className="prose prose-sm prose-invert max-w-none break-words [&_pre]:bg-black/30 [&_pre]:rounded-md [&_pre]:p-3 [&_pre]:overflow-x-auto [&_code]:text-[0.8em] [&_:not(pre)>code]:bg-white/8 [&_:not(pre)>code]:px-1 [&_:not(pre)>code]:py-px [&_:not(pre)>code]:rounded-sm [&_:not(pre)>code]:text-orange-300/90 [&_:not(pre)>code]:before:content-none [&_:not(pre)>code]:after:content-none [&_p]:my-1.5 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_li]:my-0.5 [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-sm [&_a]:text-blue-400 [&_table]:text-xs [&_blockquote]:border-muted-foreground/30">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-              </div>
-              {parseImageUrls(msg.image_url).length > 0 && (
-                <div className="flex flex-wrap gap-2 mt-2">
-                  {parseImageUrls(msg.image_url).map((url, i) => (
-                    <a key={i} href={url} target="_blank" rel="noopener noreferrer">
-                      <img
-                        src={url}
-                        alt={`Attached image ${i + 1}`}
-                        className="max-h-48 rounded-md border border-border hover:opacity-90 transition-opacity"
-                      />
-                    </a>
-                  ))}
+              <div
+                className={`rounded-lg border p-3 text-sm max-w-[85%] ${
+                  msg.sender === currentUserEmail
+                    ? 'bg-primary/15 border-primary/25'
+                    : 'bg-card border-border'
+                }`}
+              >
+                <div className={`flex items-center gap-2 mb-1 ${msg.sender === currentUserEmail ? 'justify-end' : 'justify-start'}`}>
+                  <span className="font-medium text-xs text-muted-foreground">
+                    {msg.sender === currentUserEmail ? 'You' : msg.sender}
+                  </span>
+                  <span className="text-xs text-muted-foreground" title={new Date(msg.created_at).toLocaleString()}>
+                    {timeAgo(msg.created_at)}
+                  </span>
                 </div>
-              )}
+                <div className="prose prose-sm prose-invert max-w-none break-words [&_pre]:bg-black/30 [&_pre]:rounded-md [&_pre]:p-3 [&_pre]:overflow-x-auto [&_code]:text-[0.8em] [&_:not(pre)>code]:bg-white/8 [&_:not(pre)>code]:px-1 [&_:not(pre)>code]:py-px [&_:not(pre)>code]:rounded-sm [&_:not(pre)>code]:text-orange-300/90 [&_:not(pre)>code]:before:content-none [&_:not(pre)>code]:after:content-none [&_p]:my-1.5 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_li]:my-0.5 [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-sm [&_a]:text-blue-400 [&_table]:text-xs [&_blockquote]:border-muted-foreground/30 [&_details]:border [&_details]:border-border [&_details]:rounded-md [&_details]:p-2 [&_details]:my-2 [&_summary]:cursor-pointer [&_summary]:text-xs [&_summary]:text-muted-foreground [&_summary]:font-medium">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.processedContent}</ReactMarkdown>
+                </div>
+                {parseImageUrls(msg.image_url).length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {parseImageUrls(msg.image_url).map((url, i) => (
+                      <a key={i} href={url} target="_blank" rel="noopener noreferrer">
+                        <img
+                          src={url}
+                          alt={`Attached image ${i + 1}`}
+                          className="max-h-48 rounded-md border border-border hover:opacity-90 transition-opacity"
+                        />
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )
+        )}
+        {isTyping && (
+          <div className="flex justify-start">
+            <div className="flex items-center gap-1 px-4 py-3 bg-muted rounded-lg w-fit">
+              <span className="text-xs text-muted-foreground mr-2">Claude is working</span>
+              <span className="typing-dot" style={{animationDelay: '0s'}} />
+              <span className="typing-dot" style={{animationDelay: '0.15s'}} />
+              <span className="typing-dot" style={{animationDelay: '0.3s'}} />
+            </div>
+          </div>
         )}
       </div>
 
