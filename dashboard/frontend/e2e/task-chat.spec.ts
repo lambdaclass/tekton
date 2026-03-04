@@ -10,12 +10,14 @@ test.describe.serial('Task Chat', () => {
 
   test('renders seeded messages', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.awaiting}`);
+    await adminPage.getByRole('tab', { name: 'Conversation' }).click();
     await expect(adminPage.getByText('fixed the button alignment')).toBeVisible();
     await expect(adminPage.getByText('center it vertically')).toBeVisible();
   });
 
   test('renders system message with spinner', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.awaiting}`);
+    await adminPage.getByRole('tab', { name: 'Conversation' }).click();
     await expect(adminPage.getByText('Claude is thinking...')).toBeVisible();
   });
 
@@ -26,6 +28,7 @@ test.describe.serial('Task Chat', () => {
 
   test('send button is disabled when input is empty', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.awaiting}`);
+    await adminPage.getByRole('tab', { name: 'Conversation' }).click();
     const sendBtn = adminPage.locator('button[type="submit"]');
     await expect(sendBtn).toBeDisabled();
   });
@@ -37,6 +40,7 @@ test.describe.serial('Task Chat', () => {
 
   test('shows "You" label on own message', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.awaiting}`);
+    await adminPage.getByRole('tab', { name: 'Conversation' }).click();
     // Logged in as testadmin, so "testadmin" sender should show "You"
     await expect(adminPage.getByText('You').first()).toBeVisible();
   });
@@ -50,6 +54,7 @@ test.describe.serial('Task Chat', () => {
 
   test('typing and sending a message posts it', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.awaiting}`);
+    await adminPage.getByRole('tab', { name: 'Conversation' }).click();
 
     const requestPromise = adminPage.waitForRequest((req) =>
       req.url().includes(`/api/tasks/${TEST_IDS.tasks.awaiting}/messages`) && req.method() === 'POST'

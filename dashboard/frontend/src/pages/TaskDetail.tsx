@@ -122,11 +122,15 @@ export default function TaskDetail() {
     !task.pr_url &&
     (task.status === 'completed' || task.status === 'awaiting_followup');
 
-  const initialTab = useMemo(() => {
-    const tab = defaultTab(task?.status);
+  const [activeTab, setActiveTab] = useState<string | undefined>(undefined);
+  // Set the tab once when task data first arrives (defaultValue doesn't work with async data)
+  const resolvedTab = useMemo(() => {
+    if (activeTab) return activeTab;
+    if (!task) return 'logs';
+    const tab = defaultTab(task.status);
     if (tab === 'conversation' && !showChat) return 'logs';
     return tab;
-  }, [task?.status, showChat]);
+  }, [activeTab, task, showChat]);
 
   const policyViolations = actions?.filter((a) => a.action_type === 'policy_violation') ?? [];
   const imageUrls = task ? parseImageUrls(task.image_url) : [];
@@ -135,7 +139,7 @@ export default function TaskDetail() {
     <div className="flex flex-col h-[calc(100vh-4rem)]">
       {/* ===== Top bar: navigation + title ===== */}
       <div className="flex items-center gap-2 px-1 pb-2 shrink-0">
-        <Button variant="ghost" size="icon-sm" onClick={() => navigate('/tasks')}>
+        <Button variant="ghost" size="icon-sm" onClick={() => navigate('/tasks')} aria-label="Back to tasks">
           <ChevronLeft className="size-4" />
         </Button>
         <h1 className="text-lg font-semibold truncate max-w-sm">
@@ -244,7 +248,7 @@ export default function TaskDetail() {
       )}
 
       {/* ===== Main content: full-width tabs ===== */}
-      <Tabs defaultValue={initialTab} className="flex flex-col flex-1 min-h-0 pt-3">
+      <Tabs value={resolvedTab} onValueChange={setActiveTab} className="flex flex-col flex-1 min-h-0 pt-3">
         <TabsList variant="line" className="shrink-0 border-b border-border pb-0 mb-0">
           {showChat && (
             <TabsTrigger value="conversation" className="gap-1.5">
@@ -377,7 +381,7 @@ export default function TaskDetail() {
                   <a key={i} href={url} target="_blank" rel="noopener noreferrer">
                     <img
                       src={url}
-                      alt={`Reference ${i + 1}`}
+                      alt={`Task reference image ${i + 1}`}
                       className="max-h-48 rounded-md border border-border hover:border-muted-foreground/30 transition-colors"
                       style={{ objectFit: 'contain' }}
                     />

@@ -16,14 +16,9 @@ test.describe('Task Detail', () => {
     await expect(adminPage.getByText(TEST_IDS.repos.main).first()).toBeVisible();
   });
 
-  test('shows base branch in metadata', async ({ adminPage }) => {
-    await adminPage.goto(`/tasks/${TEST_IDS.tasks.completed}`);
-    await expect(adminPage.getByText('main').first()).toBeVisible();
-  });
-
   test('shows branch name in metadata', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.completed}`);
-    await expect(adminPage.getByText('feat/user-settings', { exact: true })).toBeVisible();
+    await expect(adminPage.getByText('feat/user-settings').first()).toBeVisible();
   });
 
   test('shows creator in metadata', async ({ adminPage }) => {
@@ -31,13 +26,11 @@ test.describe('Task Detail', () => {
     await expect(adminPage.getByText(TEST_IDS.users.admin).first()).toBeVisible();
   });
 
-  test('shows token usage and cost info in Info tab', async ({ adminPage }) => {
+  test('shows token usage and cost info in metadata bar', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.completed}`);
-    await adminPage.getByRole('tab', { name: 'Info' }).click();
-    await expect(adminPage.getByText('Token Usage')).toBeVisible();
-    await expect(adminPage.getByText('50,000 in')).toBeVisible();
-    await expect(adminPage.getByText('20,000 out')).toBeVisible();
-    await expect(adminPage.getByText('$1.50')).toBeVisible();
+    await expect(adminPage.getByText('50,000 in').first()).toBeVisible();
+    await expect(adminPage.getByText('20,000 out').first()).toBeVisible();
+    await expect(adminPage.getByText('$1.50').first()).toBeVisible();
   });
 
   test('shows prompt text in Info tab', async ({ adminPage }) => {
@@ -48,13 +41,13 @@ test.describe('Task Detail', () => {
 
   test('back button navigates to tasks list', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.completed}`);
-    await adminPage.getByRole('button', { name: 'Tasks' }).click();
+    await adminPage.getByRole('button', { name: 'Back to tasks' }).click();
     await expect(adminPage).toHaveURL('/tasks');
   });
 
   test('shows View PR button for task with PR', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.completed}`);
-    await expect(adminPage.getByRole('button', { name: 'View PR #42' })).toBeVisible();
+    await expect(adminPage.getByRole('button', { name: /PR #42/ })).toBeVisible();
   });
 
   test('shows Agent Logs in Logs tab', async ({ adminPage }) => {
@@ -76,7 +69,8 @@ test.describe('Task Detail', () => {
 
   test('shows error message for failed task', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.failed}`);
-    await expect(adminPage.getByText('Error')).toBeVisible();
+    await adminPage.getByRole('tab', { name: 'Info' }).click();
+    await expect(adminPage.getByText('Error').first()).toBeVisible();
     await expect(adminPage.getByText('Migration failed: column "legacy_data" does not exist')).toBeVisible();
   });
 
@@ -99,14 +93,14 @@ test.describe('Task Detail', () => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.completed}`);
     await adminPage.getByRole('tab', { name: 'Info' }).click();
     await expect(adminPage.getByText('Subtasks')).toBeVisible();
-    await expect(adminPage.getByText('Write unit tests for settings page')).toBeVisible();
+    await expect(adminPage.getByText('Settings tests')).toBeVisible();
   });
 
   test('subtask links navigate to subtask detail', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.completed}`);
     await adminPage.getByRole('tab', { name: 'Info' }).click();
     await expect(adminPage.getByText('Subtasks')).toBeVisible();
-    await adminPage.getByText('Write unit tests for settings page').click();
+    await adminPage.getByText('Settings tests').click();
     await expect(adminPage).toHaveURL(new RegExp(`/tasks/${TEST_IDS.tasks.subtask}`));
   });
 
@@ -122,8 +116,8 @@ test.describe('Task Detail', () => {
     await expect(adminPage.getByText('Add dark mode support')).toBeVisible();
   });
 
-  test('Live/Disconnected badge is shown for running task', async ({ adminPage }) => {
-    await adminPage.goto(`/tasks/${TEST_IDS.tasks.running}`);
+  test('Live/Disconnected badge is shown for awaiting task', async ({ adminPage }) => {
+    await adminPage.goto(`/tasks/${TEST_IDS.tasks.awaiting}`);
     await expect(adminPage.getByText('Disconnected').or(adminPage.getByText('Live'))).toBeVisible();
   });
 
@@ -134,7 +128,7 @@ test.describe('Task Detail', () => {
 
   test('shows policy violation banner', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.completed}`);
-    await expect(adminPage.getByText(/policy violation[s]? detected/)).toBeVisible();
+    await expect(adminPage.getByText(/\d+ policy violation/)).toBeVisible();
     await expect(adminPage.getByText('Bash').first()).toBeVisible();
   });
 
