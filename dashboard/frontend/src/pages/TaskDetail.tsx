@@ -114,7 +114,7 @@ export default function TaskDetail() {
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)]">
       {/* ===== Header bar ===== */}
-      <div className="flex flex-wrap items-center gap-3 px-1 pb-4 shrink-0">
+      <div className="flex flex-wrap items-center gap-3 px-1 pb-4 shrink-0 glass-card rounded-lg p-4">
         <Button variant="ghost" size="sm" onClick={() => navigate('/tasks')}>
           <ChevronLeft className="size-4" />
           Tasks
@@ -221,7 +221,7 @@ export default function TaskDetail() {
       >
         {/* Left pane: Chat */}
         {showChat && (
-          <div className="h-[calc(100vh-10rem)] md:h-auto overflow-hidden rounded-lg border border-border bg-card">
+          <div className="h-[calc(100vh-10rem)] md:h-auto overflow-hidden rounded-lg border-r border-border/50 bg-card">
             <TaskChat
               taskId={id!}
               currentUserEmail={me!.login}

@@ -291,16 +291,18 @@ export default function Layout() {
         </SidebarFooter>
       </Sidebar>
       <SidebarInset>
-        <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-          <SidebarTrigger className="-ml-1" />
-          <Separator orientation="vertical" className="mr-2 h-4" />
-          <span className="text-sm text-muted-foreground">
-            {NAV_ITEMS.find((n) => isActive(n.to))?.label ?? (isActive('/admin') ? 'Admin' : isActive('/cost') ? 'Cost' : isActive('/audit') ? 'Audit Log' : '')}
-          </span>
-        </header>
-        <main className="flex-1 p-6 page-enter" key={location.pathname}>
-          <Outlet />
-        </main>
+        <div className="gradient-mesh-bg min-h-screen">
+          <header className="flex h-12 shrink-0 items-center gap-2 border-b bg-background/80 backdrop-blur-sm px-4">
+            <SidebarTrigger className="-ml-1" />
+            <Separator orientation="vertical" className="mr-2 h-4" />
+            <span className="text-sm text-muted-foreground">
+              {NAV_ITEMS.find((n) => isActive(n.to))?.label ?? (isActive('/admin') ? 'Admin' : isActive('/cost') ? 'Cost' : isActive('/audit') ? 'Audit Log' : '')}
+            </span>
+          </header>
+          <main className="flex-1 p-6 page-enter" key={location.pathname}>
+            <Outlet />
+          </main>
+        </div>
       </SidebarInset>
       <CommandPalette />
       <Toaster position="bottom-right" richColors closeButton />

@@ -77,22 +77,22 @@ code, pre, kbd, samp, .font-mono {
 :root {
   color-scheme: dark;
   --radius: 0.625rem;
-  --background: oklch(0.13 0.004 280);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.18 0.008 270);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.18 0.008 270);
-  --popover-foreground: oklch(0.985 0 0);
+  --background: oklch(0.14 0.01 270);
+  --foreground: oklch(0.93 0.005 270);
+  --card: oklch(0.19 0.012 270);
+  --card-foreground: oklch(0.93 0.005 270);
+  --popover: oklch(0.19 0.012 270);
+  --popover-foreground: oklch(0.93 0.005 270);
   --primary: oklch(0.75 0.18 195);
   --primary-foreground: oklch(0.15 0.01 195);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.274 0.006 286.033);
-  --muted-foreground: oklch(0.705 0.015 286.067);
-  --accent: oklch(0.274 0.006 286.033);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
+  --secondary: oklch(0.24 0.012 270);
+  --secondary-foreground: oklch(0.93 0.005 270);
+  --muted: oklch(0.24 0.012 270);
+  --muted-foreground: oklch(0.65 0.02 270);
+  --accent: oklch(0.24 0.012 270);
+  --accent-foreground: oklch(0.93 0.005 270);
+  --destructive: oklch(0.65 0.2 25);
+  --border: oklch(1 0 0 / 12%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.6 0.12 195);
   --chart-1: oklch(0.75 0.18 195);
@@ -100,12 +100,12 @@ code, pre, kbd, samp, .font-mono {
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.18 0.008 270);
-  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar: oklch(0.16 0.012 270);
+  --sidebar-foreground: oklch(0.93 0.005 270);
   --sidebar-primary: oklch(0.75 0.18 195);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.274 0.006 286.033);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-primary-foreground: oklch(0.93 0.005 270);
+  --sidebar-accent: oklch(0.24 0.012 270);
+  --sidebar-accent-foreground: oklch(0.93 0.005 270);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.6 0.12 195);
 }
@@ -169,3 +169,77 @@ code, pre, kbd, samp, .font-mono {
     @apply bg-background text-foreground;
   }
 }
+
+/* Gradient mesh background - adds life to the page */
+.gradient-mesh-bg {
+  background-color: oklch(0.14 0.01 270);
+  background-image:
+    radial-gradient(at 20% 30%, oklch(0.25 0.08 250 / 0.15) 0px, transparent 50%),
+    radial-gradient(at 80% 20%, oklch(0.25 0.08 195 / 0.12) 0px, transparent 50%),
+    radial-gradient(at 50% 80%, oklch(0.2 0.06 300 / 0.08) 0px, transparent 50%);
+}
+
+/* Glass card effect for elevated surfaces */
+.glass-card {
+  background: oklch(0.19 0.012 270 / 0.8);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border: 1px solid oklch(1 0 0 / 0.08);
+}
+
+/* Card hover lift effect */
+.card-hover {
+  transition: transform 200ms ease, box-shadow 200ms ease, border-color 200ms ease;
+}
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px oklch(0 0 0 / 0.3), 0 0 0 1px oklch(1 0 0 / 0.06);
+  border-color: oklch(1 0 0 / 0.15);
+}
+
+/* Gradient primary button */
+.btn-gradient {
+  background: linear-gradient(135deg, oklch(0.7 0.18 195), oklch(0.6 0.2 230));
+  transition: all 200ms ease;
+}
+.btn-gradient:hover {
+  box-shadow: 0 0 20px oklch(0.7 0.18 195 / 0.35);
+  filter: brightness(1.1);
+}
+.btn-gradient:active {
+  transform: scale(0.98);
+  filter: brightness(0.95);
+}
+
+/* Accent left border indicator for active/highlighted items */
+.accent-indicator {
+  position: relative;
+}
+.accent-indicator::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 25%;
+  height: 50%;
+  width: 3px;
+  background: oklch(0.75 0.18 195);
+  border-radius: 0 2px 2px 0;
+}
+
+/* Subtle gradient border for featured items */
+.gradient-border {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(oklch(0.19 0.012 270), oklch(0.19 0.012 270)) padding-box,
+    linear-gradient(135deg, oklch(0.75 0.18 195 / 0.5), oklch(0.6 0.2 280 / 0.3)) border-box;
+}
+
+/* Better scrollbar styling */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: oklch(1 0 0 / 0.08) transparent;
+}
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: oklch(1 0 0 / 0.1); border-radius: 3px; }
+*::-webkit-scrollbar-thumb:hover { background: oklch(1 0 0 / 0.2); }

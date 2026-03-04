@@ -42,14 +42,18 @@ export default function Home() {
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold">
-            Welcome back{me?.name ? `, ${me.name}` : me?.login ? `, ${me.login}` : ''}
+            Welcome back{(me?.name || me?.login) ? ', ' : ''}{(me?.name || me?.login) ? (
+              <span className="bg-gradient-to-r from-primary to-blue-400 bg-clip-text text-transparent">
+                {me?.name || me?.login}
+              </span>
+            ) : ''}
           </h1>
           <p className="text-muted-foreground mt-1">
             Here is what is happening across your projects.
           </p>
         </div>
         {me?.role !== 'viewer' && (
-          <Button asChild>
+          <Button asChild className="btn-gradient">
             <Link to="/tasks">
               <Plus className="size-4 mr-1" />
               Create Task
@@ -68,7 +72,7 @@ export default function Home() {
               const StatusIcon = sv.icon;
               return (
                 <Link key={t.id} to={`/tasks/${t.id}`}>
-                  <Card className="border-primary/25 hover:border-primary/40 transition-colors">
+                  <Card className="gradient-border hover:border-primary/40 transition-colors">
                     <CardContent className="py-3">
                       <div className="flex items-center justify-between mb-1">
                         <span className="text-sm font-medium truncate mr-2">
@@ -108,7 +112,7 @@ export default function Home() {
               const StatusIcon = sv.icon;
               return (
                 <Link key={t.id} to={`/tasks/${t.id}`}>
-                  <div className="flex items-center gap-3 rounded-lg border border-border p-3 hover:bg-muted/50 transition-colors">
+                  <div className="flex items-center gap-3 rounded-lg border border-border p-3 hover:bg-primary/5 transition-colors">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium truncate">

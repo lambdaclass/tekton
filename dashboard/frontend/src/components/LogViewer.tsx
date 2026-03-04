@@ -19,9 +19,11 @@ const TERM_OPTIONS = {
   fontSize: 13,
   fontFamily: '"Geist Mono", Menlo, Monaco, "Courier New", monospace',
   theme: {
-    background: '#1a1b26',
-    foreground: '#c0caf5',
-    cursor: '#c0caf5',
+    background: '#161825',
+    foreground: '#d4d4e0',
+    cursor: '#2dd4bf',
+    selectionBackground: 'rgba(45, 212, 191, 0.20)',
+    selectionForeground: '#ffffff',
   },
   scrollback: 10000,
   disableStdin: true,
@@ -181,9 +183,11 @@ export default function LogViewer({ taskId, previewSlug, ws, onConnectionChange 
   }, [taskId, previewSlug, ws]);
 
   return (
-    <div
-      ref={containerRef}
-      className="w-full h-[500px] overflow-hidden"
-    />
+    <div className="rounded-lg border border-border overflow-hidden">
+      <div
+        ref={containerRef}
+        className="w-full h-[500px] overflow-hidden"
+      />
+    </div>
   );
 }

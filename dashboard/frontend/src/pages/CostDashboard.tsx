@@ -101,7 +101,7 @@ function SummaryCards({ days }: { days: number }) {
   return (
     <div className="grid gap-4 sm:grid-cols-3">
       {cards.map((c) => (
-        <Card key={c.title}>
+        <Card key={c.title} className="card-hover">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
               {c.title}
@@ -174,7 +174,7 @@ function SpendChart({ days }: { days: number }) {
               const y = padTop + chartH - (v / maxCost) * chartH;
               return (
                 <g key={v}>
-                  <line x1={padX} y1={y} x2={width - padX} y2={y} stroke="currentColor" strokeOpacity={0.1} />
+                  <line x1={padX} y1={y} x2={width - padX} y2={y} stroke="currentColor" strokeOpacity={0.15} />
                   <text x={padX - 4} y={y + 3} textAnchor="end" className="fill-muted-foreground" style={{ fontSize: 10 }}>
                     ${v.toFixed(2)}
                   </text>
@@ -191,7 +191,7 @@ function SpendChart({ days }: { days: number }) {
               const label = `${date.getMonth() + 1}/${date.getDate()}`;
               return (
                 <g key={p.t.day}>
-                  <circle cx={p.x} cy={p.y} r={3} className="fill-primary" />
+                  <circle cx={p.x} cy={p.y} r={4} className="fill-primary" />
                   <title>{`${label}: $${p.t.cost_usd.toFixed(2)} (${p.t.task_count} tasks)`}</title>
                   {trends!.length <= 31 && (
                     <text x={p.x} y={padTop + chartH + 16} textAnchor="middle" className="fill-muted-foreground" style={{ fontSize: 9 }}>
@@ -240,7 +240,7 @@ function CostByUserTable({ days }: { days: number }) {
           <div className="overflow-x-auto">
             <table className="w-full text-sm tabular-nums">
               <thead>
-                <tr className="border-b text-left text-muted-foreground">
+                <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
                   <th className="pb-2 pr-4 font-medium">User</th>
                   <th className="pb-2 pr-4 font-medium text-right">Input Tokens</th>
                   <th className="pb-2 pr-4 font-medium text-right">Output Tokens</th>
@@ -250,7 +250,7 @@ function CostByUserTable({ days }: { days: number }) {
               </thead>
               <tbody>
                 {data.map((row: CostGroupRow) => (
-                  <tr key={row.group_key} className="border-b border-border/50">
+                  <tr key={row.group_key} className="border-b border-border/50 hover:bg-primary/5 transition-colors duration-100">
                     <td className="py-2 pr-4 font-mono">{row.group_key}</td>
                     <td className="py-2 pr-4 text-right">{row.total_input_tokens.toLocaleString()}</td>
                     <td className="py-2 pr-4 text-right">{row.total_output_tokens.toLocaleString()}</td>
@@ -290,7 +290,7 @@ function CostByRepoTable({ days }: { days: number }) {
           <div className="overflow-x-auto">
             <table className="w-full text-sm tabular-nums">
               <thead>
-                <tr className="border-b text-left text-muted-foreground">
+                <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
                   <th className="pb-2 pr-4 font-medium">Repository</th>
                   <th className="pb-2 pr-4 font-medium text-right">Input Tokens</th>
                   <th className="pb-2 pr-4 font-medium text-right">Output Tokens</th>
@@ -300,7 +300,7 @@ function CostByRepoTable({ days }: { days: number }) {
               </thead>
               <tbody>
                 {data.map((row: CostGroupRow) => (
-                  <tr key={row.group_key} className="border-b border-border/50">
+                  <tr key={row.group_key} className="border-b border-border/50 hover:bg-primary/5 transition-colors duration-100">
                     <td className="py-2 pr-4 font-mono">{row.group_key}</td>
                     <td className="py-2 pr-4 text-right">{row.total_input_tokens.toLocaleString()}</td>
                     <td className="py-2 pr-4 text-right">{row.total_output_tokens.toLocaleString()}</td>
@@ -383,7 +383,7 @@ function BudgetsSection() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm tabular-nums">
               <thead>
-                <tr className="border-b text-left text-muted-foreground">
+                <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
                   <th className="pb-2 pr-4 font-medium">Scope</th>
                   <th className="pb-2 pr-4 font-medium">Value</th>
                   <th className="pb-2 pr-4 font-medium text-right">Monthly Limit</th>
@@ -394,7 +394,7 @@ function BudgetsSection() {
               </thead>
               <tbody>
                 {budgets.map((b) => (
-                  <tr key={b.id} className="border-b border-border/50">
+                  <tr key={b.id} className="border-b border-border/50 hover:bg-primary/5 transition-colors duration-100">
                     <td className="py-2 pr-4">
                       <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-medium">
                         {b.scope_type}

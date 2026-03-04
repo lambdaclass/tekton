@@ -21,6 +21,8 @@ const VIEW_STORAGE_KEY = 'tekton-task-view';
 
 const STATUS_OPTIONS = ['all', 'pending', 'creating_agent', 'cloning', 'running_claude', 'pushing', 'creating_preview', 'awaiting_followup', 'completed', 'failed'];
 
+const RUNNING_STATUSES = new Set(['running_claude', 'creating_agent', 'cloning', 'pushing', 'creating_preview']);
+
 function SkeletonCard() {
   return (
     <Card>
@@ -264,7 +266,7 @@ export default function Tasks() {
       </div>
 
       {showCreate && (
-        <Card className="mb-8">
+        <Card className="mb-8 glass-card">
           <CardHeader>
             <CardTitle>New Task</CardTitle>
           </CardHeader>
@@ -375,7 +377,7 @@ export default function Tasks() {
                   />
                 </div>
               </div>
-              <Button type="submit" disabled={createMutation.isPending || uploading}>
+              <Button type="submit" disabled={createMutation.isPending || uploading} className="btn-gradient">
                 {uploading ? 'Uploading images...' : createMutation.isPending ? 'Creating...' : 'Submit Task'}
               </Button>
               {createMutation.isError && (
@@ -463,7 +465,7 @@ export default function Tasks() {
                 to={`/tasks/${t.id}`}
                 ref={(el) => { cardRefs.current[index] = el; }}
               >
-                <Card className={`hover:border-muted-foreground/25 transition-colors ${index === selectedIndex ? 'ring-2 ring-ring' : ''}`}>
+                <Card className={`card-hover hover:border-muted-foreground/25 transition-colors ${index === selectedIndex ? 'ring-2 ring-ring' : ''} ${RUNNING_STATUSES.has(t.status) ? 'gradient-border' : ''}`}>
                   <CardContent className="py-4">
                     <div className="flex items-center justify-between mb-2">
                       <span className="font-mono text-sm text-muted-foreground">
@@ -545,7 +547,7 @@ export default function Tasks() {
                 key={t.id}
                 to={`/tasks/${t.id}`}
                 ref={(el) => { cardRefs.current[index] = el; }}
-                className={`flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-accent/50 transition-colors ${
+                className={`flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-primary/5 transition-all duration-150 ${
                   index === selectedIndex ? 'bg-accent/70' : ''
                 } ${index > 0 ? 'border-t border-border' : ''}`}
               >

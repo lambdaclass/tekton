@@ -87,7 +87,7 @@ function UsersSection({ queryClient }: { queryClient: ReturnType<typeof useQuery
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b text-left text-muted-foreground">
+                <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
                   <th className="pb-2 pr-4 font-medium">Login</th>
                   <th className="pb-2 pr-4 font-medium">Name</th>
                   <th className="pb-2 pr-4 font-medium">Role</th>
@@ -96,7 +96,7 @@ function UsersSection({ queryClient }: { queryClient: ReturnType<typeof useQuery
               </thead>
               <tbody>
                 {users.map((u) => (
-                  <tr key={u.login} className="border-b border-border/50">
+                  <tr key={u.login} className="border-b border-border/50 hover:bg-primary/5 transition-colors duration-100">
                     <td className="py-2 pr-4 font-mono">{u.login}</td>
                     <td className="py-2 pr-4">{u.name || '-'}</td>
                     <td className="py-2 pr-4">
@@ -280,7 +280,7 @@ function SecretsSection({ queryClient }: { queryClient: ReturnType<typeof useQue
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b text-left text-muted-foreground">
+                <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
                   <th className="pb-2 pr-4 font-medium">Name</th>
                   <th className="pb-2 pr-4 font-medium">Repo</th>
                   <th className="pb-2 pr-4 font-medium">Created By</th>
@@ -290,7 +290,7 @@ function SecretsSection({ queryClient }: { queryClient: ReturnType<typeof useQue
               </thead>
               <tbody>
                 {secrets.map((s) => (
-                  <tr key={s.id} className="border-b border-border/50">
+                  <tr key={s.id} className="border-b border-border/50 hover:bg-primary/5 transition-colors duration-100">
                     <td className="py-2 pr-4 font-mono">{s.name}</td>
                     <td className="py-2 pr-4">{s.repo}</td>
                     <td className="py-2 pr-4">{s.created_by ?? '-'}</td>
@@ -617,7 +617,7 @@ function PoliciesSection({ queryClient }: { queryClient: ReturnType<typeof useQu
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b text-left text-muted-foreground">
+                <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
                   <th className="pb-2 pr-4 font-medium">Repo</th>
                   <th className="pb-2 pr-4 font-medium">Protected Branches</th>
                   <th className="pb-2 pr-4 font-medium">Tools</th>
@@ -632,7 +632,7 @@ function PoliciesSection({ queryClient }: { queryClient: ReturnType<typeof useQu
                   const toolInfo = formatToolPolicy(p.allowed_tools);
                   const netInfo = formatNetworkPolicy(p.network_egress);
                   return (
-                    <tr key={p.id} className="border-b border-border/50">
+                    <tr key={p.id} className="border-b border-border/50 hover:bg-primary/5 transition-colors duration-100">
                       <td className="py-2 pr-4 font-mono">{p.repo}</td>
                       <td className="py-2 pr-4">
                         <div className="flex flex-wrap gap-1">
@@ -974,7 +974,7 @@ function OrgPoliciesSection({ queryClient }: { queryClient: ReturnType<typeof us
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b text-left text-muted-foreground">
+                <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
                   <th className="pb-2 pr-4 font-medium">Org</th>
                   <th className="pb-2 pr-4 font-medium">Protected Branches</th>
                   <th className="pb-2 pr-4 font-medium">Tools</th>
@@ -989,7 +989,7 @@ function OrgPoliciesSection({ queryClient }: { queryClient: ReturnType<typeof us
                   const toolInfo = formatToolPolicy(p.allowed_tools);
                   const netInfo = formatNetworkPolicy(p.network_egress);
                   return (
-                    <tr key={p.id} className="border-b border-border/50">
+                    <tr key={p.id} className="border-b border-border/50 hover:bg-primary/5 transition-colors duration-100">
                       <td className="py-2 pr-4 font-mono">{p.org}</td>
                       <td className="py-2 pr-4">
                         <div className="flex flex-wrap gap-1">

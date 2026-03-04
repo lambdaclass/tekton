@@ -206,10 +206,10 @@ export default function AuditLog() {
             <p className="text-muted-foreground text-sm">No events found.</p>
           ) : (
             <>
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto rounded-lg border border-border">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b text-left text-muted-foreground">
+                    <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
                       <th className="pb-2 pr-4 font-medium">Timestamp</th>
                       <th className="pb-2 pr-4 font-medium">Event Type</th>
                       <th className="pb-2 pr-4 font-medium">Actor</th>
@@ -281,7 +281,7 @@ function AuditRow({
 
   return (
     <>
-      <tr className="border-b border-border/50">
+      <tr className="border-b border-border/50 hover:bg-primary/5 transition-colors duration-100">
         <td className="py-2 pr-4 whitespace-nowrap">
           {new Date(entry.created_at).toLocaleString()}
         </td>
@@ -316,7 +316,7 @@ function AuditRow({
         </td>
       </tr>
       {isExpanded && entry.detail && (
-        <tr className="border-b border-border/50">
+        <tr className="border-b border-border/50 hover:bg-primary/5 transition-colors duration-100">
           <td colSpan={5} className="py-2 px-4">
             <pre className="bg-muted rounded-md p-3 text-xs overflow-x-auto whitespace-pre-wrap">
               {JSON.stringify(entry.detail, null, 2)}

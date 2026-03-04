@@ -22,9 +22,9 @@ function parseDiff(raw: string): FileDiff[] {
 }
 
 function lineClass(line: string): string {
-  if (line.startsWith('+')) return 'bg-green-950/50 text-green-300';
-  if (line.startsWith('-')) return 'bg-red-950/50 text-red-300';
-  if (line.startsWith('@@')) return 'bg-blue-950/40 text-blue-400';
+  if (line.startsWith('+')) return 'bg-emerald-500/10 text-emerald-300';
+  if (line.startsWith('-')) return 'bg-red-500/10 text-red-300';
+  if (line.startsWith('@@')) return 'bg-primary/10 text-primary/70';
   return 'text-muted-foreground';
 }
 
@@ -32,10 +32,10 @@ export default function DiffViewer({ diff }: { diff: string }) {
   const files = parseDiff(diff);
 
   return (
-    <div className="overflow-auto max-h-[600px] text-xs font-mono">
+    <div className="overflow-auto max-h-[600px] text-xs font-mono rounded-lg border border-border">
       {files.map((file, fi) => (
         <div key={fi}>
-          <div className="px-3 py-1.5 bg-muted/50 border-b border-border text-sm font-sans font-medium truncate">
+          <div className="px-4 py-2 bg-card border-b border-border text-sm font-sans font-medium truncate">
             {file.filename}
           </div>
           <pre className="m-0 p-0 leading-5">

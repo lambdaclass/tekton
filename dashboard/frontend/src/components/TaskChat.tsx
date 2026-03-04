@@ -158,14 +158,14 @@ export default function TaskChat({ taskId, currentUserEmail, previewUrl, taskSta
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {previewUrl && (
-          <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center gap-2 text-sm">
-            <ExternalLink className="size-4 text-blue-400 shrink-0" />
+          <div className="p-3 rounded-lg bg-primary/15 border border-primary/30 flex items-center gap-2 text-sm">
+            <ExternalLink className="size-4 text-primary shrink-0" />
             <span className="text-muted-foreground">Check the current result:</span>
             <a
               href={previewUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-blue-400 hover:text-blue-300 font-medium truncate"
+              className="text-primary hover:text-primary/80 font-medium truncate"
             >
               {previewUrl}
             </a>
@@ -194,8 +194,8 @@ export default function TaskChat({ taskId, currentUserEmail, previewUrl, taskSta
               <div
                 className={`rounded-lg border p-3 text-sm max-w-[85%] ${
                   msg.sender === currentUserEmail
-                    ? 'bg-primary/15 border-primary/25'
-                    : 'bg-card border-border'
+                    ? 'bg-gradient-to-r from-primary/15 to-primary/5 border-primary/20'
+                    : 'bg-card/80 backdrop-blur-sm border-border'
                 }`}
               >
                 <div className={`flex items-center gap-2 mb-1 ${msg.sender === currentUserEmail ? 'justify-end' : 'justify-start'}`}>
@@ -239,7 +239,7 @@ export default function TaskChat({ taskId, currentUserEmail, previewUrl, taskSta
       </div>
 
       {/* Input area */}
-      <div className="border-t border-border p-4">
+      <div className="border-t border-border p-4 bg-card/60 backdrop-blur-sm">
         {chatImagePreviews.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
             {chatImagePreviews.map((preview, i) => (

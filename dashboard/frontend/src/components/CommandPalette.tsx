@@ -67,8 +67,8 @@ export default function CommandPalette() {
       open={open}
       onOpenChange={setOpen}
       label="Command palette"
-      overlayClassName="fixed inset-0 z-50 bg-black/50"
-      contentClassName="fixed top-[20%] left-1/2 z-50 w-full max-w-lg -translate-x-1/2 rounded-lg border border-border bg-card shadow-2xl"
+      overlayClassName="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm"
+      contentClassName="fixed top-[20%] left-1/2 z-50 w-full max-w-lg -translate-x-1/2 rounded-lg border border-border bg-card/90 backdrop-blur-xl shadow-2xl"
     >
       <div className="flex items-center gap-2 border-b border-border px-3">
         <Search className="size-4 shrink-0 text-muted-foreground" />
@@ -92,7 +92,7 @@ export default function CommandPalette() {
               key={p.path}
               value={p.label}
               onSelect={() => go(p.path)}
-              className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-foreground aria-selected:bg-accent"
+              className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-foreground aria-selected:bg-primary/10"
             >
               <p.icon className="size-4 text-muted-foreground" />
               {p.label}
@@ -104,7 +104,7 @@ export default function CommandPalette() {
                 key={p.path}
                 value={p.label}
                 onSelect={() => go(p.path)}
-                className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-foreground aria-selected:bg-accent"
+                className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-foreground aria-selected:bg-primary/10"
               >
                 <p.icon className="size-4 text-muted-foreground" />
                 {p.label}
@@ -121,7 +121,7 @@ export default function CommandPalette() {
           <CommandPrimitive.Item
             value="Create new task"
             onSelect={() => go('/tasks?create=1')}
-            className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-foreground aria-selected:bg-accent"
+            className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-foreground aria-selected:bg-primary/10"
           >
             <Plus className="size-4 text-muted-foreground" />
             Create new task
@@ -144,7 +144,7 @@ export default function CommandPalette() {
                     value={`${t.id} ${taskLabel(t)} ${t.repo}`}
                     keywords={[t.status, t.repo, t.name ?? '', t.prompt]}
                     onSelect={() => go(`/tasks/${t.id}`)}
-                    className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-foreground aria-selected:bg-accent"
+                    className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-foreground aria-selected:bg-primary/10"
                   >
                     {StatusIcon && (
                       <StatusIcon
