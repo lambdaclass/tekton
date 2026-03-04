@@ -127,21 +127,34 @@ function SpendChart({ days }: { days: number }) {
     queryFn: () => getCostTrends(days),
   });
 
-  const maxCost = trends?.length
+  const rawMax = trends?.length
     ? Math.max(...trends.map((t: CostTrend) => t.cost_usd), 0.01)
     : 1;
+
+  // Round max up to a nice number for clean tick labels
+  function niceMax(v: number): number {
+    if (v <= 0) return 1;
+    const mag = Math.pow(10, Math.floor(Math.log10(v)));
+    const norm = v / mag;
+    if (norm <= 1) return mag;
+    if (norm <= 2) return 2 * mag;
+    if (norm <= 5) return 5 * mag;
+    return 10 * mag;
+  }
+  const maxCost = niceMax(rawMax);
 
   // SVG dimensions
   const width = 800;
   const height = 200;
-  const padX = 40;
+  const padLeft = 60;
+  const padRight = 20;
   const padTop = 10;
   const padBottom = 30;
-  const chartW = width - padX * 2;
+  const chartW = width - padLeft - padRight;
   const chartH = height - padTop - padBottom;
 
   const points = trends?.map((t: CostTrend, i: number) => {
-    const x = padX + (trends.length === 1 ? chartW / 2 : (i / (trends.length - 1)) * chartW);
+    const x = padLeft + (trends.length === 1 ? chartW / 2 : (i / (trends.length - 1)) * chartW);
     const y = padTop + chartH - (t.cost_usd / maxCost) * chartH;
     return { x, y, t };
   }) ?? [];
@@ -151,8 +164,9 @@ function SpendChart({ days }: { days: number }) {
     ? ` L${points[points.length - 1].x},${padTop + chartH} L${points[0].x},${padTop + chartH} Z`
     : '');
 
-  // Y-axis ticks
+  // Y-axis ticks — clean round numbers
   const yTicks = [0, maxCost / 2, maxCost];
+  const fmtTick = (v: number) => v >= 1 ? `$${Math.round(v)}` : `$${v.toFixed(2)}`;
 
   return (
     <Card>
@@ -168,15 +182,15 @@ function SpendChart({ days }: { days: number }) {
         ) : !trends?.length ? (
           <p className="text-muted-foreground text-sm">No data for this period.</p>
         ) : (
-          <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-48" preserveAspectRatio="none">
+          <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-48">
             {/* Grid lines */}
             {yTicks.map((v) => {
               const y = padTop + chartH - (v / maxCost) * chartH;
               return (
                 <g key={v}>
-                  <line x1={padX} y1={y} x2={width - padX} y2={y} stroke="currentColor" strokeOpacity={0.15} />
-                  <text x={padX - 4} y={y + 3} textAnchor="end" className="fill-muted-foreground" style={{ fontSize: 10 }}>
-                    ${v.toFixed(2)}
+                  <line x1={padLeft} y1={y} x2={width - padRight} y2={y} stroke="currentColor" strokeOpacity={0.15} />
+                  <text x={padLeft - 8} y={y + 4} textAnchor="end" className="fill-muted-foreground" style={{ fontSize: 11 }}>
+                    {fmtTick(v)}
                   </text>
                 </g>
               );
