@@ -2673,13 +2673,12 @@ async fn recover_to_followup(
     } = ctx;
 
     // Look up agent_name from DB
-    let agent_name = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT agent_name FROM tasks WHERE id = $1",
-    )
-    .bind(task_id)
-    .fetch_one(db)
-    .await?
-    .ok_or_else(|| AppError::Internal("No agent_name for recovered task".into()))?;
+    let agent_name =
+        sqlx::query_scalar::<_, Option<String>>("SELECT agent_name FROM tasks WHERE id = $1")
+            .bind(task_id)
+            .fetch_one(db)
+            .await?
+            .ok_or_else(|| AppError::Internal("No agent_name for recovered task".into()))?;
 
     // Check container liveness
     if shell::agent_ip_public(&agent_name).is_err() {
@@ -2732,12 +2731,11 @@ async fn recover_to_followup(
     }
 
     // Skip all messages that existed before recovery so we don't replay them
-    let max_msg_id: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(MAX(id), 0) FROM task_messages WHERE task_id = $1",
-    )
-    .bind(task_id)
-    .fetch_one(db)
-    .await?;
+    let max_msg_id: i64 =
+        sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM task_messages WHERE task_id = $1")
+            .bind(task_id)
+            .fetch_one(db)
+            .await?;
 
     // Enter follow-up loop — branch already pushed, preview may already exist
     let mut branch_pushed = true;
@@ -2934,7 +2932,9 @@ pub async fn recover_interrupted_tasks(
                     created_by.clone(),
                 );
                 tokio::spawn(async move {
-                    tracing::info!("Recovering running_claude task {task_id} (→ awaiting_followup)");
+                    tracing::info!(
+                        "Recovering running_claude task {task_id} (→ awaiting_followup)"
+                    );
                     let ctx = PipelineCtx {
                         config: &cfg,
                         db: &db2,
@@ -2969,10 +2969,7 @@ pub async fn recover_interrupted_tasks(
                 });
             }
             "pending" => {
-                tracing::info!(
-                    "Task {} was pending at restart, marking failed",
-                    task.id
-                );
+                tracing::info!("Task {} was pending at restart, marking failed", task.id);
                 let _ = update_task_status(
                     &db,
                     &task.id,
