@@ -68,7 +68,7 @@ export default function Home() {
               return (
                 <Link key={t.id} to={`/tasks/${t.id}`} className="flex items-center gap-4 px-4 py-3 hover:bg-secondary/40 transition-colors">
                   <div className="flex-1 min-w-0">
-                    <span className="text-sm font-medium">{t.name || t.id.slice(0, 8)}</span>
+                    <span className="text-sm font-medium truncate">{t.prompt.slice(0, 80)}</span>
                     <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground">
                       <span>{t.repo}</span>
                       <span>{timeAgo(t.created_at)}</span>
@@ -101,7 +101,7 @@ export default function Home() {
               return (
                 <Link key={t.id} to={`/tasks/${t.id}`} className="flex items-center gap-4 px-4 py-3 hover:bg-secondary/40 transition-colors">
                   <div className="flex-1 min-w-0">
-                    <span className="text-sm font-medium">{t.name || t.prompt.slice(0, 60)}</span>
+                    <span className="text-sm font-medium truncate">{t.prompt.slice(0, 80)}</span>
                     <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground tabular-nums">
                       <span>{t.repo}</span>
                       {t.total_cost_usd ? <span>{formatCost(t.total_cost_usd)}</span> : null}

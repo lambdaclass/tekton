@@ -474,9 +474,6 @@ export default function Tasks() {
                         {t.status}
                       </Badge>
                     </div>
-                    {t.name && (
-                      <p className="text-sm font-medium mb-1">{t.name}</p>
-                    )}
                     <p className="text-sm line-clamp-2 mb-2 text-muted-foreground">{t.prompt}</p>
                     <div className="flex items-center gap-4 text-xs text-muted-foreground min-w-0">
                       <span className="shrink-0">{t.repo}</span>

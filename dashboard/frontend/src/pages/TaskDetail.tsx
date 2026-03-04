@@ -6,6 +6,7 @@ import {
   RotateCcw,
   GitPullRequest,
   ExternalLink,
+  Globe,
   ShieldAlert,
   Activity,
   ScrollText,
@@ -53,6 +54,7 @@ export default function TaskDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [connected, setConnected] = useState(false);
+  const [showActivity, setShowActivity] = useState(false);
 
   const { data: task } = useQuery({
     queryKey: ['task', id],
@@ -167,14 +169,6 @@ export default function TaskDetail() {
               Parent: <span className="font-mono">{task.parent_task_id.slice(0, 8)}</span>
             </Link>
           )}
-          {task?.preview_url && (
-            <a href={task.preview_url} target="_blank" rel="noopener noreferrer">
-              <Button size="sm" className="gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm">
-                <ExternalLink className="size-3.5" />
-                Preview
-              </Button>
-            </a>
-          )}
           {task?.status === 'awaiting_followup' && !isViewer && (
             <Button
               size="sm"
@@ -261,10 +255,6 @@ export default function TaskDetail() {
               )}
             </TabsTrigger>
           )}
-          <TabsTrigger value="activity" className="gap-1.5">
-            <Activity className="size-3.5" />
-            Activity
-          </TabsTrigger>
           <TabsTrigger value="logs" className="gap-1.5">
             <ScrollText className="size-3.5" />
             Logs
@@ -278,15 +268,21 @@ export default function TaskDetail() {
               </span>
             )}
           </TabsTrigger>
+          {task?.preview_url && (
+            <TabsTrigger value="preview" className="gap-1.5">
+              <Globe className="size-3.5" />
+              Preview
+            </TabsTrigger>
+          )}
           <TabsTrigger value="info" className="gap-1.5">
             <Info className="size-3.5" />
             Info
           </TabsTrigger>
         </TabsList>
 
-        {/* Conversation tab */}
+        {/* Conversation tab with collapsible activity sidebar */}
         {showChat && (
-          <TabsContent value="conversation" className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden">
+          <TabsContent value="conversation" className="flex-1 flex min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden">
             <div className="flex-1 flex flex-col min-h-0 max-w-3xl mx-auto w-full">
               <TaskChat
                 taskId={id!}
@@ -294,13 +290,24 @@ export default function TaskDetail() {
                 taskStatus={task!.status}
               />
             </div>
+            {/* Activity sidebar toggle */}
+            <div className="flex shrink-0 border-l border-border">
+              <button
+                onClick={() => setShowActivity(!showActivity)}
+                className="flex items-center justify-center w-8 hover:bg-muted/50 transition-colors"
+                title={showActivity ? 'Hide activity' : 'Show activity'}
+              >
+                <Activity className={`size-4 text-muted-foreground ${showActivity ? 'text-foreground' : ''}`} />
+              </button>
+              {showActivity && (
+                <div className="w-72 overflow-y-auto p-3 border-l border-border bg-card/50">
+                  <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-3">Activity</h3>
+                  <ActivityTimeline actions={actions} />
+                </div>
+              )}
+            </div>
           </TabsContent>
         )}
-
-        {/* Activity tab — clean timeline only */}
-        <TabsContent value="activity" className="flex-1 overflow-y-auto rounded-b-lg border border-t-0 border-border bg-card p-4">
-          <ActivityTimeline actions={actions} />
-        </TabsContent>
 
         {/* Logs tab — forceMount keeps the WebSocket alive across tab switches */}
         <TabsContent value="logs" forceMount className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden data-[state=inactive]:hidden">
@@ -320,6 +327,30 @@ export default function TaskDetail() {
             </div>
           )}
         </TabsContent>
+
+        {/* Preview tab — embedded iframe of the deployed preview */}
+        {task?.preview_url && (
+          <TabsContent value="preview" className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-card/50">
+              <span className="text-sm text-muted-foreground truncate">{task.preview_url}</span>
+              <a
+                href={task.preview_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-sm text-blue-600 dark:text-blue-400 hover:underline shrink-0 ml-3"
+              >
+                <ExternalLink className="size-3.5" />
+                Open in new tab
+              </a>
+            </div>
+            <iframe
+              src={task.preview_url}
+              className="flex-1 w-full border-0"
+              title="Preview"
+              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+            />
+          </TabsContent>
+        )}
 
         {/* Info tab — prompt, subtasks, images, metadata */}
         <TabsContent value="info" className="flex-1 overflow-y-auto rounded-b-lg border border-t-0 border-border bg-card p-4">
