@@ -382,7 +382,7 @@ export const getAuditLog = (params?: AuditLogParams) => {
 
 // AI Settings
 export const getAiSettings = () =>
-  apiFetch<{ provider: string | null; has_api_key: boolean; model: string | null }>('/api/settings/ai');
+  apiFetch<{ provider: string | null; has_api_key: boolean; model: string | null; has_global_fallback?: boolean }>('/api/settings/ai');
 export const setAiSettings = (data: { provider: string; api_key?: string; model?: string }) =>
   apiFetch<{ provider: string | null; has_api_key: boolean; model: string | null }>('/api/settings/ai', {
     method: 'PUT',
@@ -390,6 +390,17 @@ export const setAiSettings = (data: { provider: string; api_key?: string; model?
   });
 export const deleteAiSettings = () =>
   apiFetch<{ deleted: boolean }>('/api/settings/ai', { method: 'DELETE' });
+
+// Admin: Global AI Settings
+export const getGlobalAiSettings = () =>
+  apiFetch<{ provider: string | null; has_api_key: boolean; model: string | null }>('/api/admin/settings/ai');
+export const setGlobalAiSettings = (data: { provider: string; api_key?: string; model?: string }) =>
+  apiFetch<{ provider: string | null; has_api_key: boolean; model: string | null }>('/api/admin/settings/ai', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+export const deleteGlobalAiSettings = () =>
+  apiFetch<{ deleted: boolean }>('/api/admin/settings/ai', { method: 'DELETE' });
 
 // WebSocket helpers
 export function connectPreviewLogs(slug: string): WebSocket {

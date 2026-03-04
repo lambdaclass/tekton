@@ -121,6 +121,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/admin/budgets", post(cost::create_budget))
         .route("/admin/budgets/{id}", put(cost::update_budget))
         .route("/admin/budgets/{id}", delete(cost::delete_budget))
+        // Admin: Global AI Settings
+        .route("/admin/settings/ai", get(settings::get_global_ai_settings))
+        .route("/admin/settings/ai", put(settings::put_global_ai_settings))
+        .route(
+            "/admin/settings/ai",
+            delete(settings::delete_global_ai_settings),
+        )
         // Admin: Audit Log
         .route("/admin/audit-log", get(audit::list_audit_log))
         // Settings
