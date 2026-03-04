@@ -2,7 +2,8 @@ import { useEffect, useRef, useCallback } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getMe, logout, listTasks } from '@/lib/api';
-import { LayoutDashboard, Container, BrainCircuit, LogOut, Shield, SlidersHorizontal, DollarSign, ScrollText } from 'lucide-react';
+import { LayoutDashboard, Container, BrainCircuit, LogOut, Shield, SlidersHorizontal, DollarSign, ScrollText, Sun, Moon } from 'lucide-react';
+import { useTheme } from '@/hooks/use-theme';
 import { Toaster, toast } from 'sonner';
 import CommandPalette from '@/components/CommandPalette';
 import {
@@ -163,6 +164,8 @@ export default function Layout() {
     );
   }
 
+  const { theme, toggleTheme } = useTheme();
+
   const handleLogout = async () => {
     await logout();
     queryClient.clear();
@@ -272,6 +275,12 @@ export default function Layout() {
                 <Badge variant="outline" className="ml-auto text-[10px] px-1.5 py-0">
                   {user.role}
                 </Badge>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton tooltip={theme === 'dark' ? 'Light mode' : 'Dark mode'} onClick={toggleTheme}>
+                {theme === 'dark' ? <Sun /> : <Moon />}
+                <span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>

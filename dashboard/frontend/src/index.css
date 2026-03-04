@@ -77,15 +77,63 @@ code, pre, kbd, samp, .font-mono {
 }
 
 /*
- * Palette: warm neutrals, restrained.
- * Inspired by editorial design (FT, Bloomberg).
- * No neon, no gradients, no glow.
+ * Light mode (default): warm cream, editorial.
  */
 :root {
-  color-scheme: dark;
+  color-scheme: light;
   --radius: 0.5rem;
 
-  /* Surfaces — warm charcoal, not pure black */
+  /* Surfaces — warm cream */
+  --background: oklch(0.97 0.005 80);
+  --foreground: oklch(0.15 0.004 250);
+  --card: oklch(0.99 0.003 80);
+  --card-foreground: oklch(0.15 0.004 250);
+  --popover: oklch(0.99 0.003 80);
+  --popover-foreground: oklch(0.15 0.004 250);
+
+  /* Primary — dark for CTA */
+  --primary: oklch(0.16 0.005 250);
+  --primary-foreground: oklch(0.97 0.005 80);
+
+  /* Secondary / muted / accent — warm light grays */
+  --secondary: oklch(0.93 0.005 80);
+  --secondary-foreground: oklch(0.25 0.005 250);
+  --muted: oklch(0.93 0.005 80);
+  --muted-foreground: oklch(0.45 0.01 250);
+  --accent: oklch(0.93 0.005 80);
+  --accent-foreground: oklch(0.15 0.004 250);
+
+  --destructive: oklch(0.50 0.18 25);
+
+  /* Borders — warm, visible */
+  --border: oklch(0.88 0.005 80);
+  --input: oklch(0.88 0.005 80);
+  --ring: oklch(0.45 0.01 250);
+
+  /* Charts */
+  --chart-1: oklch(0.50 0.10 250);
+  --chart-2: oklch(0.50 0.10 165);
+  --chart-3: oklch(0.55 0.10 80);
+  --chart-4: oklch(0.45 0.10 310);
+  --chart-5: oklch(0.45 0.12 25);
+
+  /* Sidebar — slightly cooler than main bg */
+  --sidebar: oklch(0.95 0.004 80);
+  --sidebar-foreground: oklch(0.15 0.004 250);
+  --sidebar-primary: oklch(0.15 0.004 250);
+  --sidebar-primary-foreground: oklch(0.97 0.005 80);
+  --sidebar-accent: oklch(0.91 0.005 80);
+  --sidebar-accent-foreground: oklch(0.15 0.004 250);
+  --sidebar-border: oklch(0.88 0.005 80);
+  --sidebar-ring: oklch(0.45 0.01 250);
+}
+
+/*
+ * Dark mode: warm charcoal, same as previous default.
+ */
+.dark {
+  color-scheme: dark;
+
   --background: oklch(0.145 0.004 250);
   --foreground: oklch(0.90 0.01 80);
   --card: oklch(0.18 0.005 250);
@@ -93,11 +141,9 @@ code, pre, kbd, samp, .font-mono {
   --popover: oklch(0.18 0.005 250);
   --popover-foreground: oklch(0.90 0.01 80);
 
-  /* Primary — warm off-white for CTA, understated */
   --primary: oklch(0.92 0.01 80);
   --primary-foreground: oklch(0.16 0.005 250);
 
-  /* Secondary / muted / accent — all the same warm gray family */
   --secondary: oklch(0.22 0.005 250);
   --secondary-foreground: oklch(0.80 0.008 80);
   --muted: oklch(0.22 0.005 250);
@@ -107,19 +153,16 @@ code, pre, kbd, samp, .font-mono {
 
   --destructive: oklch(0.55 0.15 25);
 
-  /* Borders — solid, not transparent overlay */
   --border: oklch(0.26 0.005 250);
   --input: oklch(0.26 0.005 250);
   --ring: oklch(0.55 0.01 250);
 
-  /* Charts — desaturated, tasteful */
   --chart-1: oklch(0.60 0.08 250);
   --chart-2: oklch(0.60 0.08 165);
   --chart-3: oklch(0.65 0.08 80);
   --chart-4: oklch(0.55 0.08 310);
   --chart-5: oklch(0.55 0.10 25);
 
-  /* Sidebar — slightly darker than cards */
   --sidebar: oklch(0.155 0.004 250);
   --sidebar-foreground: oklch(0.90 0.01 80);
   --sidebar-primary: oklch(0.90 0.01 80);
@@ -175,9 +218,15 @@ code, pre, kbd, samp, .font-mono {
 /* Scrollbar — thin, unobtrusive */
 * {
   scrollbar-width: thin;
-  scrollbar-color: oklch(0.30 0.005 250) transparent;
+  scrollbar-color: oklch(0.82 0.005 80) transparent;
 }
 *::-webkit-scrollbar { width: 6px; height: 6px; }
 *::-webkit-scrollbar-track { background: transparent; }
-*::-webkit-scrollbar-thumb { background: oklch(0.30 0.005 250); border-radius: 3px; }
-*::-webkit-scrollbar-thumb:hover { background: oklch(0.38 0.005 250); }
+*::-webkit-scrollbar-thumb { background: oklch(0.82 0.005 80); border-radius: 3px; }
+*::-webkit-scrollbar-thumb:hover { background: oklch(0.74 0.005 80); }
+
+.dark * {
+  scrollbar-color: oklch(0.30 0.005 250) transparent;
+}
+.dark *::-webkit-scrollbar-thumb { background: oklch(0.30 0.005 250); }
+.dark *::-webkit-scrollbar-thumb:hover { background: oklch(0.38 0.005 250); }

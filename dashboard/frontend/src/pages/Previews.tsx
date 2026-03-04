@@ -49,10 +49,11 @@ export default function Previews() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">Previews</h1>
+      <div className="flex items-center justify-between mb-10">
+        <h1 className="text-xl font-medium tracking-tight">Previews</h1>
         <Button
           variant={showCreate ? 'outline' : 'default'}
+          size="sm"
           onClick={() => setShowCreate(!showCreate)}
         >
           {showCreate ? 'Cancel' : 'Create Preview'}
@@ -111,47 +112,44 @@ export default function Previews() {
       )}
 
       {isLoading ? (
-        <p className="text-muted-foreground">Loading previews...</p>
+        <p className="text-sm text-muted-foreground py-8 text-center">Loading previews...</p>
       ) : !previews?.length ? (
-        <p className="text-muted-foreground">No active previews.</p>
+        <p className="text-sm text-muted-foreground py-8 text-center">No active previews.</p>
       ) : (
-        <div className="space-y-3">
+        <div className="divide-y divide-border border rounded-md">
           {previews.map((p) => (
-            <Card key={p.slug}>
-              <CardContent className="flex items-center justify-between py-4">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-3">
-                    <span className="font-mono font-semibold">{p.slug}</span>
-                    <Badge variant="secondary">{p.repo}</Badge>
-                  </div>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    {p.repo} / {p.branch}
-                  </p>
+            <div key={p.slug} className="flex items-center justify-between px-4 py-3 hover:bg-secondary/40 transition-colors">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-3">
+                  <span className="font-mono text-sm font-medium">{p.slug}</span>
+                  <Badge variant="outline">{p.repo}</Badge>
+                  <Badge variant="outline">{p.branch}</Badge>
                 </div>
-                <div className="flex items-center gap-2 ml-4">
-                  <Button variant="outline" size="sm" asChild>
-                    <a href={p.url} target="_blank" rel="noopener noreferrer">
-                      Open
-                    </a>
-                  </Button>
-                  <Button variant="secondary" size="sm" asChild>
-                    <Link to={`/previews/${p.slug}`}>Logs</Link>
-                  </Button>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => {
-                      if (confirm(`Destroy preview "${p.slug}"?`)) {
-                        destroyMutation.mutate(p.slug);
-                      }
-                    }}
-                    disabled={destroyMutation.isPending}
-                  >
-                    Destroy
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
+              </div>
+              <div className="flex items-center gap-2 ml-4">
+                <Button variant="outline" size="sm" asChild>
+                  <a href={p.url} target="_blank" rel="noopener noreferrer">
+                    Open
+                  </a>
+                </Button>
+                <Button variant="outline" size="sm" asChild>
+                  <Link to={`/previews/${p.slug}`}>Logs</Link>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-destructive hover:text-destructive"
+                  onClick={() => {
+                    if (confirm(`Destroy preview "${p.slug}"?`)) {
+                      destroyMutation.mutate(p.slug);
+                    }
+                  }}
+                  disabled={destroyMutation.isPending}
+                >
+                  Destroy
+                </Button>
+              </div>
+            </div>
           ))}
         </div>
       )}

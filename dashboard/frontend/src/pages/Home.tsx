@@ -37,7 +37,7 @@ export default function Home() {
   const runningTasks = (allData?.tasks ?? []).filter((t) => ACTIVE_STATUSES.has(t.status));
 
   return (
-    <div className="max-w-3xl">
+    <div>
       {/* Header */}
       <div className="flex items-baseline justify-between mb-10">
         <div>
