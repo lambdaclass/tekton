@@ -495,7 +495,7 @@ export default function Tasks() {
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={(e) => e.stopPropagation()}
-                          className="text-green-400 hover:text-green-300 truncate min-w-0"
+                          className="text-blue-600 dark:text-blue-400 hover:text-blue-500 dark:hover:text-blue-300 truncate min-w-0"
                           title={t.preview_url}
                         >
                           {t.preview_url.replace(/^https?:\/\//, '')}
