@@ -45,7 +45,7 @@ export default function ActivityTimeline({ actions }: ActivityTimelineProps) {
   return (
     <div className="relative pl-6">
       {/* Vertical line */}
-      <div className="absolute left-[11px] top-2 bottom-2 w-px bg-gradient-to-b from-primary/20 via-border to-transparent" />
+      <div className="absolute left-[11px] top-2 bottom-2 w-px bg-border" />
 
       <div className="space-y-1">
         {actions.map((action) => {
@@ -56,10 +56,10 @@ export default function ActivityTimeline({ actions }: ActivityTimelineProps) {
             (action.tool_name ? `${meta.label}: ${action.tool_name}` : meta.label);
 
           return (
-            <div key={action.id} className="relative flex items-start gap-3 py-1.5 hover:bg-primary/5 rounded-md transition-colors duration-150 px-2">
+            <div key={action.id} className="relative flex items-start gap-3 py-1.5 hover:bg-secondary/40 rounded-md transition-colors duration-150 px-2">
               {/* Icon dot */}
               <div
-                className={`absolute -left-6 mt-0.5 flex size-[24px] items-center justify-center rounded-full bg-primary/10 border border-border ${meta.color}`}
+                className={`absolute -left-6 mt-0.5 flex size-[24px] items-center justify-center rounded-full bg-secondary border border-border ${meta.color}`}
               >
                 <Icon className="size-3" />
               </div>

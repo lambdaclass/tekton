@@ -101,7 +101,7 @@ function SummaryCards({ days }: { days: number }) {
   return (
     <div className="grid gap-4 sm:grid-cols-3">
       {cards.map((c) => (
-        <Card key={c.title} className="card-hover">
+        <Card key={c.title} className="">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
               {c.title}
@@ -250,7 +250,7 @@ function CostByUserTable({ days }: { days: number }) {
               </thead>
               <tbody>
                 {data.map((row: CostGroupRow) => (
-                  <tr key={row.group_key} className="border-b border-border/50 hover:bg-primary/5 transition-colors duration-100">
+                  <tr key={row.group_key} className="border-b border-border/50 hover:bg-secondary/40 transition-colors duration-100">
                     <td className="py-2 pr-4 font-mono">{row.group_key}</td>
                     <td className="py-2 pr-4 text-right">{row.total_input_tokens.toLocaleString()}</td>
                     <td className="py-2 pr-4 text-right">{row.total_output_tokens.toLocaleString()}</td>
@@ -300,7 +300,7 @@ function CostByRepoTable({ days }: { days: number }) {
               </thead>
               <tbody>
                 {data.map((row: CostGroupRow) => (
-                  <tr key={row.group_key} className="border-b border-border/50 hover:bg-primary/5 transition-colors duration-100">
+                  <tr key={row.group_key} className="border-b border-border/50 hover:bg-secondary/40 transition-colors duration-100">
                     <td className="py-2 pr-4 font-mono">{row.group_key}</td>
                     <td className="py-2 pr-4 text-right">{row.total_input_tokens.toLocaleString()}</td>
                     <td className="py-2 pr-4 text-right">{row.total_output_tokens.toLocaleString()}</td>
@@ -394,7 +394,7 @@ function BudgetsSection() {
               </thead>
               <tbody>
                 {budgets.map((b) => (
-                  <tr key={b.id} className="border-b border-border/50 hover:bg-primary/5 transition-colors duration-100">
+                  <tr key={b.id} className="border-b border-border/50 hover:bg-secondary/40 transition-colors duration-100">
                     <td className="py-2 pr-4">
                       <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-medium">
                         {b.scope_type}

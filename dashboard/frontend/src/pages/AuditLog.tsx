@@ -281,7 +281,7 @@ function AuditRow({
 
   return (
     <>
-      <tr className="border-b border-border/50 hover:bg-primary/5 transition-colors duration-100">
+      <tr className="border-b border-border/50 hover:bg-secondary/40 transition-colors duration-100">
         <td className="py-2 pr-4 whitespace-nowrap">
           {new Date(entry.created_at).toLocaleString()}
         </td>
@@ -316,7 +316,7 @@ function AuditRow({
         </td>
       </tr>
       {isExpanded && entry.detail && (
-        <tr className="border-b border-border/50 hover:bg-primary/5 transition-colors duration-100">
+        <tr className="border-b border-border/50 hover:bg-secondary/40 transition-colors duration-100">
           <td colSpan={5} className="py-2 px-4">
             <pre className="bg-muted rounded-md p-3 text-xs overflow-x-auto whitespace-pre-wrap">
               {JSON.stringify(entry.detail, null, 2)}

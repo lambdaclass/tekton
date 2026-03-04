@@ -156,7 +156,7 @@ export default function TaskDetail() {
           )}
           {task?.preview_url && (
             <a href={task.preview_url} target="_blank" rel="noopener noreferrer">
-              <Badge variant="outline" className="gap-1 cursor-pointer hover:bg-primary/10 hover:border-primary/30 transition-colors text-xs">
+              <Badge variant="outline" className="gap-1 cursor-pointer hover:bg-secondary transition-colors text-xs">
                 <ExternalLink className="size-3" />
                 Preview
               </Badge>
@@ -234,7 +234,7 @@ export default function TaskDetail() {
       >
         {/* Left pane: Chat */}
         {showChat && (
-          <div className="min-h-0 overflow-hidden rounded-lg border border-border bg-card/60">
+          <div className="min-h-0 overflow-hidden rounded-lg border border-border bg-card">
             <TaskChat
               taskId={id!}
               currentUserEmail={me!.login}
@@ -271,17 +271,17 @@ export default function TaskDetail() {
           </TabsList>
 
           {/* Activity tab — clean timeline only */}
-          <TabsContent value="activity" className="flex-1 overflow-y-auto rounded-b-lg border border-t-0 border-border bg-card/40 p-4">
+          <TabsContent value="activity" className="flex-1 overflow-y-auto rounded-b-lg border border-t-0 border-border bg-card p-4">
             <ActivityTimeline actions={actions} />
           </TabsContent>
 
           {/* Logs tab */}
-          <TabsContent value="logs" className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card/40 overflow-hidden">
+          <TabsContent value="logs" className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden">
             <LogsTabs taskId={id!} onConnectionChange={onConnectionChange} />
           </TabsContent>
 
           {/* Diff tab */}
-          <TabsContent value="diff" className="flex-1 overflow-y-auto rounded-b-lg border border-t-0 border-border bg-card/40">
+          <TabsContent value="diff" className="flex-1 overflow-y-auto rounded-b-lg border border-t-0 border-border bg-card">
             {diffData?.diff ? (
               <DiffViewer diff={diffData.diff} />
             ) : (
@@ -295,7 +295,7 @@ export default function TaskDetail() {
           </TabsContent>
 
           {/* Info tab — prompt, subtasks, images, metadata */}
-          <TabsContent value="info" className="flex-1 overflow-y-auto rounded-b-lg border border-t-0 border-border bg-card/40 p-4">
+          <TabsContent value="info" className="flex-1 overflow-y-auto rounded-b-lg border border-t-0 border-border bg-card p-4">
             {/* Prompt */}
             {task && (
               <div className="mb-6">
@@ -319,7 +319,7 @@ export default function TaskDetail() {
                       <img
                         src={url}
                         alt={`Reference ${i + 1}`}
-                        className="max-h-48 rounded-md border border-border hover:border-primary/30 transition-colors"
+                        className="max-h-48 rounded-md border border-border hover:border-muted-foreground/30 transition-colors"
                         style={{ objectFit: 'contain' }}
                       />
                     </a>
@@ -344,7 +344,7 @@ export default function TaskDetail() {
                   <img
                     src={task.screenshot_url}
                     alt="Preview screenshot"
-                    className="max-w-full max-h-72 rounded-md border border-border hover:border-primary/30 transition-colors"
+                    className="max-w-full max-h-72 rounded-md border border-border hover:border-muted-foreground/30 transition-colors"
                     style={{ objectFit: 'contain' }}
                   />
                 </a>
@@ -363,7 +363,7 @@ export default function TaskDetail() {
                     const SubIcon = sv.icon;
                     return (
                       <Link key={sub.id} to={`/tasks/${sub.id}`}>
-                        <div className="flex items-center gap-3 p-2.5 rounded-md border border-border bg-background/30 hover:bg-primary/5 hover:border-primary/20 transition-all duration-150">
+                        <div className="flex items-center gap-3 p-2.5 rounded-md border border-border hover:bg-secondary/40 transition-colors">
                           <Badge variant={sv.variant} className={`${sv.className} text-[10px]`}>
                             {SubIcon && <SubIcon className={`size-3 ${sv.spin ? 'animate-spin' : ''}`} />}
                             {sub.status.replace(/_/g, ' ')}
@@ -427,7 +427,7 @@ function LogsTabs({
         <button
           className={`px-2.5 py-1 rounded text-xs font-medium transition-all duration-150 ${
             logView === 'agent'
-              ? 'bg-primary/10 text-primary border border-primary/20'
+              ? 'bg-secondary text-foreground'
               : 'text-muted-foreground hover:text-foreground hover:bg-muted/30'
           }`}
           onClick={() => setLogView('agent')}
@@ -437,7 +437,7 @@ function LogsTabs({
         <button
           className={`px-2.5 py-1 rounded text-xs font-medium transition-all duration-150 ${
             logView === 'container'
-              ? 'bg-primary/10 text-primary border border-primary/20'
+              ? 'bg-secondary text-foreground'
               : 'text-muted-foreground hover:text-foreground hover:bg-muted/30'
           }`}
           onClick={() => setLogView('container')}

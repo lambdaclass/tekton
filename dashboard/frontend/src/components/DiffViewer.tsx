@@ -24,7 +24,7 @@ function parseDiff(raw: string): FileDiff[] {
 function lineClass(line: string): string {
   if (line.startsWith('+')) return 'bg-emerald-500/10 text-emerald-300';
   if (line.startsWith('-')) return 'bg-red-500/10 text-red-300';
-  if (line.startsWith('@@')) return 'bg-primary/10 text-primary/70';
+  if (line.startsWith('@@')) return 'bg-secondary text-muted-foreground';
   return 'text-muted-foreground';
 }
 
