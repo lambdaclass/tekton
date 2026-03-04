@@ -112,7 +112,7 @@ function SummaryCards({ days }: { days: number }) {
             {isLoading ? (
               <p className="text-muted-foreground text-sm">Loading...</p>
             ) : (
-              <p className="text-2xl font-bold">{c.value}</p>
+              <p className="text-2xl font-bold tabular-nums">{c.value}</p>
             )}
           </CardContent>
         </Card>
@@ -238,7 +238,7 @@ function CostByUserTable({ days }: { days: number }) {
           <p className="text-muted-foreground text-sm">No data for this period.</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full text-sm tabular-nums">
               <thead>
                 <tr className="border-b text-left text-muted-foreground">
                   <th className="pb-2 pr-4 font-medium">User</th>
@@ -288,7 +288,7 @@ function CostByRepoTable({ days }: { days: number }) {
           <p className="text-muted-foreground text-sm">No data for this period.</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full text-sm tabular-nums">
               <thead>
                 <tr className="border-b text-left text-muted-foreground">
                   <th className="pb-2 pr-4 font-medium">Repository</th>
@@ -381,7 +381,7 @@ function BudgetsSection() {
           <p className="text-muted-foreground text-sm">No budgets configured.</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full text-sm tabular-nums">
               <thead>
                 <tr className="border-b text-left text-muted-foreground">
                   <th className="pb-2 pr-4 font-medium">Scope</th>

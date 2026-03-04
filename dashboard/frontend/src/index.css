@@ -5,9 +5,32 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* ── Geist Fonts ─────────────────────────────────────────────────── */
+
+@font-face {
+  font-family: "Geist Sans";
+  src: url("/node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
+  font-family: "Geist Sans", system-ui, sans-serif;
+}
+
+code, pre, kbd, samp, .font-mono {
+  font-family: "Geist Mono", "Menlo", monospace;
 }
 
 @theme inline {
@@ -54,14 +77,14 @@ body {
 :root {
   color-scheme: dark;
   --radius: 0.625rem;
-  --background: oklch(0.141 0.005 285.823);
+  --background: oklch(0.13 0.004 280);
   --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.006 285.885);
+  --card: oklch(0.18 0.008 270);
   --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.006 285.885);
+  --popover: oklch(0.18 0.008 270);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.92 0.004 286.32);
-  --primary-foreground: oklch(0.21 0.006 285.885);
+  --primary: oklch(0.75 0.18 195);
+  --primary-foreground: oklch(0.15 0.01 195);
   --secondary: oklch(0.274 0.006 286.033);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.274 0.006 286.033);
@@ -71,20 +94,71 @@ body {
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.552 0.016 285.938);
-  --chart-1: oklch(0.488 0.243 264.376);
+  --ring: oklch(0.6 0.12 195);
+  --chart-1: oklch(0.75 0.18 195);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.21 0.006 285.885);
+  --sidebar: oklch(0.18 0.008 270);
   --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary: oklch(0.75 0.18 195);
   --sidebar-primary-foreground: oklch(0.985 0 0);
   --sidebar-accent: oklch(0.274 0.006 286.033);
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.552 0.016 285.938);
+  --sidebar-ring: oklch(0.6 0.12 195);
+}
+
+/* ── Animations ──────────────────────────────────────────────────── */
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 4px 0px oklch(0.75 0.18 195 / 0.4); }
+  50% { box-shadow: 0 0 12px 2px oklch(0.75 0.18 195 / 0.6); }
+}
+
+@keyframes pulse-glow-green {
+  0%, 100% { box-shadow: 0 0 4px 0px oklch(0.7 0.15 155 / 0.3); }
+  50% { box-shadow: 0 0 10px 2px oklch(0.7 0.15 155 / 0.5); }
+}
+
+.status-running {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+.status-completed-glow {
+  animation: pulse-glow-green 2s ease-in-out infinite;
+}
+
+/* Typing indicator animation */
+@keyframes typing-dot {
+  0%, 60%, 100% { opacity: 0.3; }
+  30% { opacity: 1; }
+}
+
+.typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  display: inline-block;
+  animation: typing-dot 1.4s ease-in-out infinite;
+}
+
+/* Page transition */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.page-enter {
+  animation: fade-in 0.15s ease-out;
+}
+
+/* ── Utility ─────────────────────────────────────────────────────── */
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
 }
 
 @layer base {

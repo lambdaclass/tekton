@@ -14,7 +14,10 @@ import { statusVariant } from '@/lib/status';
 import { timeAgo, formatCost } from '@/lib/utils';
 import VoiceInput from '@/components/VoiceInput';
 import BranchCombobox from '@/components/BranchCombobox';
-import { ImagePlus, X, ChevronLeft, ChevronRight, Search, BrainCircuit } from 'lucide-react';
+import { ImagePlus, X, ChevronLeft, ChevronRight, Search, BrainCircuit, LayoutGrid, List } from 'lucide-react';
+
+type ViewMode = 'card' | 'list';
+const VIEW_STORAGE_KEY = 'tekton-task-view';
 
 const STATUS_OPTIONS = ['all', 'pending', 'creating_agent', 'cloning', 'running_claude', 'pushing', 'creating_preview', 'awaiting_followup', 'completed', 'failed'];
 
@@ -22,19 +25,41 @@ function SkeletonCard() {
   return (
     <Card>
       <CardContent className="py-4">
+        {/* ID + status badge row */}
         <div className="flex items-center justify-between mb-2">
-          <Skeleton className="h-4 w-16" />
-          <Skeleton className="h-5 w-20 rounded-full" />
+          <Skeleton className="h-4 w-16 rounded" />
+          <Skeleton className="h-5 w-24 rounded-full" />
         </div>
-        <Skeleton className="h-4 w-3/4 mb-1" />
-        <Skeleton className="h-4 w-full mb-2" />
+        {/* Task name */}
+        <Skeleton className="h-4 w-2/3 mb-1.5 rounded" />
+        {/* Prompt (two lines) */}
+        <Skeleton className="h-3.5 w-full mb-1 rounded" />
+        <Skeleton className="h-3.5 w-4/5 mb-3 rounded" />
+        {/* Footer: repo, branch, cost, avatar + time */}
         <div className="flex items-center gap-4">
-          <Skeleton className="h-3 w-24" />
-          <Skeleton className="h-3 w-16" />
-          <Skeleton className="h-3 w-12 ml-auto" />
+          <Skeleton className="h-3 w-28 rounded" />
+          <Skeleton className="h-3 w-14 rounded" />
+          <Skeleton className="h-3 w-12 rounded" />
+          <div className="ml-auto flex items-center gap-1.5">
+            <Skeleton className="size-4 rounded-full" />
+            <Skeleton className="h-3 w-10 rounded" />
+          </div>
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function SkeletonRow() {
+  return (
+    <div className="flex items-center gap-3 px-3 py-2.5 border-t border-border first:border-t-0">
+      <Skeleton className="size-4 rounded-full shrink-0" />
+      <Skeleton className="h-4 flex-1 rounded" />
+      <Skeleton className="h-4 w-16 rounded" />
+      <Skeleton className="h-3 w-14 rounded" />
+      <Skeleton className="size-5 rounded-full shrink-0" />
+      <Skeleton className="h-3 w-12 rounded" />
+    </div>
   );
 }
 
@@ -49,6 +74,16 @@ export default function Tasks() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [page, setPage] = useState(1);
   const perPage = 50;
+
+  // View mode (card / list)
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    const stored = localStorage.getItem(VIEW_STORAGE_KEY);
+    return stored === 'list' ? 'list' : 'card';
+  });
+  const toggleView = (mode: ViewMode) => {
+    setViewMode(mode);
+    localStorage.setItem(VIEW_STORAGE_KEY, mode);
+  };
 
   // Keyboard navigation
   const [selectedIndex, setSelectedIndex] = useState(-1);
@@ -373,14 +408,38 @@ export default function Tasks() {
             <option key={s} value={s}>{s === 'all' ? 'All statuses' : s}</option>
           ))}
         </select>
+        <div className="flex rounded-md border border-input overflow-hidden">
+          <button
+            onClick={() => toggleView('card')}
+            className={`flex items-center justify-center size-9 transition-colors ${viewMode === 'card' ? 'bg-accent text-accent-foreground' : 'bg-background text-muted-foreground hover:text-foreground'}`}
+            title="Card view"
+          >
+            <LayoutGrid className="size-4" />
+          </button>
+          <button
+            onClick={() => toggleView('list')}
+            className={`flex items-center justify-center size-9 border-l border-input transition-colors ${viewMode === 'list' ? 'bg-accent text-accent-foreground' : 'bg-background text-muted-foreground hover:text-foreground'}`}
+            title="List view"
+          >
+            <List className="size-4" />
+          </button>
+        </div>
       </div>
 
       {isLoading ? (
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <SkeletonCard key={i} />
-          ))}
-        </div>
+        viewMode === 'card' ? (
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <SkeletonCard key={i} />
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-border overflow-hidden">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <SkeletonRow key={i} />
+            ))}
+          </div>
+        )
       ) : !tasks?.length ? (
         <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
           <BrainCircuit className="size-12 mb-4 opacity-50" />
@@ -393,7 +452,7 @@ export default function Tasks() {
               : 'Create a new task to get started'}
           </p>
         </div>
-      ) : (
+      ) : viewMode === 'card' ? (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
           {tasks.map((t, index) => {
             const sv = statusVariant(t.status);
@@ -448,7 +507,7 @@ export default function Tasks() {
                       {t.total_cost_usd ? (
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <span className="shrink-0 cursor-default">{formatCost(t.total_cost_usd)}</span>
+                            <span className="shrink-0 cursor-default tabular-nums">{formatCost(t.total_cost_usd)}</span>
                           </TooltipTrigger>
                           <TooltipContent>
                             {(t.total_input_tokens ?? 0).toLocaleString()} input + {(t.total_output_tokens ?? 0).toLocaleString()} output tokens
@@ -471,6 +530,56 @@ export default function Tasks() {
                     </div>
                   </CardContent>
                 </Card>
+              </Link>
+            );
+          })}
+        </div>
+      ) : (
+        /* List view */
+        <div className="rounded-lg border border-border overflow-hidden">
+          {tasks.map((t, index) => {
+            const sv = statusVariant(t.status);
+            const StatusIcon = sv.icon;
+            return (
+              <Link
+                key={t.id}
+                to={`/tasks/${t.id}`}
+                ref={(el) => { cardRefs.current[index] = el; }}
+                className={`flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-accent/50 transition-colors ${
+                  index === selectedIndex ? 'bg-accent/70' : ''
+                } ${index > 0 ? 'border-t border-border' : ''}`}
+              >
+                {StatusIcon && (
+                  <StatusIcon
+                    className={`size-4 shrink-0 ${sv.spin ? 'animate-spin' : ''} ${
+                      sv.className?.includes('text-') ? sv.className.split(' ').find(c => c.startsWith('text-')) : 'text-muted-foreground'
+                    }`}
+                  />
+                )}
+                <span className="truncate flex-1 min-w-0">
+                  {t.name || t.prompt}
+                </span>
+                <Badge variant="outline" className="shrink-0 text-[10px] px-1.5 py-0">
+                  {t.repo.split('/').pop()}
+                </Badge>
+                {t.total_cost_usd ? (
+                  <span className="shrink-0 text-xs text-muted-foreground tabular-nums w-14 text-right">
+                    {formatCost(t.total_cost_usd)}
+                  </span>
+                ) : (
+                  <span className="shrink-0 w-14" />
+                )}
+                {t.created_by && (
+                  <img
+                    src={`https://github.com/${t.created_by}.png?size=20`}
+                    className="size-5 rounded-full shrink-0"
+                    loading="lazy"
+                    alt=""
+                  />
+                )}
+                <span className="shrink-0 text-xs text-muted-foreground w-16 text-right" title={new Date(t.created_at).toLocaleString()}>
+                  {timeAgo(t.created_at)}
+                </span>
               </Link>
             );
           })}

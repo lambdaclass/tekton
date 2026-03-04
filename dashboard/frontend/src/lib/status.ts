@@ -10,7 +10,7 @@ export function statusVariant(status: string): {
     case "completed":
       return {
         variant: "default",
-        className: "bg-green-600 text-white border-transparent",
+        className: "bg-green-600 text-white border-transparent status-completed-glow",
         icon: Check,
       };
     case "failed":
@@ -28,7 +28,7 @@ export function statusVariant(status: string): {
     case "running_claude":
     case "pushing":
     case "creating_preview":
-      return { variant: "secondary", icon: Loader2, spin: true };
+      return { variant: "secondary", className: "status-running", icon: Loader2, spin: true };
     default:
       return { variant: "secondary" };
   }

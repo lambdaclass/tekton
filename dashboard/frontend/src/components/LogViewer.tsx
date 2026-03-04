@@ -17,7 +17,7 @@ function writeLine(term: Terminal, line: string) {
 const TERM_OPTIONS = {
   convertEol: true,
   fontSize: 13,
-  fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+  fontFamily: '"Geist Mono", Menlo, Monaco, "Courier New", monospace',
   theme: {
     background: '#1a1b26',
     foreground: '#c0caf5',
