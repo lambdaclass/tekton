@@ -365,21 +365,6 @@ export default function TaskDetail() {
             </div>
           )}
 
-          {/* Screenshot */}
-          {task?.screenshot_url && (
-            <div className="mb-6">
-              <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">Preview Screenshot</h3>
-              <a href={task.screenshot_url} target="_blank" rel="noopener noreferrer">
-                <img
-                  src={task.screenshot_url}
-                  alt="Preview screenshot"
-                  className="max-w-full max-h-72 rounded-md border border-border hover:border-muted-foreground/30 transition-colors"
-                  style={{ objectFit: 'contain' }}
-                />
-              </a>
-            </div>
-          )}
-
           {/* Subtasks */}
           {subtasks && subtasks.length > 0 && (
             <div className="mb-6">
