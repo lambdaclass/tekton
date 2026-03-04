@@ -1304,6 +1304,7 @@ enum FollowUpOutcome {
     Done,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn follow_up_loop(
     ctx: &PipelineCtx<'_>,
     agent_name: &str,
