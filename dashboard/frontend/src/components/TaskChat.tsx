@@ -160,7 +160,7 @@ export default function TaskChat({ taskId, currentUserEmail, previewUrl }: TaskC
                     {new Date(msg.created_at).toLocaleTimeString()}
                   </span>
                 </div>
-                <div className="prose prose-sm prose-invert max-w-none break-words [&_pre]:bg-black/30 [&_pre]:rounded-md [&_pre]:p-3 [&_pre]:overflow-x-auto [&_code]:text-xs [&_:not(pre)>code]:bg-black/30 [&_:not(pre)>code]:px-1.5 [&_:not(pre)>code]:py-0.5 [&_:not(pre)>code]:rounded [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0 [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-sm [&_a]:text-blue-400 [&_table]:text-xs [&_blockquote]:border-muted-foreground/30">
+                <div className="prose prose-sm prose-invert max-w-none break-words [&_pre]:bg-black/30 [&_pre]:rounded-md [&_pre]:p-3 [&_pre]:overflow-x-auto [&_code]:text-[0.8em] [&_:not(pre)>code]:bg-white/8 [&_:not(pre)>code]:px-1 [&_:not(pre)>code]:py-px [&_:not(pre)>code]:rounded-sm [&_:not(pre)>code]:text-orange-300/90 [&_:not(pre)>code]:before:content-none [&_:not(pre)>code]:after:content-none [&_p]:my-1.5 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_li]:my-0.5 [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-sm [&_a]:text-blue-400 [&_table]:text-xs [&_blockquote]:border-muted-foreground/30">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                 </div>
                 {parseImageUrls(msg.image_url).length > 0 && (
