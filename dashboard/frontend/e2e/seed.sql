@@ -1,0 +1,283 @@
+-- seed.sql: Seed data for e2e tests
+-- Schema must match exactly what dashboard/backend/src/db.rs creates
+
+-- ============================================================
+-- Tables
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    prompt TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    base_branch TEXT NOT NULL DEFAULT 'main',
+    branch_name TEXT,
+    agent_name TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    preview_slug TEXT,
+    preview_url TEXT,
+    error_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    parent_task_id TEXT,
+    created_by TEXT,
+    screenshot_url TEXT,
+    image_url TEXT,
+    total_input_tokens BIGINT DEFAULT 0,
+    total_output_tokens BIGINT DEFAULT 0,
+    name TEXT,
+    pr_url TEXT,
+    pr_number INTEGER,
+    total_cost_usd DOUBLE PRECISION DEFAULT 0,
+    compute_seconds INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS task_logs (
+    id BIGSERIAL PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    line TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS task_messages (
+    id BIGSERIAL PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    sender TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    image_url TEXT
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    github_login TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    email TEXT,
+    github_token TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    role TEXT NOT NULL DEFAULT 'member',
+    ssh_public_key TEXT,
+    ai_provider TEXT,
+    ai_api_key_encrypted TEXT,
+    ai_model TEXT
+);
+
+CREATE TABLE IF NOT EXISTS task_actions (
+    id BIGSERIAL PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    action_type TEXT NOT NULL,
+    tool_name TEXT,
+    tool_input JSONB,
+    summary TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS task_state_transitions (
+    id BIGSERIAL PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    from_status TEXT,
+    to_status TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS user_repo_permissions (
+    github_login TEXT NOT NULL REFERENCES users(github_login),
+    repo TEXT NOT NULL,
+    PRIMARY KEY (github_login, repo)
+);
+
+CREATE TABLE IF NOT EXISTS secrets (
+    id BIGSERIAL PRIMARY KEY,
+    repo TEXT NOT NULL,
+    name TEXT NOT NULL,
+    encrypted_value TEXT NOT NULL,
+    created_by TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(repo, name)
+);
+
+CREATE TABLE IF NOT EXISTS repo_policies (
+    id BIGSERIAL PRIMARY KEY,
+    repo TEXT NOT NULL UNIQUE,
+    protected_branches TEXT[] NOT NULL DEFAULT '{main,master}',
+    allowed_tools JSONB,
+    network_egress JSONB,
+    max_cost_usd DOUBLE PRECISION,
+    require_approval_above_usd DOUBLE PRECISION,
+    created_by TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS org_policies (
+    id BIGSERIAL PRIMARY KEY,
+    org TEXT NOT NULL UNIQUE,
+    protected_branches TEXT[] NOT NULL DEFAULT '{main,master}',
+    allowed_tools JSONB,
+    network_egress JSONB,
+    max_cost_usd DOUBLE PRECISION,
+    require_approval_above_usd DOUBLE PRECISION,
+    created_by TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id BIGSERIAL PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    target TEXT,
+    detail JSONB,
+    ip_address TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_event_type_created
+    ON audit_log (event_type, created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_log_actor_created
+    ON audit_log (actor, created_at);
+
+CREATE TABLE IF NOT EXISTS budgets (
+    id BIGSERIAL PRIMARY KEY,
+    scope TEXT NOT NULL,
+    scope_type TEXT NOT NULL CHECK (scope_type IN ('user', 'org')),
+    monthly_limit_usd DOUBLE PRECISION NOT NULL,
+    alert_threshold_pct INTEGER NOT NULL DEFAULT 80,
+    created_by TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(scope, scope_type)
+);
+
+-- ============================================================
+-- Seed: Users
+-- ============================================================
+
+INSERT INTO users (github_login, name, email, github_token, role)
+VALUES
+    ('testadmin',  'Test Admin',  'admin@test.com',  'ghp_fake_admin_token',  'admin'),
+    ('testmember', 'Test Member', 'member@test.com', 'ghp_fake_member_token', 'member'),
+    ('testviewer', 'Test Viewer', 'viewer@test.com', 'ghp_fake_viewer_token', 'viewer');
+
+-- ============================================================
+-- Seed: Tasks (various states)
+-- ============================================================
+
+INSERT INTO tasks (id, prompt, repo, base_branch, branch_name, agent_name, status, created_by, total_input_tokens, total_output_tokens, total_cost_usd, compute_seconds, name, created_at, updated_at)
+VALUES
+    ('task-pending-1', 'Add dark mode support', 'testorg/testrepo', 'main', NULL, NULL, 'pending', 'testmember', 0, 0, 0, NULL, 'Dark mode', NOW() - INTERVAL '2 hours', NOW() - INTERVAL '2 hours'),
+    ('task-running-1', 'Fix login page CSS', 'testorg/testrepo', 'main', 'fix/login-css', 'claude', 'running', 'testmember', 5000, 2000, 0.12, 45, 'Login CSS fix', NOW() - INTERVAL '1 hour', NOW() - INTERVAL '5 minutes'),
+    ('task-completed-1', 'Implement user settings page', 'testorg/testrepo', 'main', 'feat/user-settings', 'claude', 'completed', 'testadmin', 50000, 20000, 1.50, 300, 'User settings', NOW() - INTERVAL '1 day', NOW() - INTERVAL '12 hours'),
+    ('task-failed-1', 'Migrate database to v2 schema', 'testorg/testrepo', 'main', 'chore/db-migrate', 'claude', 'failed', 'testadmin', 10000, 4000, 0.30, 120, 'DB migration', NOW() - INTERVAL '3 hours', NOW() - INTERVAL '2 hours'),
+    ('task-completed-2', 'Add search functionality', 'testorg/frontend', 'main', 'feat/search', 'claude', 'completed', 'testmember', 30000, 15000, 0.95, 200, 'Search feature', NOW() - INTERVAL '2 days', NOW() - INTERVAL '1 day');
+
+-- Set error_message on the failed task
+UPDATE tasks SET error_message = 'Migration failed: column "legacy_data" does not exist' WHERE id = 'task-failed-1';
+
+-- Set PR info on a completed task
+UPDATE tasks SET pr_url = 'https://github.com/testorg/testrepo/pull/42', pr_number = 42 WHERE id = 'task-completed-1';
+
+-- A subtask
+INSERT INTO tasks (id, prompt, repo, base_branch, branch_name, agent_name, status, created_by, parent_task_id, total_input_tokens, total_output_tokens, total_cost_usd, compute_seconds, name, created_at, updated_at)
+VALUES
+    ('task-subtask-1', 'Write unit tests for settings page', 'testorg/testrepo', 'main', 'feat/user-settings-tests', 'claude', 'completed', 'testadmin', 'task-completed-1', 8000, 3000, 0.25, 60, 'Settings tests', NOW() - INTERVAL '18 hours', NOW() - INTERVAL '14 hours');
+
+-- ============================================================
+-- Seed: Task logs (for the completed task)
+-- ============================================================
+
+INSERT INTO task_logs (task_id, line, timestamp)
+VALUES
+    ('task-completed-1', 'Starting task: Implement user settings page', NOW() - INTERVAL '1 day'),
+    ('task-completed-1', 'Cloning repository testorg/testrepo...', NOW() - INTERVAL '1 day' + INTERVAL '10 seconds'),
+    ('task-completed-1', 'Creating branch feat/user-settings from main', NOW() - INTERVAL '1 day' + INTERVAL '30 seconds'),
+    ('task-completed-1', 'Running claude agent...', NOW() - INTERVAL '1 day' + INTERVAL '1 minute'),
+    ('task-completed-1', 'Task completed successfully', NOW() - INTERVAL '12 hours');
+
+-- ============================================================
+-- Seed: Task messages (for the completed task)
+-- ============================================================
+
+INSERT INTO task_messages (task_id, sender, content, created_at)
+VALUES
+    ('task-completed-1', 'user', 'Please also add email notification preferences', NOW() - INTERVAL '20 hours'),
+    ('task-completed-1', 'assistant', 'I have added the email notification preferences section to the settings page. Users can now toggle email notifications for task completions and failures.', NOW() - INTERVAL '19 hours');
+
+-- ============================================================
+-- Seed: Task actions (for the completed task)
+-- ============================================================
+
+INSERT INTO task_actions (task_id, action_type, tool_name, tool_input, summary, created_at)
+VALUES
+    ('task-completed-1', 'tool_use', 'Read', '{"file_path": "src/pages/Settings.tsx"}', 'Read the existing settings page', NOW() - INTERVAL '23 hours'),
+    ('task-completed-1', 'tool_use', 'Write', '{"file_path": "src/pages/UserSettings.tsx"}', 'Created the user settings component', NOW() - INTERVAL '22 hours'),
+    ('task-completed-1', 'tool_use', 'Bash', '{"command": "npm test"}', 'Ran the test suite', NOW() - INTERVAL '13 hours');
+
+-- ============================================================
+-- Seed: Task state transitions
+-- ============================================================
+
+INSERT INTO task_state_transitions (task_id, from_status, to_status, created_at)
+VALUES
+    ('task-completed-1', NULL, 'pending', NOW() - INTERVAL '1 day'),
+    ('task-completed-1', 'pending', 'running', NOW() - INTERVAL '1 day' + INTERVAL '5 seconds'),
+    ('task-completed-1', 'running', 'completed', NOW() - INTERVAL '12 hours');
+
+-- ============================================================
+-- Seed: Repo policies
+-- ============================================================
+
+INSERT INTO repo_policies (repo, protected_branches, allowed_tools, network_egress, max_cost_usd, require_approval_above_usd, created_by)
+VALUES
+    ('testorg/testrepo', '{main,master,production}', '["Read","Write","Bash","Grep","Glob"]', '{"allow_all": false, "allowed_hosts": ["api.github.com","registry.npmjs.org"]}', 10.0, 5.0, 'testadmin'),
+    ('testorg/frontend', '{main}', NULL, NULL, 5.0, NULL, 'testadmin');
+
+-- ============================================================
+-- Seed: Org policies
+-- ============================================================
+
+INSERT INTO org_policies (org, protected_branches, allowed_tools, network_egress, max_cost_usd, require_approval_above_usd, created_by)
+VALUES
+    ('testorg', '{main,master}', '["Read","Write","Bash"]', '{"allow_all": true}', 50.0, 20.0, 'testadmin');
+
+-- ============================================================
+-- Seed: Secrets
+-- ============================================================
+
+INSERT INTO secrets (repo, name, encrypted_value, created_by)
+VALUES
+    ('testorg/testrepo', 'NPM_TOKEN', 'encrypted:fake_npm_token_value', 'testadmin'),
+    ('testorg/testrepo', 'DEPLOY_KEY', 'encrypted:fake_deploy_key_value', 'testadmin'),
+    ('testorg/frontend', 'API_KEY', 'encrypted:fake_api_key_value', 'testadmin');
+
+-- ============================================================
+-- Seed: Budgets
+-- ============================================================
+
+INSERT INTO budgets (scope, scope_type, monthly_limit_usd, alert_threshold_pct, created_by)
+VALUES
+    ('testadmin', 'user', 100.0, 80, 'testadmin'),
+    ('testorg', 'org', 500.0, 90, 'testadmin');
+
+-- ============================================================
+-- Seed: Audit log entries
+-- ============================================================
+
+INSERT INTO audit_log (event_type, actor, target, detail, ip_address, created_at)
+VALUES
+    ('auth.login', 'testadmin', NULL, '{"role": "admin"}', '127.0.0.1', NOW() - INTERVAL '1 day'),
+    ('auth.login', 'testmember', NULL, '{"role": "member"}', '127.0.0.1', NOW() - INTERVAL '1 day'),
+    ('task.create', 'testadmin', 'task-completed-1', '{"repo": "testorg/testrepo", "prompt": "Implement user settings page"}', '127.0.0.1', NOW() - INTERVAL '1 day'),
+    ('task.complete', 'system', 'task-completed-1', '{"cost_usd": 1.50}', NULL, NOW() - INTERVAL '12 hours'),
+    ('admin.role_change', 'testadmin', 'testviewer', '{"new_role": "viewer"}', '127.0.0.1', NOW() - INTERVAL '6 hours'),
+    ('admin.user_repos_changed', 'testadmin', 'testmember', '{"repos": ["testorg/testrepo","testorg/frontend"]}', '127.0.0.1', NOW() - INTERVAL '5 hours'),
+    ('auth.logout', 'testmember', NULL, '{}', '127.0.0.1', NOW() - INTERVAL '4 hours');
+
+-- ============================================================
+-- Seed: User repo permissions
+-- ============================================================
+
+INSERT INTO user_repo_permissions (github_login, repo)
+VALUES
+    ('testmember', 'testorg/testrepo'),
+    ('testmember', 'testorg/frontend'),
+    ('testviewer', 'testorg/testrepo');

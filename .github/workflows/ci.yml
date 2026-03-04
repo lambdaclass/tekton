@@ -58,3 +58,91 @@ jobs:
 
       - name: Build (includes tsc)
         run: npm run build
+
+  e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: [rust, frontend]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: tekton_test
+          POSTGRES_USER: tekton
+          POSTGRES_PASSWORD: tekton_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://tekton:tekton_test_password@localhost:5432/tekton_test
+      JWT_SECRET: test-secret-key-for-ci
+      GITHUB_CLIENT_ID: dummy-client-id
+      GITHUB_CLIENT_SECRET: dummy-client-secret
+      GITHUB_REDIRECT_URI: http://localhost:3200/api/auth/callback
+      GITHUB_ORG: testorg
+      PREVIEW_DOMAIN: test.example.com
+      LISTEN_ADDR: 0.0.0.0:3200
+      TEST_MODE: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: dashboard/backend
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/frontend/package-lock.json
+
+      - name: Build backend
+        working-directory: dashboard/backend
+        run: cargo build --release
+
+      - name: Install frontend dependencies
+        working-directory: dashboard/frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: dashboard/frontend
+        run: npm run build
+
+      - name: Install Playwright browsers
+        working-directory: dashboard/frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Seed database
+        run: psql "$DATABASE_URL" -f dashboard/frontend/e2e/seed.sql
+
+      - name: Start backend
+        working-directory: dashboard/backend
+        run: |
+          STATIC_DIR=../frontend/dist \
+          ./target/release/dashboard &
+          # Wait for backend to be ready
+          for i in $(seq 1 30); do
+            if curl -s http://localhost:3200/api/config > /dev/null 2>&1; then
+              echo "Backend is ready"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Run Playwright tests
+        working-directory: dashboard/frontend
+        run: npx playwright test --project=chromium
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: dashboard/frontend/playwright-report/
+          retention-days: 30

@@ -211,6 +211,49 @@ pub async fn me(AuthUser(claims): AuthUser) -> axum::Json<UserInfo> {
     })
 }
 
+// ── Test-only login endpoint ──
+
+#[derive(Deserialize)]
+pub struct TestLoginRequest {
+    pub login: String,
+    pub role: String,
+}
+
+/// POST /api/auth/test-login — only available when TEST_MODE=true.
+/// Accepts { "login": "testadmin", "role": "admin" } and returns a valid
+/// JWT cookie identical to what the real OAuth callback produces.
+pub async fn test_login(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    axum::Json(req): axum::Json<TestLoginRequest>,
+) -> Result<(CookieJar, axum::Json<serde_json::Value>), AppError> {
+    let exp = chrono::Utc::now().timestamp() as usize + JWT_EXPIRY_SECS;
+    let claims = Claims {
+        sub: req.login.clone(),
+        name: req.login.clone(),
+        role: req.role.clone(),
+        exp,
+    };
+    let key = EncodingKey::from_secret(state.config.jwt_secret.as_bytes());
+    let token = encode(&Header::default(), &claims, &key)
+        .map_err(|e| AppError::Internal(format!("JWT encode error: {e}")))?;
+
+    let cookie = Cookie::build((COOKIE_NAME, token))
+        .path("/")
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .secure(false)
+        .max_age(time::Duration::days(7));
+
+    Ok((
+        jar.add(cookie),
+        axum::Json(serde_json::json!({
+            "login": req.login,
+            "role": req.role,
+        })),
+    ))
+}
+
 // ── Extractor: admin user ──
 
 pub struct AdminUser(pub Claims);

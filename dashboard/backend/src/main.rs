@@ -134,6 +134,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/ws/logs/{slug}", get(ws::preview_logs_ws))
         .route("/ws/tasks/{id}", get(ws::task_output_ws));
 
+    // Conditionally add test-only auth endpoint when TEST_MODE=true
+    let api = if std::env::var("TEST_MODE").as_deref() == Ok("true") {
+        tracing::warn!("TEST_MODE enabled — /api/auth/test-login is active");
+        api.route("/auth/test-login", post(auth::test_login))
+    } else {
+        api
+    };
+
     // Read index.html once at startup for SPA fallback
     let index_html = std::fs::read_to_string(format!("{static_dir}/index.html"))
         .unwrap_or_else(|_| "<h1>index.html not found</h1>".into());
