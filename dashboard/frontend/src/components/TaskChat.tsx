@@ -1,6 +1,6 @@
 import { useState, useRef, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Send, CheckCircle, ExternalLink, ImagePlus, X, Loader2 } from 'lucide-react';
+import { Send, ImagePlus, X, Loader2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { listTaskMessages, sendTaskMessage, uploadImage, parseImageUrls, type TaskMessage } from '@/lib/api';
@@ -11,7 +11,6 @@ import { timeAgo } from '@/lib/utils';
 interface TaskChatProps {
   taskId: string;
   currentUserEmail: string;
-  previewUrl?: string;
   taskStatus?: string;
 }
 
@@ -24,7 +23,7 @@ function processMessageContent(content: string, sender: string): string {
   });
 }
 
-export default function TaskChat({ taskId, currentUserEmail, previewUrl, taskStatus }: TaskChatProps) {
+export default function TaskChat({ taskId, currentUserEmail, taskStatus }: TaskChatProps) {
   const queryClient = useQueryClient();
   const [message, setMessage] = useState('');
   const [chatImages, setChatImages] = useState<File[]>([]);
@@ -120,10 +119,6 @@ export default function TaskChat({ taskId, currentUserEmail, previewUrl, taskSta
     sendMutation.mutate({ content: message.trim(), image_urls });
   };
 
-  const handleMarkDone = () => {
-    sendMutation.mutate({ content: '__done__', image_urls: undefined });
-  };
-
   const isTyping = taskStatus === 'running_claude';
 
   const processedMessages = useMemo(() => {
@@ -135,47 +130,16 @@ export default function TaskChat({ taskId, currentUserEmail, previewUrl, taskSta
 
   return (
     <div
-      className={`flex h-full flex-col ${dragOver ? 'ring-2 ring-primary/50 rounded-lg' : ''}`}
+      className={`flex flex-col h-full ${dragOver ? 'ring-2 ring-primary/50' : ''}`}
       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
       onDragLeave={() => setDragOver(false)}
       onDrop={handleChatDrop}
     >
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border px-4 py-2">
-        <span className="text-sm font-medium">Follow-up Chat</span>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleMarkDone}
-          disabled={sendMutation.isPending}
-          className="text-green-400 border-green-500/30 hover:bg-green-500/10"
-        >
-          <CheckCircle className="size-4 mr-1" />
-          Mark Done
-        </Button>
-      </div>
-
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-3">
-        {previewUrl && (
-          <div className="p-3 rounded-lg bg-secondary border border-border flex items-center gap-2 text-sm">
-            <ExternalLink className="size-4 text-muted-foreground shrink-0" />
-            <span className="text-muted-foreground">Check the current result:</span>
-            <a
-              href={previewUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-foreground hover:text-foreground/80 font-medium truncate"
-            >
-              {previewUrl}
-            </a>
-          </div>
-        )}
+      <div className="flex-1 overflow-y-auto p-4 space-y-6">
         {!processedMessages?.length && !isTyping && (
           <p className="text-sm text-muted-foreground text-center py-4">
-            {previewUrl
-              ? 'Check the preview above, then send a follow-up if something needs fixing.'
-              : 'No messages yet. Send a follow-up to Claude.'}
+            No messages yet. Send a follow-up to Claude.
           </p>
         )}
         {processedMessages?.map((msg) =>
@@ -187,59 +151,46 @@ export default function TaskChat({ taskId, currentUserEmail, previewUrl, taskSta
               {msg.content}
             </div>
           ) : (
-            <div
-              key={msg.id}
-              className={`flex ${msg.sender === currentUserEmail ? 'justify-end' : 'justify-start'}`}
-            >
-              <div
-                className={`rounded-lg border p-3 text-sm max-w-[85%] ${
-                  msg.sender === currentUserEmail
-                    ? 'bg-secondary border-border'
-                    : 'bg-card border-border'
-                }`}
-              >
-                <div className={`flex items-center gap-2 mb-1 ${msg.sender === currentUserEmail ? 'justify-end' : 'justify-start'}`}>
-                  <span className="font-medium text-xs text-muted-foreground">
-                    {msg.sender === currentUserEmail ? 'You' : msg.sender}
-                  </span>
-                  <span className="text-xs text-muted-foreground" title={new Date(msg.created_at).toLocaleString()}>
-                    {timeAgo(msg.created_at)}
-                  </span>
-                </div>
-                <div className="prose prose-sm prose-invert max-w-none break-words [&_pre]:bg-black/30 [&_pre]:rounded-md [&_pre]:p-3 [&_pre]:overflow-x-auto [&_code]:text-[0.8em] [&_:not(pre)>code]:bg-white/8 [&_:not(pre)>code]:px-1 [&_:not(pre)>code]:py-px [&_:not(pre)>code]:rounded-sm [&_:not(pre)>code]:text-orange-300/90 [&_:not(pre)>code]:before:content-none [&_:not(pre)>code]:after:content-none [&_p]:my-1.5 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_li]:my-0.5 [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-sm [&_a]:text-blue-400 [&_table]:text-xs [&_blockquote]:border-muted-foreground/30 [&_details]:border [&_details]:border-border [&_details]:rounded-md [&_details]:p-2 [&_details]:my-2 [&_summary]:cursor-pointer [&_summary]:text-xs [&_summary]:text-muted-foreground [&_summary]:font-medium">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.processedContent}</ReactMarkdown>
-                </div>
-                {parseImageUrls(msg.image_url).length > 0 && (
-                  <div className="flex flex-wrap gap-2 mt-2">
-                    {parseImageUrls(msg.image_url).map((url, i) => (
-                      <a key={i} href={url} target="_blank" rel="noopener noreferrer">
-                        <img
-                          src={url}
-                          alt={`Attached image ${i + 1}`}
-                          className="max-h-48 rounded-md border border-border hover:opacity-90 transition-opacity"
-                        />
-                      </a>
-                    ))}
-                  </div>
-                )}
+            <article key={msg.id} className="w-full">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="font-medium text-xs text-muted-foreground">
+                  {msg.sender === currentUserEmail ? 'You' : msg.sender}
+                </span>
+                <span className="text-xs text-muted-foreground" title={new Date(msg.created_at).toLocaleString()}>
+                  {timeAgo(msg.created_at)}
+                </span>
               </div>
-            </div>
+              <div className="prose prose-sm dark:prose-invert max-w-none break-words [&_pre]:bg-secondary [&_pre]:rounded-md [&_pre]:p-3 [&_pre]:overflow-x-auto [&_code]:text-[0.8em] [&_:not(pre)>code]:bg-secondary [&_:not(pre)>code]:px-1 [&_:not(pre)>code]:py-px [&_:not(pre)>code]:rounded-sm [&_:not(pre)>code]:text-foreground/80 [&_:not(pre)>code]:before:content-none [&_:not(pre)>code]:after:content-none [&_p]:my-1.5 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_li]:my-0.5 [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-sm [&_a]:text-blue-700 dark:[&_a]:text-blue-400 [&_table]:text-xs [&_blockquote]:border-muted-foreground/30 [&_details]:border [&_details]:border-border [&_details]:rounded-md [&_details]:p-2 [&_details]:my-2 [&_summary]:cursor-pointer [&_summary]:text-xs [&_summary]:text-muted-foreground [&_summary]:font-medium">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.processedContent}</ReactMarkdown>
+              </div>
+              {parseImageUrls(msg.image_url).length > 0 && (
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {parseImageUrls(msg.image_url).map((url, i) => (
+                    <a key={i} href={url} target="_blank" rel="noopener noreferrer">
+                      <img
+                        src={url}
+                        alt={`Attached image ${i + 1}`}
+                        className="max-h-48 rounded-md border border-border hover:opacity-90 transition-opacity"
+                      />
+                    </a>
+                  ))}
+                </div>
+              )}
+            </article>
           )
         )}
         {isTyping && (
-          <div className="flex justify-start">
-            <div className="flex items-center gap-1 px-4 py-3 bg-muted rounded-lg w-fit">
-              <span className="text-xs text-muted-foreground mr-2">Claude is working</span>
-              <span className="typing-dot" style={{animationDelay: '0s'}} />
-              <span className="typing-dot" style={{animationDelay: '0.15s'}} />
-              <span className="typing-dot" style={{animationDelay: '0.3s'}} />
-            </div>
+          <div className="flex items-center gap-1 px-4 py-3 bg-muted rounded-lg w-fit">
+            <span className="text-xs text-muted-foreground mr-2">Claude is working</span>
+            <span className="typing-dot" style={{animationDelay: '0s'}} />
+            <span className="typing-dot" style={{animationDelay: '0.15s'}} />
+            <span className="typing-dot" style={{animationDelay: '0.3s'}} />
           </div>
         )}
       </div>
 
       {/* Input area */}
-      <div className="border-t border-border p-4 bg-card">
+      <div className="border-t border-border p-4">
         {chatImagePreviews.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
             {chatImagePreviews.map((preview, i) => (

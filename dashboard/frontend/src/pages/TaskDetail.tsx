@@ -15,6 +15,8 @@ import {
   DollarSign,
   Cpu,
   Image as ImageIcon,
+  MessageSquare,
+  CheckCircle,
 } from 'lucide-react';
 import LogViewer from '@/components/LogViewer';
 import TaskChat from '@/components/TaskChat';
@@ -29,6 +31,7 @@ import {
   reopenTask,
   createPR,
   getTaskDiff,
+  sendTaskMessage,
 } from '@/lib/api';
 import type { TaskAction } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -41,9 +44,10 @@ const CHAT_STATUSES = ['awaiting_followup', 'running_claude', 'pushing', 'creati
 
 function defaultTab(status: string | undefined): string {
   if (!status) return 'activity';
-  if (['running_claude', 'creating_agent', 'cloning'].includes(status)) return 'activity';
-  if (['completed', 'failed'].includes(status)) return 'diff';
+  if (['running_claude', 'awaiting_followup'].includes(status)) return 'conversation';
+  if (['creating_agent', 'cloning'].includes(status)) return 'activity';
   if (['pushing', 'creating_preview'].includes(status)) return 'logs';
+  if (['completed', 'failed'].includes(status)) return 'diff';
   return 'activity';
 }
 
@@ -101,6 +105,13 @@ export default function TaskDetail() {
     },
   });
 
+  const markDoneMutation = useMutation({
+    mutationFn: () => sendTaskMessage(id!, '__done__'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['task', id] });
+    },
+  });
+
   const isViewer = me?.role === 'viewer';
   const showChat = task && CHAT_STATUSES.includes(task.status) && me && !isViewer;
   const canReopen = task && !isViewer && (task.status === 'completed' || task.status === 'failed');
@@ -111,7 +122,11 @@ export default function TaskDetail() {
     !task.pr_url &&
     (task.status === 'completed' || task.status === 'awaiting_followup');
 
-  const initialTab = useMemo(() => defaultTab(task?.status), [task?.status]);
+  const initialTab = useMemo(() => {
+    const tab = defaultTab(task?.status);
+    if (tab === 'conversation' && !showChat) return 'activity';
+    return tab;
+  }, [task?.status, showChat]);
 
   const policyViolations = actions?.filter((a) => a.action_type === 'policy_violation') ?? [];
   const imageUrls = task ? parseImageUrls(task.image_url) : [];
@@ -161,6 +176,18 @@ export default function TaskDetail() {
                 Preview
               </Badge>
             </a>
+          )}
+          {task?.status === 'awaiting_followup' && !isViewer && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => markDoneMutation.mutate()}
+              disabled={markDoneMutation.isPending}
+              className="text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/10"
+            >
+              <CheckCircle className="size-3.5 mr-1" />
+              {markDoneMutation.isPending ? 'Completing...' : 'Mark Done'}
+            </Button>
           )}
           {canReopen && (
             <Button
@@ -224,189 +251,190 @@ export default function TaskDetail() {
         <PolicyBanner violations={policyViolations} />
       )}
 
-      {/* ===== Main content: split pane ===== */}
-      <div
-        className={`grid flex-1 min-h-0 pt-3 gap-3 ${
-          showChat
-            ? 'grid-cols-1 md:grid-cols-[5fr_7fr]'
-            : 'grid-cols-1'
-        }`}
-      >
-        {/* Left pane: Chat */}
-        {showChat && (
-          <div className="min-h-0 overflow-hidden rounded-lg border border-border bg-card">
-            <TaskChat
-              taskId={id!}
-              currentUserEmail={me!.login}
-              previewUrl={task.preview_url ?? undefined}
-              taskStatus={task.status}
-            />
-          </div>
-        )}
-
-        {/* Right pane: Tabbed workspace */}
-        <Tabs defaultValue={initialTab} className="flex flex-col min-h-0">
-          <TabsList variant="line" className="shrink-0 border-b border-border pb-0 mb-0">
-            <TabsTrigger value="activity" className="gap-1.5">
-              <Activity className="size-3.5" />
-              Activity
-            </TabsTrigger>
-            <TabsTrigger value="logs" className="gap-1.5">
-              <ScrollText className="size-3.5" />
-              Logs
-            </TabsTrigger>
-            <TabsTrigger value="diff" className="gap-1.5">
-              <FileDiff className="size-3.5" />
-              Diff
-              {diffData?.diff && (
-                <span className="ml-1 text-[10px] text-primary tabular-nums">
-                  {diffData.diff.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++')).length}+
-                </span>
+      {/* ===== Main content: full-width tabs ===== */}
+      <Tabs defaultValue={initialTab} className="flex flex-col flex-1 min-h-0 pt-3">
+        <TabsList variant="line" className="shrink-0 border-b border-border pb-0 mb-0">
+          {showChat && (
+            <TabsTrigger value="conversation" className="gap-1.5">
+              <MessageSquare className="size-3.5" />
+              Conversation
+              {task?.status === 'awaiting_followup' && (
+                <span className="size-1.5 rounded-full bg-amber-400 animate-pulse" />
               )}
             </TabsTrigger>
-            <TabsTrigger value="info" className="gap-1.5">
-              <Info className="size-3.5" />
-              Info
-            </TabsTrigger>
-          </TabsList>
+          )}
+          <TabsTrigger value="activity" className="gap-1.5">
+            <Activity className="size-3.5" />
+            Activity
+          </TabsTrigger>
+          <TabsTrigger value="logs" className="gap-1.5">
+            <ScrollText className="size-3.5" />
+            Logs
+          </TabsTrigger>
+          <TabsTrigger value="diff" className="gap-1.5">
+            <FileDiff className="size-3.5" />
+            Diff
+            {diffData?.diff && (
+              <span className="ml-1 text-[10px] text-primary tabular-nums">
+                {diffData.diff.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++')).length}+
+              </span>
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="info" className="gap-1.5">
+            <Info className="size-3.5" />
+            Info
+          </TabsTrigger>
+        </TabsList>
 
-          {/* Activity tab — clean timeline only */}
-          <TabsContent value="activity" className="flex-1 overflow-y-auto rounded-b-lg border border-t-0 border-border bg-card p-4">
-            <ActivityTimeline actions={actions} />
+        {/* Conversation tab */}
+        {showChat && (
+          <TabsContent value="conversation" className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden">
+            <div className="flex-1 flex flex-col min-h-0 max-w-3xl mx-auto w-full">
+              <TaskChat
+                taskId={id!}
+                currentUserEmail={me!.login}
+                taskStatus={task!.status}
+              />
+            </div>
           </TabsContent>
+        )}
 
-          {/* Logs tab */}
-          <TabsContent value="logs" className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden">
-            <LogsTabs taskId={id!} onConnectionChange={onConnectionChange} />
-          </TabsContent>
+        {/* Activity tab — clean timeline only */}
+        <TabsContent value="activity" className="flex-1 overflow-y-auto rounded-b-lg border border-t-0 border-border bg-card p-4">
+          <ActivityTimeline actions={actions} />
+        </TabsContent>
 
-          {/* Diff tab */}
-          <TabsContent value="diff" className="flex-1 overflow-y-auto rounded-b-lg border border-t-0 border-border bg-card">
-            {diffData?.diff ? (
-              <DiffViewer diff={diffData.diff} />
-            ) : (
-              <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
-                <FileDiff className="size-8 mb-2 opacity-30" />
-                <p className="text-sm">
-                  {task?.branch_name ? 'No diff available yet.' : 'No branch created yet.'}
-                </p>
+        {/* Logs tab */}
+        <TabsContent value="logs" className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden">
+          <LogsTabs taskId={id!} onConnectionChange={onConnectionChange} />
+        </TabsContent>
+
+        {/* Diff tab */}
+        <TabsContent value="diff" className="flex-1 overflow-y-auto rounded-b-lg border border-t-0 border-border bg-card">
+          {diffData?.diff ? (
+            <DiffViewer diff={diffData.diff} />
+          ) : (
+            <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
+              <FileDiff className="size-8 mb-2 opacity-30" />
+              <p className="text-sm">
+                {task?.branch_name ? 'No diff available yet.' : 'No branch created yet.'}
+              </p>
+            </div>
+          )}
+        </TabsContent>
+
+        {/* Info tab — prompt, subtasks, images, metadata */}
+        <TabsContent value="info" className="flex-1 overflow-y-auto rounded-b-lg border border-t-0 border-border bg-card p-4">
+          {/* Prompt */}
+          {task && (
+            <div className="mb-6">
+              <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">Prompt</h3>
+              <div className="text-sm whitespace-pre-wrap leading-relaxed rounded-md bg-background/50 border border-border/50 p-3">
+                {task.prompt}
               </div>
-            )}
-          </TabsContent>
+            </div>
+          )}
 
-          {/* Info tab — prompt, subtasks, images, metadata */}
-          <TabsContent value="info" className="flex-1 overflow-y-auto rounded-b-lg border border-t-0 border-border bg-card p-4">
-            {/* Prompt */}
-            {task && (
-              <div className="mb-6">
-                <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">Prompt</h3>
-                <div className="text-sm whitespace-pre-wrap leading-relaxed rounded-md bg-background/50 border border-border/50 p-3">
-                  {task.prompt}
-                </div>
+          {/* Images */}
+          {imageUrls.length > 0 && (
+            <div className="mb-6">
+              <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2 inline-flex items-center gap-1.5">
+                <ImageIcon className="size-3" />
+                Reference Images
+              </h3>
+              <div className="flex flex-wrap gap-2">
+                {imageUrls.map((url, i) => (
+                  <a key={i} href={url} target="_blank" rel="noopener noreferrer">
+                    <img
+                      src={url}
+                      alt={`Reference ${i + 1}`}
+                      className="max-h-48 rounded-md border border-border hover:border-muted-foreground/30 transition-colors"
+                      style={{ objectFit: 'contain' }}
+                    />
+                  </a>
+                ))}
               </div>
-            )}
+            </div>
+          )}
 
-            {/* Images */}
-            {imageUrls.length > 0 && (
-              <div className="mb-6">
-                <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2 inline-flex items-center gap-1.5">
-                  <ImageIcon className="size-3" />
-                  Reference Images
-                </h3>
-                <div className="flex flex-wrap gap-2">
-                  {imageUrls.map((url, i) => (
-                    <a key={i} href={url} target="_blank" rel="noopener noreferrer">
-                      <img
-                        src={url}
-                        alt={`Reference ${i + 1}`}
-                        className="max-h-48 rounded-md border border-border hover:border-muted-foreground/30 transition-colors"
-                        style={{ objectFit: 'contain' }}
-                      />
-                    </a>
-                  ))}
-                </div>
-              </div>
-            )}
+          {/* Error message */}
+          {task?.error_message && (
+            <div className="mb-6 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3">
+              <span className="text-destructive text-xs font-medium uppercase tracking-wider">Error</span>
+              <p className="mt-1 text-sm text-destructive/80">{task.error_message}</p>
+            </div>
+          )}
 
-            {/* Error message */}
-            {task?.error_message && (
-              <div className="mb-6 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3">
-                <span className="text-destructive text-xs font-medium uppercase tracking-wider">Error</span>
-                <p className="mt-1 text-sm text-destructive/80">{task.error_message}</p>
-              </div>
-            )}
+          {/* Screenshot */}
+          {task?.screenshot_url && (
+            <div className="mb-6">
+              <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">Preview Screenshot</h3>
+              <a href={task.screenshot_url} target="_blank" rel="noopener noreferrer">
+                <img
+                  src={task.screenshot_url}
+                  alt="Preview screenshot"
+                  className="max-w-full max-h-72 rounded-md border border-border hover:border-muted-foreground/30 transition-colors"
+                  style={{ objectFit: 'contain' }}
+                />
+              </a>
+            </div>
+          )}
 
-            {/* Screenshot */}
-            {task?.screenshot_url && (
-              <div className="mb-6">
-                <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">Preview Screenshot</h3>
-                <a href={task.screenshot_url} target="_blank" rel="noopener noreferrer">
-                  <img
-                    src={task.screenshot_url}
-                    alt="Preview screenshot"
-                    className="max-w-full max-h-72 rounded-md border border-border hover:border-muted-foreground/30 transition-colors"
-                    style={{ objectFit: 'contain' }}
-                  />
-                </a>
+          {/* Subtasks */}
+          {subtasks && subtasks.length > 0 && (
+            <div className="mb-6">
+              <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">
+                Subtasks ({subtasks.length})
+              </h3>
+              <div className="space-y-2">
+                {subtasks.map((sub) => {
+                  const sv = statusVariant(sub.status);
+                  const SubIcon = sv.icon;
+                  return (
+                    <Link key={sub.id} to={`/tasks/${sub.id}`}>
+                      <div className="flex items-center gap-3 p-2.5 rounded-md border border-border hover:bg-secondary/40 transition-colors">
+                        <Badge variant={sv.variant} className={`${sv.className} text-[10px]`}>
+                          {SubIcon && <SubIcon className={`size-3 ${sv.spin ? 'animate-spin' : ''}`} />}
+                          {sub.status.replace(/_/g, ' ')}
+                        </Badge>
+                        <span className="text-sm truncate flex-1">{sub.name || sub.prompt}</span>
+                        <span className="font-mono text-xs text-muted-foreground">{sub.id.slice(0, 8)}</span>
+                      </div>
+                    </Link>
+                  );
+                })}
               </div>
-            )}
+            </div>
+          )}
 
-            {/* Subtasks */}
-            {subtasks && subtasks.length > 0 && (
-              <div className="mb-6">
-                <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">
-                  Subtasks ({subtasks.length})
-                </h3>
-                <div className="space-y-2">
-                  {subtasks.map((sub) => {
-                    const sv = statusVariant(sub.status);
-                    const SubIcon = sv.icon;
-                    return (
-                      <Link key={sub.id} to={`/tasks/${sub.id}`}>
-                        <div className="flex items-center gap-3 p-2.5 rounded-md border border-border hover:bg-secondary/40 transition-colors">
-                          <Badge variant={sv.variant} className={`${sv.className} text-[10px]`}>
-                            {SubIcon && <SubIcon className={`size-3 ${sv.spin ? 'animate-spin' : ''}`} />}
-                            {sub.status.replace(/_/g, ' ')}
-                          </Badge>
-                          <span className="text-sm truncate flex-1">{sub.name || sub.prompt}</span>
-                          <span className="font-mono text-xs text-muted-foreground">{sub.id.slice(0, 8)}</span>
-                        </div>
-                      </Link>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* Task details */}
-            {task && (
-              <div>
-                <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">Details</h3>
-                <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
-                  <dt className="text-muted-foreground">Task ID</dt>
-                  <dd className="font-mono text-xs">{task.id}</dd>
-                  <dt className="text-muted-foreground">Created by</dt>
-                  <dd>{task.created_by || '—'}</dd>
-                  <dt className="text-muted-foreground">Created</dt>
-                  <dd>{new Date(task.created_at).toLocaleString()}</dd>
-                  {task.updated_at && (
-                    <>
-                      <dt className="text-muted-foreground">Updated</dt>
-                      <dd>{new Date(task.updated_at).toLocaleString()}</dd>
-                    </>
-                  )}
-                  {task.agent_name && (
-                    <>
-                      <dt className="text-muted-foreground">Agent</dt>
-                      <dd className="font-mono text-xs">{task.agent_name}</dd>
-                    </>
-                  )}
-                </dl>
-              </div>
-            )}
-          </TabsContent>
-        </Tabs>
-      </div>
+          {/* Task details */}
+          {task && (
+            <div>
+              <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">Details</h3>
+              <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
+                <dt className="text-muted-foreground">Task ID</dt>
+                <dd className="font-mono text-xs">{task.id}</dd>
+                <dt className="text-muted-foreground">Created by</dt>
+                <dd>{task.created_by || '—'}</dd>
+                <dt className="text-muted-foreground">Created</dt>
+                <dd>{new Date(task.created_at).toLocaleString()}</dd>
+                {task.updated_at && (
+                  <>
+                    <dt className="text-muted-foreground">Updated</dt>
+                    <dd>{new Date(task.updated_at).toLocaleString()}</dd>
+                  </>
+                )}
+                {task.agent_name && (
+                  <>
+                    <dt className="text-muted-foreground">Agent</dt>
+                    <dd className="font-mono text-xs">{task.agent_name}</dd>
+                  </>
+                )}
+              </dl>
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

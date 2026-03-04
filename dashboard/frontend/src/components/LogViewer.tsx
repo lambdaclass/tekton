@@ -183,10 +183,10 @@ export default function LogViewer({ taskId, previewSlug, ws, onConnectionChange 
   }, [taskId, previewSlug, ws]);
 
   return (
-    <div className="rounded-lg border border-border overflow-hidden">
+    <div className="overflow-hidden h-full">
       <div
         ref={containerRef}
-        className="w-full h-[500px] overflow-hidden"
+        className="w-full h-full overflow-hidden"
       />
     </div>
   );
