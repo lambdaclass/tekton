@@ -169,10 +169,10 @@ export default function TaskDetail() {
           )}
           {task?.preview_url && (
             <a href={task.preview_url} target="_blank" rel="noopener noreferrer">
-              <Badge variant="outline" className="gap-1 cursor-pointer hover:bg-secondary transition-colors text-xs">
-                <ExternalLink className="size-3" />
+              <Button size="sm" className="gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm">
+                <ExternalLink className="size-3.5" />
                 Preview
-              </Badge>
+              </Button>
             </a>
           )}
           {task?.status === 'awaiting_followup' && !isViewer && (
@@ -302,8 +302,8 @@ export default function TaskDetail() {
           <ActivityTimeline actions={actions} />
         </TabsContent>
 
-        {/* Logs tab */}
-        <TabsContent value="logs" className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden">
+        {/* Logs tab — forceMount keeps the WebSocket alive across tab switches */}
+        <TabsContent value="logs" forceMount className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden data-[state=inactive]:hidden">
           <LogsTabs taskId={id!} onConnectionChange={onConnectionChange} />
         </TabsContent>
 
