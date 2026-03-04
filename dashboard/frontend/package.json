@@ -16,6 +16,7 @@
     "coverage:check": "nyc check-coverage"
   },
   "dependencies": {
+    "@tailwindcss/typography": "^0.5.19",
     "@tailwindcss/vite": "^4.2.0",
     "@tanstack/react-query": "^5.90.21",
     "@xterm/addon-fit": "^0.11.0",
@@ -27,7 +28,9 @@
     "radix-ui": "^1.4.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
     "react-router-dom": "^7.13.0",
+    "remark-gfm": "^4.0.1",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.5.0",
     "tailwindcss": "^4.2.0"
