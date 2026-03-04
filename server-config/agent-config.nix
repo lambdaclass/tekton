@@ -63,7 +63,6 @@ EOF
   security.sudo.wheelNeedsPassword = false;
 
   users.users.root = {
-    password = "changeme";  # Fallback password
     openssh.authorizedKeys.keys = [
       "ssh-ed25519 AAAA... your-key-here"
       "ssh-ed25519 AAAA... root-key-here"

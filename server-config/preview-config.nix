@@ -136,9 +136,7 @@ in
     settings.PermitRootLogin = "yes";
   };
 
-  users.users.root = {
-    password = "changeme";
-  };
+  users.users.root = {};
 
   system.build.previewMeta = pkgs.writeText "preview-meta.json" (builtins.toJSON meta);
   environment.etc."preview-meta.json".text = builtins.toJSON meta;
