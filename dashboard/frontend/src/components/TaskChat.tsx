@@ -158,20 +158,20 @@ export default function TaskChat({ taskId, currentUserEmail, taskStatus }: TaskC
             <article
               key={msg.id}
               className={`w-full rounded-md border-l-2 pl-4 py-3 pr-3 ${
-                msg.sender === currentUserEmail
-                  ? 'border-l-blue-500 bg-blue-500/5'
-                  : 'border-l-amber-500 bg-amber-500/5'
+                msg.sender === 'claude'
+                  ? 'border-l-amber-500 bg-amber-500/5'
+                  : 'border-l-blue-500 bg-blue-500/5'
               }`}
             >
               <div className="flex items-center gap-2 mb-1.5">
                 <span
                   className={`font-semibold text-xs ${
-                    msg.sender === currentUserEmail
-                      ? 'text-blue-700 dark:text-blue-400'
-                      : 'text-amber-700 dark:text-amber-400'
+                    msg.sender === 'claude'
+                      ? 'text-amber-700 dark:text-amber-400'
+                      : 'text-blue-700 dark:text-blue-400'
                   }`}
                 >
-                  {msg.sender === currentUserEmail ? 'You' : msg.sender === 'claude' ? 'Claude' : msg.sender}
+                  {msg.sender === 'claude' ? 'Claude' : msg.sender === currentUserEmail ? 'You' : msg.sender}
                 </span>
                 <span className="text-[11px] text-muted-foreground/70" title={new Date(msg.created_at).toLocaleString()}>
                   {timeAgo(msg.created_at)}

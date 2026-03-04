@@ -134,7 +134,7 @@ export default function TaskDetail() {
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)]">
       {/* ===== Top bar: navigation + title ===== */}
-      <div className="flex items-center gap-2 px-1 pb-2 shrink-0">
+      <div className="flex items-center gap-2 px-1 pb-2 shrink-0 flex-wrap">
         <Button variant="ghost" size="icon-sm" onClick={() => navigate('/tasks')}>
           <ChevronLeft className="size-4" />
         </Button>
@@ -160,7 +160,7 @@ export default function TaskDetail() {
         )}
 
         {/* Right side actions */}
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-2 flex-wrap justify-end">
           {task?.parent_task_id && (
             <Link
               to={`/tasks/${task.parent_task_id}`}
