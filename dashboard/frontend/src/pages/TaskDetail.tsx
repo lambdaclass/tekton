@@ -14,7 +14,7 @@ import { Separator } from '@/components/ui/separator';
 import { statusVariant } from '@/lib/status';
 import { formatCost } from '@/lib/utils';
 
-const CHAT_STATUSES = ['awaiting_followup', 'running_claude', 'pushing', 'creating_preview'];
+const CHAT_STATUSES = ['awaiting_followup', 'running_claude', 'pushing', 'creating_preview', 'planning', 'awaiting_plan_approval'];
 
 export default function TaskDetail() {
   const { id } = useParams<{ id: string }>();
@@ -257,7 +257,7 @@ export default function TaskDetail() {
       )}
 
       {showChat && me && !isViewer && (
-        <TaskChat taskId={id!} currentUserEmail={me.login} previewUrl={task.preview_url ?? undefined} />
+        <TaskChat taskId={id!} currentUserEmail={me.login} previewUrl={task.preview_url ?? undefined} taskStatus={task.status} />
       )}
 
       {subtasks && subtasks.length > 0 && (

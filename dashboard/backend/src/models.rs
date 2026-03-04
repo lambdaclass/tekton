@@ -94,6 +94,7 @@ pub struct Task {
     pub pr_url: Option<String>,
     pub pr_number: Option<i32>,
     pub compute_seconds: Option<i32>,
+    pub plan_mode: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,6 +105,7 @@ pub struct CreateTaskRequest {
     pub parent_task_id: Option<String>,
     pub image_urls: Option<Vec<String>>,
     pub custom_branch_name: Option<String>,
+    pub plan_mode: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

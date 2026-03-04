@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Send, CheckCircle, ExternalLink, ImagePlus, X, Loader2 } from 'lucide-react';
+import { Send, CheckCircle, XCircle, ExternalLink, ImagePlus, X, Loader2, FileCheck } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { listTaskMessages, sendTaskMessage, uploadImage, parseImageUrls } from '@/lib/api';
@@ -12,9 +12,10 @@ interface TaskChatProps {
   taskId: string;
   currentUserEmail: string;
   previewUrl?: string;
+  taskStatus?: string;
 }
 
-export default function TaskChat({ taskId, currentUserEmail, previewUrl }: TaskChatProps) {
+export default function TaskChat({ taskId, currentUserEmail, previewUrl, taskStatus }: TaskChatProps) {
   const queryClient = useQueryClient();
   const [message, setMessage] = useState('');
   const [chatImages, setChatImages] = useState<File[]>([]);
@@ -88,6 +89,16 @@ export default function TaskChat({ taskId, currentUserEmail, previewUrl }: TaskC
     sendMutation.mutate({ content: '__done__', image_urls: undefined });
   };
 
+  const handleApprovePlan = () => {
+    sendMutation.mutate({ content: '__approve__', image_urls: undefined });
+  };
+
+  const handleRejectPlan = () => {
+    sendMutation.mutate({ content: '__reject__', image_urls: undefined });
+  };
+
+  const isPlanReview = taskStatus === 'awaiting_plan_approval';
+
   const senderColor = (sender: string) => {
     if (sender === currentUserEmail) return 'bg-primary/10 border-primary/20';
     if (sender === 'claude') return 'bg-muted border-border';
@@ -98,17 +109,44 @@ export default function TaskChat({ taskId, currentUserEmail, previewUrl }: TaskC
     <Card className="mb-6">
       <CardHeader className="py-3">
         <CardTitle className="text-base flex items-center justify-between">
-          <span>Follow-up Chat</span>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleMarkDone}
-            disabled={sendMutation.isPending}
-            className="text-green-400 border-green-500/30 hover:bg-green-500/10"
-          >
-            <CheckCircle className="size-4 mr-1" />
-            Mark Done
-          </Button>
+          <span>{isPlanReview ? 'Plan Review' : 'Follow-up Chat'}</span>
+          <div className="flex gap-2">
+            {isPlanReview ? (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleApprovePlan}
+                  disabled={sendMutation.isPending}
+                  className="text-green-400 border-green-500/30 hover:bg-green-500/10"
+                >
+                  <FileCheck className="size-4 mr-1" />
+                  Approve Plan
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRejectPlan}
+                  disabled={sendMutation.isPending}
+                  className="text-red-400 border-red-500/30 hover:bg-red-500/10"
+                >
+                  <XCircle className="size-4 mr-1" />
+                  Reject
+                </Button>
+              </>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleMarkDone}
+                disabled={sendMutation.isPending}
+                className="text-green-400 border-green-500/30 hover:bg-green-500/10"
+              >
+                <CheckCircle className="size-4 mr-1" />
+                Mark Done
+              </Button>
+            )}
+          </div>
         </CardTitle>
       </CardHeader>
       <CardContent
@@ -117,6 +155,12 @@ export default function TaskChat({ taskId, currentUserEmail, previewUrl }: TaskC
         onDragLeave={() => setDragOver(false)}
         onDrop={handleChatDrop}
       >
+        {isPlanReview && (
+          <div className="mb-4 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center gap-2 text-sm">
+            <FileCheck className="size-4 text-blue-400 shrink-0" />
+            <span className="text-muted-foreground">Review Claude's plan below, then approve to proceed or send feedback to revise.</span>
+          </div>
+        )}
         {previewUrl && (
           <div className="mb-4 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center gap-2 text-sm">
             <ExternalLink className="size-4 text-blue-400 shrink-0" />

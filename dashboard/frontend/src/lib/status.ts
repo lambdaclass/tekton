@@ -23,6 +23,13 @@ export function statusVariant(status: string): {
         className: "bg-amber-500/20 text-amber-400 border-amber-500/30",
         icon: Clock,
       };
+    case "awaiting_plan_approval":
+      return {
+        variant: "secondary",
+        className: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+        icon: Clock,
+      };
+    case "planning":
     case "creating_agent":
     case "cloning":
     case "running_claude":
