@@ -31,13 +31,26 @@ export default defineConfig({
   globalTeardown: "./e2e/global-teardown.ts",
 
   webServer: {
-    command:
-      "cd ../backend && cargo run --release",
+    command: "cd ../backend && cargo run --release",
     port: 3200,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
     env: {
-      STATIC_DIR: "./dist",
+      DATABASE_URL:
+        process.env.DATABASE_URL ||
+        "postgres://localhost:5432/tekton_test",
+      JWT_SECRET: process.env.JWT_SECRET || "test-secret-key-for-ci",
+      GITHUB_CLIENT_ID: process.env.GITHUB_CLIENT_ID || "test-client-id",
+      GITHUB_CLIENT_SECRET:
+        process.env.GITHUB_CLIENT_SECRET || "test-client-secret",
+      GITHUB_REDIRECT_URI:
+        process.env.GITHUB_REDIRECT_URI ||
+        "http://localhost:3200/api/auth/callback",
+      GITHUB_ORG: process.env.GITHUB_ORG || "testorg",
+      STATIC_DIR: process.env.STATIC_DIR || "../frontend/dist",
+      SECRETS_ENCRYPTION_KEY: "test-encryption-key-32chars-ok!",
+      PREVIEW_DOMAIN: "preview.test.dev",
+      TEST_MODE: "true",
     },
   },
 });

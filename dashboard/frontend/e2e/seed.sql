@@ -270,7 +270,28 @@ VALUES
     ('task.complete', 'system', 'task-completed-1', '{"cost_usd": 1.50}', NULL, NOW() - INTERVAL '12 hours'),
     ('admin.role_change', 'testadmin', 'testviewer', '{"new_role": "viewer"}', '127.0.0.1', NOW() - INTERVAL '6 hours'),
     ('admin.user_repos_changed', 'testadmin', 'testmember', '{"repos": ["testorg/testrepo","testorg/frontend"]}', '127.0.0.1', NOW() - INTERVAL '5 hours'),
-    ('auth.logout', 'testmember', NULL, '{}', '127.0.0.1', NOW() - INTERVAL '4 hours');
+    ('auth.logout', 'testmember', NULL, '{}', '127.0.0.1', NOW() - INTERVAL '4 hours'),
+    -- Additional entries for pagination testing (need 27+ total for 2 pages at PER_PAGE=25)
+    ('auth.login', 'testviewer', NULL, '{"role": "viewer"}', '127.0.0.1', NOW() - INTERVAL '3 days'),
+    ('task.create', 'testmember', 'task-running-1', '{"repo": "testorg/testrepo", "prompt": "Fix login page CSS"}', '127.0.0.1', NOW() - INTERVAL '3 days'),
+    ('task.create', 'testmember', 'task-pending-1', '{"repo": "testorg/testrepo", "prompt": "Add dark mode support"}', '127.0.0.1', NOW() - INTERVAL '2 days' + INTERVAL '1 hour'),
+    ('task.create', 'testadmin', 'task-failed-1', '{"repo": "testorg/testrepo", "prompt": "Migrate database"}', '127.0.0.1', NOW() - INTERVAL '2 days' + INTERVAL '2 hours'),
+    ('task.create', 'testmember', 'task-completed-2', '{"repo": "testorg/frontend", "prompt": "Add search"}', '127.0.0.1', NOW() - INTERVAL '2 days' + INTERVAL '4 hours'),
+    ('task.complete', 'system', 'task-completed-2', '{"cost_usd": 0.95}', NULL, NOW() - INTERVAL '1 day' + INTERVAL '1 hour'),
+    ('admin.secret_created', 'testadmin', 'testorg/testrepo:NPM_TOKEN', '{}', '127.0.0.1', NOW() - INTERVAL '7 days'),
+    ('admin.secret_created', 'testadmin', 'testorg/testrepo:DEPLOY_KEY', '{}', '127.0.0.1', NOW() - INTERVAL '7 days'),
+    ('admin.secret_created', 'testadmin', 'testorg/frontend:API_KEY', '{}', '127.0.0.1', NOW() - INTERVAL '7 days'),
+    ('admin.policy_created', 'testadmin', 'testorg/testrepo', '{"max_cost_usd": 10.0}', '127.0.0.1', NOW() - INTERVAL '7 days'),
+    ('admin.policy_created', 'testadmin', 'testorg/frontend', '{"max_cost_usd": 5.0}', '127.0.0.1', NOW() - INTERVAL '7 days'),
+    ('admin.org_policy_created', 'testadmin', 'testorg', '{"max_cost_usd": 50.0}', '127.0.0.1', NOW() - INTERVAL '7 days'),
+    ('admin.budget_created', 'testadmin', 'testadmin', '{"monthly_limit_usd": 100.0}', '127.0.0.1', NOW() - INTERVAL '7 days'),
+    ('admin.budget_created', 'testadmin', 'testorg', '{"monthly_limit_usd": 500.0}', '127.0.0.1', NOW() - INTERVAL '7 days'),
+    ('auth.login', 'testadmin', NULL, '{"role": "admin"}', '192.168.1.1', NOW() - INTERVAL '2 days'),
+    ('auth.login', 'testmember', NULL, '{"role": "member"}', '192.168.1.2', NOW() - INTERVAL '2 days'),
+    ('auth.login', 'testviewer', NULL, '{"role": "viewer"}', '192.168.1.3', NOW() - INTERVAL '2 days'),
+    ('auth.logout', 'testadmin', NULL, '{}', '127.0.0.1', NOW() - INTERVAL '2 days' + INTERVAL '8 hours'),
+    ('auth.logout', 'testviewer', NULL, '{}', '127.0.0.1', NOW() - INTERVAL '2 days' + INTERVAL '6 hours'),
+    ('task.fail', 'system', 'task-failed-1', '{"error": "Migration failed"}', NULL, NOW() - INTERVAL '2 days' + INTERVAL '3 hours');
 
 -- ============================================================
 -- Seed: User repo permissions

@@ -11,10 +11,11 @@ test.describe('Tasks List', () => {
   test('each task card shows status badge', async ({ adminPage }) => {
     await adminPage.goto('/tasks');
     await expect(adminPage.locator('.line-clamp-2').first()).toBeVisible();
-    // Check various status badges from seed data
-    await expect(adminPage.getByText('pending').first()).toBeVisible();
-    await expect(adminPage.getByText('completed').first()).toBeVisible();
-    await expect(adminPage.getByText('failed')).toBeVisible();
+    // Check various status badges in task cards (not in the filter dropdown)
+    const cards = adminPage.locator('a[href^="/tasks/"]');
+    await expect(cards.filter({ hasText: 'pending' }).first()).toBeVisible();
+    await expect(cards.filter({ hasText: 'completed' }).first()).toBeVisible();
+    await expect(cards.filter({ hasText: 'failed' }).first()).toBeVisible();
   });
 
   test('task card shows prompt text', async ({ adminPage }) => {
@@ -30,8 +31,8 @@ test.describe('Tasks List', () => {
 
   test('task card shows task name when available', async ({ adminPage }) => {
     await adminPage.goto('/tasks');
-    await expect(adminPage.getByText('Dark mode')).toBeVisible();
-    await expect(adminPage.getByText('User settings')).toBeVisible();
+    await expect(adminPage.getByText('Dark mode').first()).toBeVisible();
+    await expect(adminPage.getByText('User settings').first()).toBeVisible();
   });
 
   test('task card shows truncated task ID', async ({ adminPage }) => {
@@ -55,7 +56,8 @@ test.describe('Tasks List', () => {
     await adminPage.goto('/tasks');
     const select = adminPage.locator('select');
     await expect(select).toBeVisible();
-    await expect(select.locator('option', { hasText: 'All statuses' })).toBeVisible();
+    // Verify the default value is "all" (All statuses)
+    await expect(select).toHaveValue('all');
   });
 
   test('search input filters tasks by text', async ({ adminPage }) => {

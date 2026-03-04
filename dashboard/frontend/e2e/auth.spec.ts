@@ -15,13 +15,13 @@ test.describe('Authentication', () => {
   test('authenticated user sees role badge', async ({ adminPage }) => {
     await adminPage.goto('/');
     // The role badge in the sidebar footer
-    const roleBadge = adminPage.locator('aside').getByText('admin', { exact: true });
+    const roleBadge = adminPage.locator('[data-sidebar="footer"]').getByText('admin', { exact: true });
     await expect(roleBadge).toBeVisible();
   });
 
   test('viewer role badge is displayed for viewer user', async ({ viewerPage }) => {
     await viewerPage.goto('/');
-    const roleBadge = viewerPage.locator('aside').getByText('viewer', { exact: true });
+    const roleBadge = viewerPage.locator('[data-sidebar="footer"]').getByText('viewer', { exact: true });
     await expect(roleBadge).toBeVisible();
   });
 

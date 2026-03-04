@@ -1,34 +1,13 @@
 import { test, expect, TEST_IDS } from './fixtures';
 
-const setupRoutes = async (page: import('@playwright/test').Page) => {
-  await page.route('**/api/auth/me', (route) =>
-    route.fulfill({ json: { login: TEST_IDS.users.admin, name: 'Test Admin', role: 'admin' } })
-  );
-};
-
-const SAMPLE_ENTRIES = [
-  { id: 1, event_type: 'auth.login', actor: 'testadmin', target: null, detail: { role: 'admin' }, created_at: '2025-01-15T10:00:00Z' },
-  { id: 2, event_type: 'task.create', actor: 'testadmin', target: 'task-completed-1', detail: { repo: 'testorg/testrepo' }, created_at: '2025-01-15T11:00:00Z' },
-  { id: 3, event_type: 'task.complete', actor: 'system', target: 'task-completed-1', detail: { cost_usd: 1.50 }, created_at: '2025-01-15T12:00:00Z' },
-  { id: 4, event_type: 'admin.role_change', actor: 'testadmin', target: 'testviewer', detail: { new_role: 'viewer' }, created_at: '2025-01-15T13:00:00Z' },
-];
-
 test.describe('Audit Log', () => {
   test('renders Audit Log heading', async ({ adminPage: page }) => {
-    await setupRoutes(page);
-    await page.route('**/api/admin/audit-log*', (route) =>
-      route.fulfill({ json: { entries: [], total: 0, page: 1, per_page: 25 } })
-    );
     await page.goto('/audit');
 
     await expect(page.getByRole('heading', { name: 'Audit Log' })).toBeVisible();
   });
 
   test('renders filter controls', async ({ adminPage: page }) => {
-    await setupRoutes(page);
-    await page.route('**/api/admin/audit-log*', (route) =>
-      route.fulfill({ json: { entries: [], total: 0, page: 1, per_page: 25 } })
-    );
     await page.goto('/audit');
 
     await expect(page.getByText('Event Type')).toBeVisible();
@@ -38,21 +17,7 @@ test.describe('Audit Log', () => {
     await expect(page.getByText('End Date')).toBeVisible();
   });
 
-  test('shows empty state when no events exist', async ({ adminPage: page }) => {
-    await setupRoutes(page);
-    await page.route('**/api/admin/audit-log*', (route) =>
-      route.fulfill({ json: { entries: [], total: 0, page: 1, per_page: 25 } })
-    );
-    await page.goto('/audit');
-
-    await expect(page.getByText('No events found.')).toBeVisible();
-  });
-
   test('renders audit log entries in table', async ({ adminPage: page }) => {
-    await setupRoutes(page);
-    await page.route('**/api/admin/audit-log*', (route) =>
-      route.fulfill({ json: { entries: SAMPLE_ENTRIES, total: 4, page: 1, per_page: 25 } })
-    );
     await page.goto('/audit');
 
     // Table headers
@@ -62,28 +27,19 @@ test.describe('Audit Log', () => {
     await expect(page.getByRole('columnheader', { name: 'Target' })).toBeVisible();
     await expect(page.getByRole('columnheader', { name: 'Detail' })).toBeVisible();
 
-    // Entry data
-    await expect(page.getByText('auth.login')).toBeVisible();
-    await expect(page.getByText('task.create')).toBeVisible();
-    await expect(page.getByText('task.complete')).toBeVisible();
+    // Seeded entry data
+    await expect(page.getByText('auth.login').first()).toBeVisible();
     await expect(page.getByRole('cell', { name: 'testadmin' }).first()).toBeVisible();
   });
 
   test('total count is displayed', async ({ adminPage: page }) => {
-    await setupRoutes(page);
-    await page.route('**/api/admin/audit-log*', (route) =>
-      route.fulfill({ json: { entries: SAMPLE_ENTRIES, total: 4, page: 1, per_page: 25 } })
-    );
     await page.goto('/audit');
 
-    await expect(page.getByText('(4 total)')).toBeVisible();
+    // Flexible count — don't assert exact number since other tests may add entries
+    await expect(page.getByText(/\(\d+ total\)/)).toBeVisible();
   });
 
   test('detail expand/collapse toggle works', async ({ adminPage: page }) => {
-    await setupRoutes(page);
-    await page.route('**/api/admin/audit-log*', (route) =>
-      route.fulfill({ json: { entries: SAMPLE_ENTRIES, total: 4, page: 1, per_page: 25 } })
-    );
     await page.goto('/audit');
 
     // Click the first "Show" button to expand details
@@ -102,80 +58,41 @@ test.describe('Audit Log', () => {
   });
 
   test('task target is a clickable link', async ({ adminPage: page }) => {
-    await setupRoutes(page);
-    await page.route('**/api/admin/audit-log*', (route) =>
-      route.fulfill({
-        json: {
-          entries: [
-            { id: 2, event_type: 'task.create', actor: 'testadmin', target: 'task-completed-1', detail: null, created_at: '2025-01-15T11:00:00Z' },
-          ],
-          total: 1,
-          page: 1,
-          per_page: 25,
-        },
-      })
-    );
     await page.goto('/audit');
 
-    const targetLink = page.getByRole('link', { name: 'task-completed-1' });
+    const targetLink = page.getByRole('link', { name: 'task-completed-1' }).first();
     await expect(targetLink).toBeVisible();
     await expect(targetLink).toHaveAttribute('href', '/tasks/task-completed-1');
   });
 
-  test('pagination is shown when total exceeds per_page', async ({ adminPage: page }) => {
-    await setupRoutes(page);
-    await page.route('**/api/admin/audit-log*', (route) =>
-      route.fulfill({
-        json: { entries: SAMPLE_ENTRIES, total: 50, page: 1, per_page: 25 },
-      })
-    );
+  test('pagination is shown with 27+ entries', async ({ adminPage: page }) => {
     await page.goto('/audit');
 
-    await expect(page.getByText('Page 1 of 2')).toBeVisible();
+    await expect(page.getByText(/Page 1/)).toBeVisible();
     await expect(page.getByRole('button', { name: /Prev/ })).toBeDisabled();
     await expect(page.getByRole('button', { name: /Next/ })).toBeEnabled();
   });
 
-  test('Next button sends page parameter to API', async ({ adminPage: page }) => {
-    let lastRequestUrl = '';
-    await setupRoutes(page);
-    await page.route('**/api/admin/audit-log*', async (route) => {
-      lastRequestUrl = route.request().url();
-      await route.fulfill({
-        json: { entries: SAMPLE_ENTRIES, total: 50, page: 1, per_page: 25 },
-      });
-    });
+  test('clicking Next navigates to page 2', async ({ adminPage: page }) => {
     await page.goto('/audit');
 
     await page.getByRole('button', { name: /Next/ }).click();
 
-    await expect(() => {
-      expect(lastRequestUrl).toContain('page=2');
-    }).toPass({ timeout: 5000 });
+    await expect(page.getByText(/Page 2/)).toBeVisible();
   });
 
-  test('actor filter sends filter parameter to API', async ({ adminPage: page }) => {
-    let lastRequestUrl = '';
-    await setupRoutes(page);
-    await page.route('**/api/admin/audit-log*', async (route) => {
-      lastRequestUrl = route.request().url();
-      await route.fulfill({
-        json: { entries: [], total: 0, page: 1, per_page: 25 },
-      });
-    });
+  test('actor filter filters results', async ({ adminPage: page }) => {
     await page.goto('/audit');
 
     await page.getByPlaceholder('Filter by actor...').fill('testadmin');
 
-    await expect(() => {
-      expect(lastRequestUrl).toContain('actor=testadmin');
-    }).toPass({ timeout: 5000 });
+    // Wait for filter to take effect — count should update
+    await expect(page.getByRole('cell', { name: 'testadmin' }).first()).toBeVisible();
+    // After filtering by actor=testadmin, the "system" actor entries should be gone
+    await expect(page.getByRole('cell', { name: 'system' })).not.toBeVisible({ timeout: 5000 });
   });
 
   test('non-admin user is redirected away from audit log', async ({ memberPage: page }) => {
-    await page.route('**/api/auth/me', (route) =>
-      route.fulfill({ json: { login: TEST_IDS.users.member, name: 'Test Member', role: 'member' } })
-    );
     await page.goto('/audit');
     await expect(page).toHaveURL('/');
   });

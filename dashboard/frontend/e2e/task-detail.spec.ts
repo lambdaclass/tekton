@@ -13,7 +13,7 @@ test.describe('Task Detail', () => {
 
   test('shows repo in metadata', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.completed}`);
-    await expect(adminPage.getByText(TEST_IDS.repos.main)).toBeVisible();
+    await expect(adminPage.getByText(TEST_IDS.repos.main).first()).toBeVisible();
   });
 
   test('shows base branch in metadata', async ({ adminPage }) => {
@@ -24,12 +24,12 @@ test.describe('Task Detail', () => {
 
   test('shows branch name in metadata', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.completed}`);
-    await expect(adminPage.getByText('feat/user-settings')).toBeVisible();
+    await expect(adminPage.getByText('feat/user-settings', { exact: true })).toBeVisible();
   });
 
   test('shows creator in metadata', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.completed}`);
-    await expect(adminPage.getByText(TEST_IDS.users.admin)).toBeVisible();
+    await expect(adminPage.getByText(TEST_IDS.users.admin).first()).toBeVisible();
   });
 
   test('shows token usage and cost info', async ({ adminPage }) => {
@@ -43,7 +43,7 @@ test.describe('Task Detail', () => {
 
   test('shows prompt text', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.completed}`);
-    await expect(adminPage.getByText('Implement user settings page')).toBeVisible();
+    await expect(adminPage.getByText('Implement user settings page', { exact: true })).toBeVisible();
   });
 
   test('back button navigates to tasks list', async ({ adminPage }) => {

@@ -43,21 +43,22 @@ test.describe('Navigation', () => {
 
   test('sidebar nav links navigate to correct pages', async ({ adminPage }) => {
     await adminPage.goto('/');
+    const sidebar = adminPage.locator('[data-sidebar="sidebar"]').first();
 
     // Click Tasks in sidebar
-    await adminPage.getByRole('link', { name: 'Tasks' }).first().click();
+    await sidebar.getByRole('link', { name: 'Tasks' }).click();
     await expect(adminPage).toHaveURL('/tasks');
 
     // Click Previews in sidebar
-    await adminPage.getByRole('link', { name: 'Previews' }).click();
+    await sidebar.getByRole('link', { name: 'Previews' }).click();
     await expect(adminPage).toHaveURL('/previews');
 
     // Click Settings in sidebar
-    await adminPage.getByRole('link', { name: 'Settings' }).click();
+    await sidebar.getByRole('link', { name: 'Settings' }).click();
     await expect(adminPage).toHaveURL('/settings');
 
     // Click Home in sidebar
-    await adminPage.getByRole('link', { name: 'Home' }).click();
+    await sidebar.getByRole('link', { name: 'Home' }).click();
     await expect(adminPage).toHaveURL('/');
   });
 
@@ -95,7 +96,7 @@ test.describe('Navigation', () => {
 
   test('sidebar footer shows user role badge', async ({ adminPage }) => {
     await adminPage.goto('/');
-    await expect(adminPage.getByText('admin')).toBeVisible();
+    await expect(adminPage.locator('[data-sidebar="footer"]').getByText('admin', { exact: true })).toBeVisible();
   });
 
   test('home page shows Previews and Tasks cards', async ({ adminPage }) => {
@@ -122,7 +123,7 @@ test.describe('Navigation', () => {
 
   test('layout has sidebar and main content area', async ({ adminPage }) => {
     await adminPage.goto('/');
-    await expect(adminPage.locator('[data-sidebar="sidebar"]')).toBeVisible();
-    await expect(adminPage.locator('main')).toBeVisible();
+    await expect(adminPage.locator('[data-sidebar="sidebar"]').first()).toBeVisible();
+    await expect(adminPage.locator('main').first()).toBeVisible();
   });
 });
