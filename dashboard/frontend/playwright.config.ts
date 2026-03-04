@@ -33,7 +33,7 @@ export default defineConfig({
   webServer: {
     command: "cd ../backend && cargo run --release",
     port: 3200,
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: true,
     timeout: 120_000,
     env: {
       DATABASE_URL:
