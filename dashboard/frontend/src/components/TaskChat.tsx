@@ -144,19 +144,36 @@ export default function TaskChat({ taskId, currentUserEmail, taskStatus }: TaskC
         )}
         {processedMessages?.map((msg) =>
           msg.sender === 'system' ? (
-            <div key={msg.id} className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground italic py-1">
-              {msg.content.endsWith('...') && processedMessages && msg === processedMessages[processedMessages.length - 1] && (
-                <Loader2 className="size-3 animate-spin" />
-              )}
-              {msg.content}
+            <div key={msg.id} className="flex items-center gap-3 py-1 text-xs text-muted-foreground">
+              <div className="flex-1 border-t border-border/60" />
+              <span className="flex items-center gap-1.5 italic shrink-0">
+                {msg.content.endsWith('...') && processedMessages && msg === processedMessages[processedMessages.length - 1] && (
+                  <Loader2 className="size-3 animate-spin" />
+                )}
+                {msg.content}
+              </span>
+              <div className="flex-1 border-t border-border/60" />
             </div>
           ) : (
-            <article key={msg.id} className="w-full">
-              <div className="flex items-center gap-2 mb-1">
-                <span className="font-medium text-xs text-muted-foreground">
-                  {msg.sender === currentUserEmail ? 'You' : msg.sender}
+            <article
+              key={msg.id}
+              className={`w-full rounded-md border-l-2 pl-4 py-3 pr-3 ${
+                msg.sender === currentUserEmail
+                  ? 'border-l-blue-500 bg-blue-500/5'
+                  : 'border-l-amber-500 bg-amber-500/5'
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-1.5">
+                <span
+                  className={`font-semibold text-xs ${
+                    msg.sender === currentUserEmail
+                      ? 'text-blue-700 dark:text-blue-400'
+                      : 'text-amber-700 dark:text-amber-400'
+                  }`}
+                >
+                  {msg.sender === currentUserEmail ? 'You' : msg.sender === 'claude' ? 'Claude' : msg.sender}
                 </span>
-                <span className="text-xs text-muted-foreground" title={new Date(msg.created_at).toLocaleString()}>
+                <span className="text-[11px] text-muted-foreground/70" title={new Date(msg.created_at).toLocaleString()}>
                   {timeAgo(msg.created_at)}
                 </span>
               </div>
