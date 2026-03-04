@@ -805,6 +805,7 @@ async fn run_task_pipeline(
         &mut preview_created,
         created_by,
         &tx,
+        0,
     )
     .await?;
 
@@ -1311,6 +1312,7 @@ async fn follow_up_loop(
     preview_created: &mut bool,
     created_by: &str,
     tx: &broadcast::Sender<String>,
+    initial_last_seen_id: i64,
 ) -> Result<FollowUpOutcome, AppError> {
     let &PipelineCtx {
         config,
@@ -1321,7 +1323,7 @@ async fn follow_up_loop(
         base_branch: _,
         git_id: _,
     } = ctx;
-    let mut last_seen_id: i64 = 0;
+    let mut last_seen_id: i64 = initial_last_seen_id;
 
     // Track conversation history for context (used as fallback if --continue fails)
     let mut conversation_history: Vec<String> = Vec::new();
@@ -2634,6 +2636,7 @@ async fn run_reopen_pipeline(
         &mut preview_created,
         created_by,
         &tx,
+        0,
     )
     .await?;
 
@@ -2715,6 +2718,14 @@ async fn recover_to_followup(
         }
     }
 
+    // Skip all messages that existed before recovery so we don't replay them
+    let max_msg_id: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(id), 0) FROM task_messages WHERE task_id = $1",
+    )
+    .bind(task_id)
+    .fetch_one(db)
+    .await?;
+
     // Enter follow-up loop — branch already pushed, preview may already exist
     let mut branch_pushed = true;
     let mut preview_created = had_preview;
@@ -2726,6 +2737,7 @@ async fn recover_to_followup(
         &mut preview_created,
         created_by,
         &tx,
+        max_msg_id,
     )
     .await?;
 
