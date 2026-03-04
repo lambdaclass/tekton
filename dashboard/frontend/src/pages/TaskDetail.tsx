@@ -124,7 +124,7 @@ export default function TaskDetail() {
 
   const initialTab = useMemo(() => {
     const tab = defaultTab(task?.status);
-    if (tab === 'conversation' && !showChat) return 'activity';
+    if (tab === 'conversation' && !showChat) return 'logs';
     return tab;
   }, [task?.status, showChat]);
 
@@ -296,6 +296,7 @@ export default function TaskDetail() {
                 onClick={() => setShowActivity(!showActivity)}
                 className="flex items-center justify-center w-8 hover:bg-muted/50 transition-colors"
                 title={showActivity ? 'Hide activity' : 'Show activity'}
+                aria-label={showActivity ? 'Hide activity' : 'Show activity'}
               >
                 <Activity className={`size-4 text-muted-foreground ${showActivity ? 'text-foreground' : ''}`} />
               </button>

@@ -128,21 +128,21 @@ test.describe('Tasks List', () => {
     await adminPage.goto('/tasks');
     await expect(adminPage.locator('.line-clamp-2').first()).toBeVisible();
 
-    // Press j to select first card — the Card inside should get ring-2 class
+    // Press j to select first card — the Card inside should get ring-1 class
     await adminPage.keyboard.press('j');
     const cardLinks = adminPage.locator('a[href^="/tasks/"]');
     // The Card component (direct child div) inside the first link gets the ring
-    await expect(cardLinks.first().locator('[class*="ring-2"]')).toBeVisible();
+    await expect(cardLinks.first().locator('[class*="ring-1"]')).toBeVisible();
 
     // Press j again to move to the second card
     await adminPage.keyboard.press('j');
     // First card should no longer be selected, second should be
-    await expect(cardLinks.first().locator('[class*="ring-2"]')).toHaveCount(0);
-    await expect(cardLinks.nth(1).locator('[class*="ring-2"]')).toBeVisible();
+    await expect(cardLinks.first().locator('[class*="ring-1"]')).toHaveCount(0);
+    await expect(cardLinks.nth(1).locator('[class*="ring-1"]')).toBeVisible();
 
     // Press k to go back up
     await adminPage.keyboard.press('k');
-    await expect(cardLinks.first().locator('[class*="ring-2"]')).toBeVisible();
+    await expect(cardLinks.first().locator('[class*="ring-1"]')).toBeVisible();
   });
 
   test('keyboard shortcut Enter opens selected task', async ({ adminPage }) => {

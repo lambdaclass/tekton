@@ -1,9 +1,9 @@
 import { test, expect, TEST_IDS } from './fixtures';
 
 test.describe('Navigation', () => {
-  test('home page renders with dashboard heading', async ({ adminPage }) => {
+  test('home page renders with user greeting heading', async ({ adminPage }) => {
     await adminPage.goto('/');
-    await expect(adminPage.locator('h1')).toHaveText('Preview Dashboard');
+    await expect(adminPage.locator('h1')).toContainText('Test Admin');
   });
 
   test('tasks page renders with heading', async ({ adminPage }) => {
@@ -104,7 +104,7 @@ test.describe('Navigation', () => {
     await expect(adminPage.getByText('Previews').first()).toBeVisible();
     await expect(adminPage.getByText('Tasks').first()).toBeVisible();
     await expect(adminPage.getByText('Manage preview containers')).toBeVisible();
-    await expect(adminPage.getByText('Submit coding tasks to your AI agent')).toBeVisible();
+    await expect(adminPage.getByText('Submit tasks and monitor progress')).toBeVisible();
   });
 
   test('home page cards link to correct pages', async ({ adminPage }) => {
