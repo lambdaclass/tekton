@@ -1,6 +1,8 @@
 import { useState, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Send, CheckCircle, ExternalLink, ImagePlus, X, Loader2 } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { listTaskMessages, sendTaskMessage, uploadImage, parseImageUrls } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -158,7 +160,9 @@ export default function TaskChat({ taskId, currentUserEmail, previewUrl }: TaskC
                     {new Date(msg.created_at).toLocaleTimeString()}
                   </span>
                 </div>
-                <p className="whitespace-pre-wrap">{msg.content}</p>
+                <div className="prose prose-sm prose-invert max-w-none break-words [&_pre]:bg-black/30 [&_pre]:rounded-md [&_pre]:p-3 [&_pre]:overflow-x-auto [&_code]:text-xs [&_:not(pre)>code]:bg-black/30 [&_:not(pre)>code]:px-1.5 [&_:not(pre)>code]:py-0.5 [&_:not(pre)>code]:rounded [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0 [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-sm [&_a]:text-blue-400 [&_table]:text-xs [&_blockquote]:border-muted-foreground/30">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                </div>
                 {parseImageUrls(msg.image_url).length > 0 && (
                   <div className="flex flex-wrap gap-2 mt-2">
                     {parseImageUrls(msg.image_url).map((url, i) => (
