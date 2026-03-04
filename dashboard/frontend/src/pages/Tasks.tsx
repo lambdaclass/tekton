@@ -16,7 +16,7 @@ import VoiceInput from '@/components/VoiceInput';
 import BranchCombobox from '@/components/BranchCombobox';
 import { ImagePlus, X, ChevronLeft, ChevronRight, Search, BrainCircuit } from 'lucide-react';
 
-const STATUS_OPTIONS = ['all', 'pending', 'creating_agent', 'cloning', 'running_claude', 'pushing', 'creating_preview', 'awaiting_followup', 'completed', 'failed'];
+const STATUS_OPTIONS = ['all', 'pending', 'creating_agent', 'cloning', 'planning', 'running_claude', 'pushing', 'creating_preview', 'awaiting_plan_approval', 'awaiting_followup', 'completed', 'failed'];
 
 function SkeletonCard() {
   return (
@@ -92,6 +92,7 @@ export default function Tasks() {
   const [imageFiles, setImageFiles] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [customBranch, setCustomBranch] = useState('');
+  const [planMode, setPlanMode] = useState(false);
   const [uploading, setUploading] = useState(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
@@ -174,7 +175,7 @@ export default function Tasks() {
   };
 
   const createMutation = useMutation({
-    mutationFn: async (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[]; custom_branch_name?: string }) => {
+    mutationFn: async (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[]; custom_branch_name?: string; plan_mode?: boolean }) => {
       return createTask(data);
     },
     onSuccess: () => {
@@ -184,6 +185,7 @@ export default function Tasks() {
       setRepo('');
       setBaseBranch('main');
       setCustomBranch('');
+      setPlanMode(false);
       setImageFiles([]);
       setImagePreviews([]);
     },
@@ -211,6 +213,7 @@ export default function Tasks() {
       base_branch: baseBranch || undefined,
       image_urls,
       custom_branch_name: customBranch || undefined,
+      plan_mode: planMode || undefined,
     });
   };
 
@@ -339,6 +342,20 @@ export default function Tasks() {
                     placeholder="Auto-generated from task name if left blank"
                   />
                 </div>
+                <label className="flex items-start gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={planMode}
+                    onChange={(e) => setPlanMode(e.target.checked)}
+                    className="mt-1 rounded border-input"
+                  />
+                  <div>
+                    <span className="text-sm font-medium">Generate plan before coding</span>
+                    <p className="text-xs text-muted-foreground">
+                      Claude will analyze the repo and produce a plan for your approval first
+                    </p>
+                  </div>
+                </label>
               </div>
               <Button type="submit" disabled={createMutation.isPending || uploading}>
                 {uploading ? 'Uploading images...' : createMutation.isPending ? 'Creating...' : 'Submit Task'}

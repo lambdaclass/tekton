@@ -34,6 +34,7 @@ export interface Task {
   name: string | null;
   pr_url: string | null;
   pr_number: number | null;
+  plan_mode: boolean;
 }
 
 export interface TaskMessage {
@@ -153,7 +154,7 @@ export const listTasks = (params?: ListTasksParams) => {
   return apiFetch<PaginatedTasks>(`/api/tasks${qs ? `?${qs}` : ''}`);
 };
 export const getTask = (id: string) => apiFetch<Task>(`/api/tasks/${id}`);
-export const createTask = (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[]; custom_branch_name?: string }) =>
+export const createTask = (data: { prompt: string; repo: string; base_branch?: string; image_urls?: string[]; custom_branch_name?: string; plan_mode?: boolean }) =>
   apiFetch<Task>('/api/tasks', {
     method: 'POST',
     body: JSON.stringify(data),

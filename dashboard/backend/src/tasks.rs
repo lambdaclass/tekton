@@ -233,7 +233,7 @@ pub async fn list_tasks(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, plan_mode \
          FROM tasks {where_clause} ORDER BY created_at DESC LIMIT ${bind_idx} OFFSET ${next_idx}",
         bind_idx = bind_idx,
         next_idx = bind_idx + 1,
@@ -265,7 +265,7 @@ pub async fn get_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, plan_mode \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -294,7 +294,7 @@ pub async fn get_subtasks(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, plan_mode \
          FROM tasks WHERE parent_task_id = $1 ORDER BY created_at ASC"
     )
     .bind(&id)
@@ -355,9 +355,11 @@ pub async fn create_task(
         .filter(|v| !v.is_empty())
         .map(|v| serde_json::to_string(v).unwrap());
 
+    let plan_mode = req.plan_mode.unwrap_or(false);
+
     sqlx::query(
-        "INSERT INTO tasks (id, prompt, repo, base_branch, status, parent_task_id, created_by, image_url) \
-         VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7)",
+        "INSERT INTO tasks (id, prompt, repo, base_branch, status, parent_task_id, created_by, image_url, plan_mode) \
+         VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, $8)",
     )
     .bind(&id)
     .bind(&req.prompt)
@@ -366,6 +368,7 @@ pub async fn create_task(
     .bind(&req.parent_task_id)
     .bind(&created_by)
     .bind(&image_url_json)
+    .bind(plan_mode)
     .execute(&state.db)
     .await?;
 
@@ -389,7 +392,7 @@ pub async fn create_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, plan_mode \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -441,6 +444,7 @@ pub async fn create_task(
             image_url_json2.as_deref(),
             custom_branch,
             &created_by,
+            plan_mode,
             tx.clone(),
         )
         .await;
@@ -478,6 +482,7 @@ async fn run_task_pipeline(
     image_url_json: Option<&str>,
     custom_branch_name: Option<String>,
     created_by: &str,
+    plan_mode: bool,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
     let &PipelineCtx {
@@ -653,6 +658,183 @@ async fn run_task_pipeline(
                     &tx,
                     &format!("[WARN] Failed to apply egress rules: {e}"),
                 );
+            }
+        }
+    }
+
+    // Plan phase: if plan_mode is enabled, run Claude in read-only mode first
+    if plan_mode {
+        update_task_status(db, task_id, "planning", None).await?;
+        log_and_send(db, task_id, &tx, "[STEP] Running Claude in plan mode (read-only)...");
+
+        let plan_prompt = build_plan_prompt(prompt);
+        let plan_result = run_claude_plan_streaming(
+            db,
+            &config.secrets_encryption_key,
+            created_by,
+            &agent_name,
+            &plan_prompt,
+            tx.clone(),
+            policy.as_ref(),
+        )
+        .await?;
+        save_claude_response_as_message(db, task_id, &plan_result.text).await?;
+        increment_token_usage(db, task_id, &plan_result.usage).await;
+
+        // Enter approval loop
+        match plan_approval_loop(
+            db,
+            &config.secrets_encryption_key,
+            task_id,
+            created_by,
+            &agent_name,
+            &tx,
+            policy.as_ref(),
+        )
+        .await?
+        {
+            PlanApprovalOutcome::Approved(plan_text) => {
+                log_and_send(db, task_id, &tx, "[STEP] Plan approved, proceeding to execution...");
+                // Plan text will be prepended to the effective prompt below
+                save_system_message(db, task_id, "Plan approved — starting implementation...").await?;
+                // Store approved plan to prepend later
+                // We use a local variable that gets picked up below
+                let _ = sqlx::query(
+                    "UPDATE tasks SET status = 'running_claude', updated_at = NOW() WHERE id = $1",
+                )
+                .bind(task_id)
+                .execute(db)
+                .await;
+                // Prepend plan to prompt for the execution phase
+                let augmented = augment_prompt_with_images(config, &agent_name, image_url_json, prompt, &tx).await?;
+                let mut effective_prompt = format!(
+                    "APPROVED IMPLEMENTATION PLAN (follow this plan):\n{plan_text}\n\nORIGINAL REQUEST:\n{augmented}"
+                );
+
+                // Inject policy constraints
+                if let Some(ref pol) = policy {
+                    let mut constraints = Vec::new();
+                    if !pol.protected_branches.is_empty() {
+                        constraints.push(format!(
+                            "PROTECTED BRANCHES (do NOT push directly to these): {}",
+                            pol.protected_branches.join(", ")
+                        ));
+                    }
+                    if let Some(ref tools) = pol.allowed_tools {
+                        if let Some(deny) = tools.get("deny").and_then(|v| v.as_array()) {
+                            let names: Vec<&str> = deny.iter().filter_map(|v| v.as_str()).collect();
+                            if !names.is_empty() {
+                                constraints.push(format!("DENIED TOOLS (do NOT use): {}", names.join(", ")));
+                            }
+                        }
+                        if let Some(allow) = tools.get("allow").and_then(|v| v.as_array()) {
+                            let names: Vec<&str> = allow.iter().filter_map(|v| v.as_str()).collect();
+                            if !names.is_empty() {
+                                constraints.push(format!(
+                                    "ALLOWED TOOLS (use ONLY these): {}",
+                                    names.join(", ")
+                                ));
+                            }
+                        }
+                    }
+                    if !constraints.is_empty() {
+                        let policy_block = constraints.join("\n");
+                        effective_prompt =
+                            format!("REPO POLICY CONSTRAINTS:\n{policy_block}\n\n{effective_prompt}");
+                    }
+                }
+
+                // Now run Claude for real (execution phase) — jump to step 3 logic
+                update_task_status(db, task_id, "running_claude", None).await?;
+                if let Some(ref pol) = policy {
+                    let denied = get_denied_tools(pol);
+                    if !denied.is_empty() {
+                        log_and_send(
+                            db, task_id, &tx,
+                            &format!("[POLICY] Blocked tools: {}. Claude will not have access to these.", denied.join(", ")),
+                        );
+                    }
+                }
+                log_and_send(db, task_id, &tx, "[STEP] Running Claude (execution)...");
+                let result = run_claude_streaming(
+                    db, &config.secrets_encryption_key, created_by,
+                    &agent_name, &effective_prompt, tx.clone(), policy.as_ref(),
+                ).await;
+                let result = match result {
+                    Ok(r) => r,
+                    Err(e) => {
+                        if let Some(ref pol) = policy {
+                            let denied = get_denied_tools(pol);
+                            if !denied.is_empty() {
+                                let msg = format!(
+                                    "Claude could not complete the request — the repo policy blocks these tools: {}.",
+                                    denied.join(", ")
+                                );
+                                log_and_send(db, task_id, &tx, &format!("[POLICY] {msg}"));
+                                save_system_message(db, task_id, &msg).await?;
+                                shell::ClaudeStreamResult {
+                                    text: String::new(),
+                                    actions: Vec::new(),
+                                    usage: shell::TokenUsage { input_tokens: 0, output_tokens: 0, cost_usd: 0.0 },
+                                }
+                            } else {
+                                return Err(e);
+                            }
+                        } else {
+                            return Err(e);
+                        }
+                    }
+                };
+                save_claude_response_as_message(db, task_id, &result.text).await?;
+                persist_actions(db, task_id, &result.actions).await;
+                if let Some(ref pol) = policy {
+                    check_policy_violations(db, task_id, &result.actions, pol, &tx).await;
+                }
+                increment_token_usage(db, task_id, &result.usage).await;
+
+                if let Some(ref pol) = policy {
+                    if let Some(max_cost) = pol.max_cost_usd {
+                        if check_cost_limit(db, task_id, max_cost, &tx).await? {
+                            save_system_message(db, task_id, "Cost limit reached — further follow-ups will be rejected by policy.").await?;
+                        }
+                    }
+                }
+
+                let _ = commit_changes_in_agent(&agent_name, prompt, tx.clone()).await?;
+
+                let mut preview_created = true;
+                let mut branch_pushed = false;
+                let pushed = push_and_preview(ctx, &agent_name, &branch_name, &mut branch_pushed, &mut preview_created, &tx).await?;
+                if pushed {
+                    save_system_message(db, task_id, "Changes pushed and preview updated ✓").await?;
+                }
+
+                follow_up_loop(ctx, &agent_name, &branch_name, &mut branch_pushed, &mut preview_created, created_by, &tx).await?;
+
+                log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
+                let _ = shell::destroy_agent(config, &agent_name).await;
+
+                let compute_secs = pipeline_start.elapsed().as_secs() as i32;
+                let _ = sqlx::query("UPDATE tasks SET compute_seconds = $1 WHERE id = $2")
+                    .bind(compute_secs).bind(task_id).execute(db).await;
+
+                let preview_url = format!("https://t-{short_id}.{}", config.preview_domain);
+                update_task_status(db, task_id, "completed", None).await?;
+                log_and_send(db, task_id, &tx, &format!("[DONE] Preview available at {preview_url}"));
+                return Ok(());
+            }
+            PlanApprovalOutcome::Rejected => {
+                log_and_send(db, task_id, &tx, "[STEP] Plan rejected, cleaning up...");
+                save_system_message(db, task_id, "Plan rejected — no code changes were made.").await?;
+                let _ = shell::destroy_agent(config, &agent_name).await;
+
+                let compute_secs = pipeline_start.elapsed().as_secs() as i32;
+                let _ = sqlx::query("UPDATE tasks SET compute_seconds = $1 WHERE id = $2")
+                    .bind(compute_secs).bind(task_id).execute(db).await;
+
+                update_task_status(db, task_id, "completed", None).await?;
+                log_and_send(db, task_id, &tx, "[DONE] Task completed (plan rejected, no changes).");
+                return Ok(());
             }
         }
     }
@@ -1045,6 +1227,169 @@ async fn run_claude_continue(
          {model_flag} {disallowed_flag} --continue -p '{escaped_prompt}'"
     );
     shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
+}
+
+/// Run Claude in plan-only mode: disallow all write tools so it can only read/explore.
+async fn run_claude_plan_streaming(
+    db: &PgPool,
+    encryption_key: &str,
+    created_by: &str,
+    agent_name: &str,
+    prompt: &str,
+    tx: broadcast::Sender<String>,
+    policy: Option<&crate::models::RepoPolicy>,
+) -> Result<shell::ClaudeStreamResult, AppError> {
+    let (auth_env, model_flag) = build_claude_auth_env(db, encryption_key, created_by).await?;
+
+    // Start with write tools that must always be blocked in plan mode
+    let mut denied: Vec<&str> = vec![
+        "Bash", "Write", "Edit", "MultiEdit", "TodoWrite", "NotebookEdit",
+    ];
+
+    // Merge any policy-denied tools
+    if let Some(pol) = policy {
+        if let Some(ref tools) = pol.allowed_tools {
+            if let Some(deny) = tools.get("deny").and_then(|v| v.as_array()) {
+                for v in deny.iter().filter_map(|v| v.as_str()) {
+                    if !denied.contains(&v) {
+                        denied.push(v);
+                    }
+                }
+            }
+        }
+    }
+
+    let disallowed_flag = format!("--disallowedTools '{}'", denied.join(","));
+    let escaped_prompt = prompt.replace('\'', "'\\''");
+    let claude_cmd = format!(
+        "source /home/agent/.env.sh 2>/dev/null ; {auth_env} && cd /home/agent/repo && \
+         claude --dangerously-skip-permissions --output-format stream-json --verbose \
+         {model_flag} {disallowed_flag} -p '{escaped_prompt}'"
+    );
+    shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
+}
+
+/// Wrap a user prompt with plan-mode instructions.
+fn build_plan_prompt(user_prompt: &str) -> String {
+    format!(
+        "You are in PLAN MODE. Your job is to analyze the repository and produce a detailed \
+         implementation plan — do NOT make any code changes.\n\n\
+         Explore the codebase using the read-only tools available to you (Glob, Grep, Read). \
+         Then produce a structured Markdown plan with these sections:\n\n\
+         ## Summary\n\
+         A brief (2-3 sentence) overview of what will be done.\n\n\
+         ## Files to Change\n\
+         A table listing each file that needs to be created or modified, with a short description \
+         of the change.\n\n\
+         ## Implementation Approach\n\
+         Step-by-step description of how to implement the changes. Be specific about function names, \
+         data structures, and logic.\n\n\
+         ## Tradeoffs & Risks\n\
+         Any important tradeoffs, edge cases, or risks to be aware of.\n\n\
+         ---\n\n\
+         USER REQUEST:\n{user_prompt}"
+    )
+}
+
+#[derive(Debug)]
+enum PlanApprovalOutcome {
+    Approved(String),
+    Rejected,
+}
+
+/// Poll for user approval/rejection of a plan. Similar to follow_up_loop but
+/// handles __approve__, __reject__, and revision comments.
+async fn plan_approval_loop(
+    db: &PgPool,
+    encryption_key: &str,
+    task_id: &str,
+    created_by: &str,
+    agent_name: &str,
+    tx: &broadcast::Sender<String>,
+    policy: Option<&crate::models::RepoPolicy>,
+) -> Result<PlanApprovalOutcome, AppError> {
+    let mut last_seen_id: i64 = 0;
+
+    update_task_status(db, task_id, "awaiting_plan_approval", None).await?;
+    let _ = tx.send("[STATUS] Plan ready for review. Approve, reject, or send revision comments.".to_string());
+
+    loop {
+        let new_messages: Vec<TaskMessage> = sqlx::query_as::<_, TaskMessage>(
+            "SELECT id, task_id, sender, content, \
+             TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, image_url \
+             FROM task_messages \
+             WHERE task_id = $1 AND id > $2 AND sender NOT IN ('claude', 'system') \
+             ORDER BY id ASC",
+        )
+        .bind(task_id)
+        .bind(last_seen_id)
+        .fetch_all(db)
+        .await?;
+
+        if new_messages.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            continue;
+        }
+
+        last_seen_id = new_messages.last().unwrap().id;
+
+        // Check for approval
+        if new_messages.iter().any(|m| m.content.trim() == "__approve__") {
+            let _ = tx.send("[STATUS] Plan approved.".to_string());
+            // Retrieve the latest Claude plan message
+            let plan_text: String = sqlx::query_scalar(
+                "SELECT content FROM task_messages WHERE task_id = $1 AND sender = 'claude' \
+                 ORDER BY id DESC LIMIT 1",
+            )
+            .bind(task_id)
+            .fetch_optional(db)
+            .await?
+            .unwrap_or_default();
+            return Ok(PlanApprovalOutcome::Approved(plan_text));
+        }
+
+        // Check for rejection
+        if new_messages.iter().any(|m| m.content.trim() == "__reject__") {
+            let _ = tx.send("[STATUS] Plan rejected.".to_string());
+            return Ok(PlanApprovalOutcome::Rejected);
+        }
+
+        // Otherwise it's a revision comment — re-run Claude with --continue to revise the plan
+        let combined: String = new_messages
+            .iter()
+            .map(|m| m.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let revision_prompt = format!(
+            "The user has requested revisions to your plan. Update your plan based on their feedback. \
+             Remember: you are still in PLAN MODE — do NOT make code changes, only revise the plan.\n\n\
+             USER FEEDBACK:\n{combined}"
+        );
+
+        save_system_message(db, task_id, "Revising plan based on your feedback...").await?;
+        update_task_status(db, task_id, "planning", None).await?;
+        let _ = tx.send("[STEP] Revising plan...".to_string());
+
+        let result = run_claude_continue(
+            db, encryption_key, created_by, agent_name, &revision_prompt, tx.clone(), policy,
+        )
+        .await;
+
+        match result {
+            Ok(r) => {
+                save_claude_response_as_message(db, task_id, &r.text).await?;
+                increment_token_usage(db, task_id, &r.usage).await;
+            }
+            Err(e) => {
+                let msg = format!("Failed to revise plan: {e}");
+                save_system_message(db, task_id, &msg).await?;
+                log_and_send(db, task_id, tx, &format!("[WARN] {msg}"));
+            }
+        }
+
+        update_task_status(db, task_id, "awaiting_plan_approval", None).await?;
+        let _ = tx.send("[STATUS] Revised plan ready for review.".to_string());
+    }
 }
 
 /// Save Claude's text response as a chat message so it appears in the UI.
@@ -2299,7 +2644,7 @@ pub async fn reopen_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, plan_mode \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2394,7 +2739,7 @@ pub async fn reopen_task(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, plan_mode \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2416,7 +2761,7 @@ pub async fn get_task_diff(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, plan_mode \
          FROM tasks WHERE id = $1",
     )
     .bind(&id)
@@ -2460,7 +2805,7 @@ pub async fn update_task_name(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, plan_mode \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2491,7 +2836,7 @@ pub async fn update_task_name(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, plan_mode \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2658,7 +3003,7 @@ pub async fn recover_interrupted_tasks(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, plan_mode \
          FROM tasks WHERE status NOT IN ('completed', 'failed')",
     )
     .fetch_all(&db)
@@ -2797,13 +3142,14 @@ pub async fn recover_interrupted_tasks(
                 task_channels.insert(task.id.clone(), tx.clone());
 
                 let (cfg, db2, channels) = (config.clone(), db.clone(), task_channels.clone());
-                let (task_id, prompt, repo, base, image_url, created_by) = (
+                let (task_id, prompt, repo, base, image_url, created_by, task_plan_mode) = (
                     task.id.clone(),
                     task.prompt.clone(),
                     task.repo.clone(),
                     task.base_branch.clone(),
                     task.image_url.clone(),
                     created_by.clone(),
+                    task.plan_mode,
                 );
                 tokio::spawn(async move {
                     tracing::info!("Recovering pending task {task_id}");
@@ -2822,6 +3168,7 @@ pub async fn recover_interrupted_tasks(
                         image_url.as_deref(),
                         None,
                         &created_by,
+                        task_plan_mode,
                         tx.clone(),
                     )
                     .await;
@@ -3014,7 +3361,7 @@ pub async fn create_pr(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, plan_mode \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -3115,7 +3462,7 @@ pub async fn create_pr(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, plan_mode \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -3159,7 +3506,7 @@ pub async fn link_pr(
          TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, plan_mode \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
