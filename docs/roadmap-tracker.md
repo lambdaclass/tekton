@@ -33,10 +33,10 @@ The dependency chain is: **persistence → identity/RBAC → policy engine → e
 |---|-------|-------|--------|------------|
 | 1 | [#22](https://github.com/lambdaclass/tekton/issues/22) | Task and prompt persistence | **Done** | — |
 | 2 | [#23](https://github.com/lambdaclass/tekton/issues/23) | Security and access control (RBAC) | **Done** | #22 |
-| 3 | [#24](https://github.com/lambdaclass/tekton/issues/24) | Policy engine and sandbox controls | Not started | #22, #23 |
+| 3 | [#24](https://github.com/lambdaclass/tekton/issues/24) | Policy engine and sandbox controls | **Done** | #22, #23 |
 | 4 | [#25](https://github.com/lambdaclass/tekton/issues/25) | Fine-grained tool approval UX | Not started | #24 |
 | 5 | [#26](https://github.com/lambdaclass/tekton/issues/26) | Secrets provenance and leak prevention | Not started | #23, #24 |
-| 6 | [#28](https://github.com/lambdaclass/tekton/issues/28) | Multi-model support | Not started | #23 |
+| 6 | [#28](https://github.com/lambdaclass/tekton/issues/28) | Multi-model support | **Done** | #23 |
 | 7 | [#29](https://github.com/lambdaclass/tekton/issues/29) | Repo intelligence and draft/plan mode | Not started | #22, #23, #28 |
 | 8 | [#27](https://github.com/lambdaclass/tekton/issues/27) | Identity-safe PR authorship | Not started | #23 |
 | 9 | [#30](https://github.com/lambdaclass/tekton/issues/30) | Portable agent configuration (AGENTS.md) | In progress (preview config done, agent config remaining) | #24 |
