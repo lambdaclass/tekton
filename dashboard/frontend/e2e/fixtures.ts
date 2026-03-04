@@ -1,6 +1,7 @@
 import { test as base, Page } from "@playwright/test";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { collectCoverage } from "./coverage";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -35,12 +36,18 @@ type TestFixtures = {
 };
 
 export const test = base.extend<TestFixtures>({
+  page: async ({ page }, use) => {
+    await use(page);
+    await collectCoverage(page);
+  },
+
   authenticatedPage: async ({ browser }, use) => {
     const context = await browser.newContext({
       storageState: path.join(__dirname, ".auth", "admin.json"),
     });
     const page = await context.newPage();
     await use(page);
+    await collectCoverage(page);
     await context.close();
   },
 
@@ -50,6 +57,7 @@ export const test = base.extend<TestFixtures>({
     });
     const page = await context.newPage();
     await use(page);
+    await collectCoverage(page);
     await context.close();
   },
 
@@ -59,6 +67,7 @@ export const test = base.extend<TestFixtures>({
     });
     const page = await context.newPage();
     await use(page);
+    await collectCoverage(page);
     await context.close();
   },
 
@@ -68,6 +77,7 @@ export const test = base.extend<TestFixtures>({
     });
     const page = await context.newPage();
     await use(page);
+    await collectCoverage(page);
     await context.close();
   },
 });

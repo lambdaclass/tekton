@@ -1,5 +1,4 @@
 import { test, expect, TEST_IDS } from './fixtures';
-import { test as baseTest } from '@playwright/test';
 
 test.describe('Authentication', () => {
   test('authenticated admin user sees their username in sidebar', async ({ adminPage }) => {
@@ -75,20 +74,20 @@ test.describe('Logout', () => {
   });
 });
 
-baseTest.describe('Unauthenticated', () => {
-  baseTest('unauthenticated user sees sign-in page', async ({ page }) => {
+test.describe('Unauthenticated', () => {
+  test('unauthenticated user sees sign-in page', async ({ page }) => {
     await page.goto('/');
     await expect(page.getByText('Sign in with your GitHub account')).toBeVisible();
     await expect(page.getByText('Sign in with GitHub')).toBeVisible();
   });
 
-  baseTest('sign in link points to GitHub OAuth', async ({ page }) => {
+  test('sign in link points to GitHub OAuth', async ({ page }) => {
     await page.goto('/');
     const signInLink = page.getByRole('link', { name: 'Sign in with GitHub' });
     await expect(signInLink).toHaveAttribute('href', '/api/auth/login');
   });
 
-  baseTest('unauthenticated user sees Preview Dashboard title', async ({ page }) => {
+  test('unauthenticated user sees Preview Dashboard title', async ({ page }) => {
     await page.goto('/');
     await expect(page.getByRole('heading', { name: 'Preview Dashboard' })).toBeVisible();
   });

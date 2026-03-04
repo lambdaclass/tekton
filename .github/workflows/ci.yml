@@ -110,9 +110,9 @@ jobs:
         working-directory: dashboard/frontend
         run: npm ci
 
-      - name: Build frontend
+      - name: Build frontend (instrumented)
         working-directory: dashboard/frontend
-        run: npm run build
+        run: INSTRUMENT_COVERAGE=true npm run build
 
       - name: Install Playwright browsers
         working-directory: dashboard/frontend
@@ -139,10 +139,27 @@ jobs:
         working-directory: dashboard/frontend
         run: npx playwright test --project=chromium
 
+      - name: Coverage report
+        if: always()
+        working-directory: dashboard/frontend
+        run: npx nyc report --reporter=text-summary
+
+      - name: Check coverage threshold (60%)
+        working-directory: dashboard/frontend
+        run: npx nyc check-coverage
+
       - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
           path: dashboard/frontend/playwright-report/
+          retention-days: 30
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: dashboard/frontend/coverage/
           retention-days: 30

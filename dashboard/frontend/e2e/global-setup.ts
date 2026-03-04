@@ -73,6 +73,13 @@ function saveStorageState(
 async function globalSetup(config: FullConfig): Promise<void> {
   const baseURL = config.projects[0]?.use?.baseURL || "http://localhost:3200";
 
+  // Clean coverage output from previous runs
+  const nycOutput = path.join(__dirname, '..', '.nyc_output');
+  if (fs.existsSync(nycOutput)) {
+    fs.rmSync(nycOutput, { recursive: true });
+  }
+  fs.mkdirSync(nycOutput, { recursive: true });
+
   // Seed the test database
   const seedPath = path.join(__dirname, "seed.sql");
   console.log("Seeding test database...");
