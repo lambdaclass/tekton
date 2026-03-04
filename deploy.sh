@@ -26,6 +26,9 @@ info()    { echo -e "${CYAN}[INFO]${NC} $*"; }
 success() { echo -e "${GREEN}[OK]${NC} $*"; }
 error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 
+# Catch any unexpected exit and print a clear failure message
+trap 'if [ $? -ne 0 ]; then echo -e "\n${RED}${BOLD}✗ Deploy FAILED${NC} — check the output above for errors."; fi' EXIT
+
 SERVER="${1:-}"
 COMPONENT="${2:-all}"
 
