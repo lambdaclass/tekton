@@ -9,18 +9,26 @@ export function statusVariant(status: string): {
   switch (status) {
     case "completed":
       return {
-        variant: "default",
-        className: "bg-green-600 text-white border-transparent status-completed-glow",
+        variant: "outline",
+        className: "text-emerald-400/80 border-emerald-400/20",
         icon: Check,
       };
     case "failed":
-      return { variant: "destructive", icon: X };
+      return {
+        variant: "outline",
+        className: "text-red-400/80 border-red-400/20",
+        icon: X,
+      };
     case "pending":
-      return { variant: "outline", icon: Clock };
+      return {
+        variant: "outline",
+        className: "text-muted-foreground",
+        icon: Clock,
+      };
     case "awaiting_followup":
       return {
-        variant: "secondary",
-        className: "bg-amber-500/20 text-amber-400 border-amber-500/30",
+        variant: "outline",
+        className: "text-amber-400/80 border-amber-400/20",
         icon: Clock,
       };
     case "creating_agent":
@@ -28,8 +36,13 @@ export function statusVariant(status: string): {
     case "running_claude":
     case "pushing":
     case "creating_preview":
-      return { variant: "secondary", className: "status-running", icon: Loader2, spin: true };
+      return {
+        variant: "outline",
+        className: "text-blue-400/70 border-blue-400/20",
+        icon: Loader2,
+        spin: true,
+      };
     default:
-      return { variant: "secondary" };
+      return { variant: "outline" };
   }
 }
