@@ -155,3 +155,34 @@ test.describe.serial('Settings - AI provider CRUD', () => {
     await expect(card.getByText('(API key stored)')).not.toBeVisible();
   });
 });
+
+test.describe('Settings - Global AI provider (admin)', () => {
+  const globalCard = (page: import('@playwright/test').Page) =>
+    page.locator('[data-slot="card"]').filter({ hasText: 'Organization AI Provider' });
+
+  test('admin sees global AI provider card', async ({ adminPage: page }) => {
+    await page.goto('/settings');
+
+    await expect(globalCard(page)).toBeVisible();
+    await expect(globalCard(page).getByText('fallback for users')).toBeVisible();
+  });
+
+  test('member does not see global AI provider card', async ({ memberPage: page }) => {
+    await page.goto('/settings');
+
+    await expect(page.locator('text=Organization AI Provider')).not.toBeVisible();
+  });
+
+  test('save and disconnect global API key', async ({ adminPage: page }) => {
+    await page.goto('/settings');
+
+    const card = globalCard(page);
+    await page.locator('#global-api-key').fill('sk-global-test-key');
+    await card.getByRole('button', { name: 'Save' }).click();
+
+    await expect(card.getByText('(API key stored)')).toBeVisible({ timeout: 10000 });
+
+    await card.getByRole('button', { name: 'Disconnect' }).click();
+    await expect(card.getByText('(API key stored)')).not.toBeVisible({ timeout: 10000 });
+  });
+});
