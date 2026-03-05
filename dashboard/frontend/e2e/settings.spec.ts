@@ -11,14 +11,14 @@ test.describe('Settings page', () => {
     await page.goto('/settings');
 
     // Scope to the personal AI Provider card (not the global one)
-    const personalCard = page.locator('[class*="Card"]').filter({ hasText: 'AI Provider' }).first();
+    const personalCard = page.locator('[data-slot="card"]').filter({ hasText: 'AI Provider' }).first();
     await expect(personalCard).toBeVisible();
   });
 
   test('shows provider radio options', async ({ adminPage: page }) => {
     await page.goto('/settings');
 
-    const personalCard = page.locator('[class*="Card"]').filter({ hasText: 'AI Provider' }).first();
+    const personalCard = page.locator('[data-slot="card"]').filter({ hasText: 'AI Provider' }).first();
     await expect(personalCard.getByText('Anthropic (direct)')).toBeVisible();
     await expect(personalCard.getByText('OpenRouter', { exact: true })).toBeVisible();
   });
@@ -33,7 +33,7 @@ test.describe('Settings page', () => {
   test('Save button is disabled when no API key and none stored', async ({ adminPage: page }) => {
     await page.goto('/settings');
 
-    const personalCard = page.locator('[class*="Card"]').filter({ hasText: 'AI Provider' }).first();
+    const personalCard = page.locator('[data-slot="card"]').filter({ hasText: 'AI Provider' }).first();
     const saveButton = personalCard.getByRole('button', { name: 'Save' });
     await expect(saveButton).toBeDisabled();
   });
@@ -43,7 +43,7 @@ test.describe('Settings page', () => {
 
     await page.locator('#api-key').fill('sk-test-12345');
 
-    const personalCard = page.locator('[class*="Card"]').filter({ hasText: 'AI Provider' }).first();
+    const personalCard = page.locator('[data-slot="card"]').filter({ hasText: 'AI Provider' }).first();
     const saveButton = personalCard.getByRole('button', { name: 'Save' });
     await expect(saveButton).toBeEnabled();
   });
@@ -52,7 +52,7 @@ test.describe('Settings page', () => {
     await page.goto('/settings');
 
     // Click the OpenRouter radio in the personal card
-    const personalCard = page.locator('[class*="Card"]').filter({ hasText: 'AI Provider' }).first();
+    const personalCard = page.locator('[data-slot="card"]').filter({ hasText: 'AI Provider' }).first();
     await personalCard.locator('label').filter({ hasText: 'OpenRouter' }).click();
 
     await expect(page.locator('#model-select')).toBeVisible();
@@ -69,7 +69,7 @@ test.describe('Settings page', () => {
 test.describe.serial('Settings - AI provider CRUD', () => {
   // Helper: scope to the personal AI Provider card
   const personalCard = (page: import('@playwright/test').Page) =>
-    page.locator('[class*="Card"]').filter({ hasText: 'AI Provider' }).first();
+    page.locator('[data-slot="card"]').filter({ hasText: 'AI Provider' }).first();
 
   // OpenRouter save + verify + disconnect
   test('save OpenRouter with specific model', async ({ adminPage: page }) => {
