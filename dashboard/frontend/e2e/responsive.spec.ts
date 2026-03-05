@@ -31,7 +31,7 @@ test.describe('Responsive - Mobile viewport', () => {
     await page.goto('/settings');
 
     await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
-    const apiKeyInput = page.getByLabel(/API Key/);
+    const apiKeyInput = page.locator('#api-key');
     await expect(apiKeyInput).toBeVisible();
     await apiKeyInput.fill('test-key');
     await expect(apiKeyInput).toHaveValue('test-key');

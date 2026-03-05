@@ -148,6 +148,15 @@ CREATE TABLE IF NOT EXISTS budgets (
     UNIQUE(scope, scope_type)
 );
 
+CREATE TABLE IF NOT EXISTS global_ai_config (
+    id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    ai_provider TEXT NOT NULL,
+    ai_api_key_encrypted TEXT NOT NULL,
+    ai_model TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_by TEXT
+);
+
 -- ============================================================
 -- Seed: Users
 -- ============================================================
