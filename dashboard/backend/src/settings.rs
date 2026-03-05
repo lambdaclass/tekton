@@ -194,9 +194,9 @@ pub async fn put_ai_settings(
         ));
     }
 
-    if req.provider != "anthropic" && req.provider != "anthropic-oauth" && req.provider != "openrouter" {
+    if req.provider != "anthropic" && req.provider != "openrouter" {
         return Err(AppError::BadRequest(format!(
-            "Invalid provider '{}'. Use 'anthropic', 'anthropic-oauth', or 'openrouter'",
+            "Invalid provider '{}'. Use 'anthropic' or 'openrouter'",
             req.provider
         )));
     }

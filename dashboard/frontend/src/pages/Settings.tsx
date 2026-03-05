@@ -212,7 +212,7 @@ export default function Settings() {
               <div className="space-y-3">
                 <Label>Provider</Label>
                 <div className="space-y-2">
-                  {PROVIDERS.map((p) => (
+                  {PROVIDERS.filter((p) => p.value !== 'anthropic-oauth').map((p) => (
                     <label
                       key={p.value}
                       className="flex cursor-pointer items-start gap-3 rounded-md border px-4 py-3 hover:bg-muted/50"
