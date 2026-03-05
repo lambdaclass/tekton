@@ -402,6 +402,76 @@ export const setGlobalAiSettings = (data: { provider: string; api_key?: string; 
 export const deleteGlobalAiSettings = () =>
   apiFetch<{ deleted: boolean }>('/api/admin/settings/ai', { method: 'DELETE' });
 
+// Intake Sources
+export interface IntakeSource {
+  id: number;
+  name: string;
+  provider: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  target_repo: string;
+  target_base_branch: string;
+  label_filter: string[];
+  prompt_template: string | null;
+  run_as_user: string;
+  poll_interval_secs: number;
+  max_concurrent_tasks: number;
+  max_tasks_per_poll: number;
+  auto_create_pr: boolean;
+  skip_followup: boolean;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IntakeIssue {
+  id: number;
+  source_id: number;
+  external_id: string;
+  external_url: string | null;
+  external_title: string;
+  external_body: string | null;
+  external_labels: string[];
+  external_updated_at: string | null;
+  task_id: string | null;
+  status: string;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IntakePollLog {
+  id: number;
+  source_id: number;
+  polled_at: string;
+  issues_found: number;
+  issues_created: number;
+  issues_skipped: number;
+  error_message: string | null;
+  duration_ms: number | null;
+}
+
+export const listIntakeSources = () => apiFetch<IntakeSource[]>('/api/admin/intake/sources');
+export const createIntakeSource = (data: {
+  name: string; provider: string; api_token: string; target_repo: string;
+  target_base_branch?: string; label_filter?: string[]; prompt_template?: string;
+  run_as_user: string; poll_interval_secs?: number; max_concurrent_tasks?: number;
+  max_tasks_per_poll?: number; auto_create_pr?: boolean; skip_followup?: boolean;
+  config?: Record<string, unknown>;
+}) => apiFetch<IntakeSource>('/api/admin/intake/sources', { method: 'POST', body: JSON.stringify(data) });
+export const updateIntakeSource = (id: number, data: Record<string, unknown>) =>
+  apiFetch<IntakeSource>(`/api/admin/intake/sources/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+export const deleteIntakeSource = (id: number) =>
+  apiFetch<{ deleted: boolean }>(`/api/admin/intake/sources/${id}`, { method: 'DELETE' });
+export const toggleIntakeSource = (id: number) =>
+  apiFetch<IntakeSource>(`/api/admin/intake/sources/${id}/toggle`, { method: 'POST' });
+export const listIntakeIssues = (sourceId: number) =>
+  apiFetch<IntakeIssue[]>(`/api/admin/intake/sources/${sourceId}/issues`);
+export const listIntakeLogs = (sourceId: number) =>
+  apiFetch<IntakePollLog[]>(`/api/admin/intake/sources/${sourceId}/logs`);
+export const testPollSource = (id: number) =>
+  apiFetch<{ title: string; url: string; labels: string[] }[]>(`/api/admin/intake/sources/${id}/test`, { method: 'POST' });
+
 // WebSocket helpers
 export function connectPreviewLogs(slug: string): WebSocket {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';

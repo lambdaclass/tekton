@@ -4,6 +4,8 @@ mod config;
 mod cost;
 mod db;
 mod error;
+mod intake;
+mod intake_admin;
 mod models;
 mod policies;
 mod previews;
@@ -128,6 +130,33 @@ async fn main() -> anyhow::Result<()> {
             "/admin/settings/ai",
             delete(settings::delete_global_ai_settings),
         )
+        // Admin: Intake Sources
+        .route("/admin/intake/sources", get(intake_admin::list_sources))
+        .route("/admin/intake/sources", post(intake_admin::create_source))
+        .route(
+            "/admin/intake/sources/{id}",
+            put(intake_admin::update_source),
+        )
+        .route(
+            "/admin/intake/sources/{id}",
+            delete(intake_admin::delete_source),
+        )
+        .route(
+            "/admin/intake/sources/{id}/toggle",
+            post(intake_admin::toggle_source),
+        )
+        .route(
+            "/admin/intake/sources/{id}/issues",
+            get(intake_admin::list_source_issues),
+        )
+        .route(
+            "/admin/intake/sources/{id}/logs",
+            get(intake_admin::list_source_logs),
+        )
+        .route(
+            "/admin/intake/sources/{id}/test",
+            post(intake_admin::test_poll_source),
+        )
         // Admin: Audit Log
         .route("/admin/audit-log", get(audit::list_audit_log))
         // Settings
@@ -166,6 +195,14 @@ async fn main() -> anyhow::Result<()> {
 
     // Recover tasks that were in-progress before the server restarted
     tasks::recover_interrupted_tasks(
+        state.config.clone(),
+        state.db.clone(),
+        state.task_channels.clone(),
+    )
+    .await;
+
+    // Start the intake daemon (polls external issue trackers)
+    intake::start_intake_daemon(
         state.config.clone(),
         state.db.clone(),
         state.task_channels.clone(),

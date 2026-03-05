@@ -1,0 +1,463 @@
+use axum::extract::{Path, State};
+use axum::Json;
+
+use crate::auth::AdminUser;
+use crate::error::AppError;
+use crate::models::{
+    CreateIntakeSourceRequest, IntakeIssue, IntakePollLog, IntakeSource, UpdateIntakeSourceRequest,
+};
+use crate::secrets;
+
+const SOURCE_COLUMNS: &str = "id, name, provider, enabled, config, target_repo, \
+     target_base_branch, label_filter, prompt_template, run_as_user, \
+     poll_interval_secs, max_concurrent_tasks, max_tasks_per_poll, \
+     auto_create_pr, skip_followup, created_by, \
+     TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
+     TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at";
+
+const ISSUE_COLUMNS: &str = "id, source_id, external_id, external_url, external_title, \
+     external_body, external_labels, \
+     TO_CHAR(external_updated_at, 'YYYY-MM-DD HH24:MI:SS') as external_updated_at, \
+     task_id, status, error_message, \
+     TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
+     TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at";
+
+const LOG_COLUMNS: &str = "id, source_id, \
+     TO_CHAR(polled_at, 'YYYY-MM-DD HH24:MI:SS') as polled_at, \
+     issues_found, issues_created, issues_skipped, error_message, duration_ms";
+
+/// GET /api/admin/intake/sources
+pub async fn list_sources(
+    _admin: AdminUser,
+    State(state): State<crate::AppState>,
+) -> Result<Json<Vec<IntakeSource>>, AppError> {
+    let sources = sqlx::query_as::<_, IntakeSource>(&format!(
+        "SELECT {SOURCE_COLUMNS} FROM intake_sources ORDER BY created_at DESC"
+    ))
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(sources))
+}
+
+/// POST /api/admin/intake/sources
+pub async fn create_source(
+    admin: AdminUser,
+    State(state): State<crate::AppState>,
+    Json(req): Json<CreateIntakeSourceRequest>,
+) -> Result<Json<IntakeSource>, AppError> {
+    if state.config.secrets_encryption_key.is_empty() {
+        return Err(AppError::BadRequest(
+            "SECRETS_ENCRYPTION_KEY is not configured".into(),
+        ));
+    }
+
+    let encrypted_token =
+        secrets::encrypt_secret(&state.config.secrets_encryption_key, &req.api_token)?;
+
+    let config = req.config.unwrap_or(serde_json::json!({}));
+    let target_base_branch = req.target_base_branch.unwrap_or_else(|| "main".into());
+    let label_filter = req.label_filter.unwrap_or_default();
+    let poll_interval_secs = req.poll_interval_secs.unwrap_or(300);
+    let max_concurrent_tasks = req.max_concurrent_tasks.unwrap_or(3);
+    let max_tasks_per_poll = req.max_tasks_per_poll.unwrap_or(5);
+    let auto_create_pr = req.auto_create_pr.unwrap_or(false);
+    let skip_followup = req.skip_followup.unwrap_or(true);
+
+    let source = sqlx::query_as::<_, IntakeSource>(&format!(
+        "INSERT INTO intake_sources \
+         (name, provider, config, api_token_encrypted, target_repo, target_base_branch, \
+          label_filter, prompt_template, run_as_user, poll_interval_secs, \
+          max_concurrent_tasks, max_tasks_per_poll, auto_create_pr, skip_followup, created_by) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
+         RETURNING {SOURCE_COLUMNS}"
+    ))
+    .bind(&req.name)
+    .bind(&req.provider)
+    .bind(&config)
+    .bind(&encrypted_token)
+    .bind(&req.target_repo)
+    .bind(&target_base_branch)
+    .bind(&label_filter)
+    .bind(&req.prompt_template)
+    .bind(&req.run_as_user)
+    .bind(poll_interval_secs)
+    .bind(max_concurrent_tasks)
+    .bind(max_tasks_per_poll)
+    .bind(auto_create_pr)
+    .bind(skip_followup)
+    .bind(&admin.0.sub)
+    .fetch_one(&state.db)
+    .await?;
+
+    crate::audit::log_event(
+        &state.db,
+        "admin.intake_source_create",
+        &admin.0.sub,
+        Some(&req.target_repo),
+        serde_json::json!({ "source_id": source.id, "name": &req.name }),
+        None,
+    )
+    .await;
+
+    Ok(Json(source))
+}
+
+/// PUT /api/admin/intake/sources/{id}
+pub async fn update_source(
+    _admin: AdminUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<UpdateIntakeSourceRequest>,
+) -> Result<Json<IntakeSource>, AppError> {
+    let mut sets = Vec::new();
+    let mut param_idx = 2u32; // $1 is id
+
+    if req.name.is_some() {
+        sets.push(format!("name = ${param_idx}"));
+        param_idx += 1;
+    }
+    if req.provider.is_some() {
+        sets.push(format!("provider = ${param_idx}"));
+        param_idx += 1;
+    }
+    if req.config.is_some() {
+        sets.push(format!("config = ${param_idx}"));
+        param_idx += 1;
+    }
+    if req.api_token.is_some() {
+        sets.push(format!("api_token_encrypted = ${param_idx}"));
+        param_idx += 1;
+    }
+    if req.target_repo.is_some() {
+        sets.push(format!("target_repo = ${param_idx}"));
+        param_idx += 1;
+    }
+    if req.target_base_branch.is_some() {
+        sets.push(format!("target_base_branch = ${param_idx}"));
+        param_idx += 1;
+    }
+    if req.label_filter.is_some() {
+        sets.push(format!("label_filter = ${param_idx}"));
+        param_idx += 1;
+    }
+    if req.prompt_template.is_some() {
+        sets.push(format!("prompt_template = ${param_idx}"));
+        param_idx += 1;
+    }
+    if req.run_as_user.is_some() {
+        sets.push(format!("run_as_user = ${param_idx}"));
+        param_idx += 1;
+    }
+    if req.poll_interval_secs.is_some() {
+        sets.push(format!("poll_interval_secs = ${param_idx}"));
+        param_idx += 1;
+    }
+    if req.max_concurrent_tasks.is_some() {
+        sets.push(format!("max_concurrent_tasks = ${param_idx}"));
+        param_idx += 1;
+    }
+    if req.max_tasks_per_poll.is_some() {
+        sets.push(format!("max_tasks_per_poll = ${param_idx}"));
+        param_idx += 1;
+    }
+    if req.auto_create_pr.is_some() {
+        sets.push(format!("auto_create_pr = ${param_idx}"));
+        param_idx += 1;
+    }
+    if req.skip_followup.is_some() {
+        sets.push(format!("skip_followup = ${param_idx}"));
+        param_idx += 1;
+    }
+
+    if sets.is_empty() {
+        return Err(AppError::BadRequest("No fields to update".into()));
+    }
+
+    sets.push("updated_at = NOW()".into());
+    let _ = param_idx;
+
+    let sql = format!(
+        "UPDATE intake_sources SET {} WHERE id = $1 RETURNING {SOURCE_COLUMNS}",
+        sets.join(", ")
+    );
+
+    let mut query = sqlx::query_as::<_, IntakeSource>(&sql).bind(id);
+
+    if let Some(ref name) = req.name {
+        query = query.bind(name);
+    }
+    if let Some(ref provider) = req.provider {
+        query = query.bind(provider);
+    }
+    if let Some(ref config) = req.config {
+        query = query.bind(config);
+    }
+    if let Some(ref api_token) = req.api_token {
+        if state.config.secrets_encryption_key.is_empty() {
+            return Err(AppError::BadRequest(
+                "SECRETS_ENCRYPTION_KEY is not configured".into(),
+            ));
+        }
+        let encrypted =
+            secrets::encrypt_secret(&state.config.secrets_encryption_key, api_token)?;
+        query = query.bind(encrypted);
+    }
+    if let Some(ref target_repo) = req.target_repo {
+        query = query.bind(target_repo);
+    }
+    if let Some(ref target_base_branch) = req.target_base_branch {
+        query = query.bind(target_base_branch);
+    }
+    if let Some(ref label_filter) = req.label_filter {
+        query = query.bind(label_filter);
+    }
+    if let Some(ref prompt_template) = req.prompt_template {
+        query = query.bind(prompt_template);
+    }
+    if let Some(ref run_as_user) = req.run_as_user {
+        query = query.bind(run_as_user);
+    }
+    if let Some(poll_interval_secs) = req.poll_interval_secs {
+        query = query.bind(poll_interval_secs);
+    }
+    if let Some(max_concurrent_tasks) = req.max_concurrent_tasks {
+        query = query.bind(max_concurrent_tasks);
+    }
+    if let Some(max_tasks_per_poll) = req.max_tasks_per_poll {
+        query = query.bind(max_tasks_per_poll);
+    }
+    if let Some(auto_create_pr) = req.auto_create_pr {
+        query = query.bind(auto_create_pr);
+    }
+    if let Some(skip_followup) = req.skip_followup {
+        query = query.bind(skip_followup);
+    }
+
+    let source = query.fetch_optional(&state.db).await?;
+
+    match source {
+        Some(s) => {
+            crate::audit::log_event(
+                &state.db,
+                "admin.intake_source_update",
+                &_admin.0.sub,
+                Some(&s.target_repo),
+                serde_json::json!({ "source_id": s.id }),
+                None,
+            )
+            .await;
+            Ok(Json(s))
+        }
+        None => Err(AppError::NotFound("Intake source not found".into())),
+    }
+}
+
+/// DELETE /api/admin/intake/sources/{id}
+pub async fn delete_source(
+    _admin: AdminUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let source_name: Option<String> =
+        sqlx::query_scalar("SELECT name FROM intake_sources WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?;
+
+    let result = sqlx::query("DELETE FROM intake_sources WHERE id = $1")
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound("Intake source not found".into()));
+    }
+
+    if let Some(name) = source_name {
+        crate::audit::log_event(
+            &state.db,
+            "admin.intake_source_delete",
+            &_admin.0.sub,
+            None,
+            serde_json::json!({ "source_id": id, "name": name }),
+            None,
+        )
+        .await;
+    }
+
+    Ok(Json(serde_json::json!({ "deleted": true })))
+}
+
+/// POST /api/admin/intake/sources/{id}/toggle
+pub async fn toggle_source(
+    _admin: AdminUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<IntakeSource>, AppError> {
+    let source = sqlx::query_as::<_, IntakeSource>(&format!(
+        "UPDATE intake_sources SET enabled = NOT enabled, updated_at = NOW() \
+         WHERE id = $1 RETURNING {SOURCE_COLUMNS}"
+    ))
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    match source {
+        Some(s) => {
+            crate::audit::log_event(
+                &state.db,
+                "admin.intake_source_toggle",
+                &_admin.0.sub,
+                Some(&s.target_repo),
+                serde_json::json!({ "source_id": s.id, "enabled": s.enabled }),
+                None,
+            )
+            .await;
+            Ok(Json(s))
+        }
+        None => Err(AppError::NotFound("Intake source not found".into())),
+    }
+}
+
+/// GET /api/admin/intake/sources/{id}/issues
+pub async fn list_source_issues(
+    _admin: AdminUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<Vec<IntakeIssue>>, AppError> {
+    let issues = sqlx::query_as::<_, IntakeIssue>(&format!(
+        "SELECT {ISSUE_COLUMNS} FROM intake_issues WHERE source_id = $1 ORDER BY created_at DESC"
+    ))
+    .bind(id)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(issues))
+}
+
+/// GET /api/admin/intake/sources/{id}/logs
+pub async fn list_source_logs(
+    _admin: AdminUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<Vec<IntakePollLog>>, AppError> {
+    let logs = sqlx::query_as::<_, IntakePollLog>(&format!(
+        "SELECT {LOG_COLUMNS} FROM intake_poll_log WHERE source_id = $1 \
+         ORDER BY polled_at DESC LIMIT 100"
+    ))
+    .bind(id)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(logs))
+}
+
+/// POST /api/admin/intake/sources/{id}/test
+pub async fn test_poll_source(
+    _admin: AdminUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<Vec<serde_json::Value>>, AppError> {
+    if state.config.secrets_encryption_key.is_empty() {
+        return Err(AppError::BadRequest(
+            "SECRETS_ENCRYPTION_KEY is not configured".into(),
+        ));
+    }
+
+    // Load the source
+    let source = sqlx::query_as::<_, IntakeSource>(&format!(
+        "SELECT {SOURCE_COLUMNS} FROM intake_sources WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Intake source not found".into()))?;
+
+    // Decrypt the API token
+    let encrypted_token: String =
+        sqlx::query_scalar("SELECT api_token_encrypted FROM intake_sources WHERE id = $1")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await?;
+
+    let api_token =
+        secrets::decrypt_secret(&state.config.secrets_encryption_key, &encrypted_token)?;
+
+    // Fetch issues from GitHub
+    let owner_repo = source
+        .config
+        .get("owner")
+        .and_then(|v| v.as_str())
+        .zip(source.config.get("repo").and_then(|v| v.as_str()));
+
+    let (owner, repo) = match owner_repo {
+        Some((o, r)) => (o.to_string(), r.to_string()),
+        None => {
+            // Fall back to target_repo as "owner/repo"
+            let parts: Vec<&str> = source.target_repo.splitn(2, '/').collect();
+            if parts.len() != 2 {
+                return Err(AppError::BadRequest(
+                    "Cannot determine owner/repo from source config or target_repo".into(),
+                ));
+            }
+            (parts[0].to_string(), parts[1].to_string())
+        }
+    };
+
+    let mut url = format!(
+        "https://api.github.com/repos/{owner}/{repo}/issues?state=open&per_page=20"
+    );
+
+    // Add label filter if configured
+    if !source.label_filter.is_empty() {
+        let labels = source.label_filter.join(",");
+        url.push_str(&format!("&labels={labels}"));
+    }
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {api_token}"))
+        .header("Accept", "application/vnd.github.v3+json")
+        .header("User-Agent", "tekton-intake")
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("GitHub API request failed: {e}")))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "unknown".into());
+        return Err(AppError::Internal(format!(
+            "GitHub API returned {status}: {body}"
+        )));
+    }
+
+    let issues: Vec<serde_json::Value> = response
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to parse GitHub response: {e}")))?;
+
+    // Return simplified previews (only issues, not PRs)
+    let previews: Vec<serde_json::Value> = issues
+        .into_iter()
+        .filter(|issue| issue.get("pull_request").is_none())
+        .map(|issue| {
+            serde_json::json!({
+                "title": issue.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                "url": issue.get("html_url").and_then(|v| v.as_str()).unwrap_or(""),
+                "number": issue.get("number").and_then(|v| v.as_i64()).unwrap_or(0),
+                "labels": issue.get("labels")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter()
+                        .filter_map(|l| l.get("name").and_then(|n| n.as_str()))
+                        .collect::<Vec<_>>())
+                    .unwrap_or_default(),
+                "created_at": issue.get("created_at").and_then(|v| v.as_str()).unwrap_or(""),
+                "updated_at": issue.get("updated_at").and_then(|v| v.as_str()).unwrap_or(""),
+            })
+        })
+        .collect();
+
+    Ok(Json(previews))
+}

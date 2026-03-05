@@ -94,6 +94,8 @@ pub struct Task {
     pub pr_url: Option<String>,
     pub pr_number: Option<i32>,
     pub compute_seconds: Option<i32>,
+    pub intake_issue_id: Option<i64>,
+    pub source_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -317,4 +319,97 @@ pub struct PaginatedTasks {
     pub total: i64,
     pub page: u32,
     pub per_page: u32,
+}
+
+// ── Intake Sources ──
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct IntakeSource {
+    pub id: i64,
+    pub name: String,
+    pub provider: String,
+    pub enabled: bool,
+    pub config: serde_json::Value,
+    pub target_repo: String,
+    pub target_base_branch: String,
+    pub label_filter: Vec<String>,
+    pub prompt_template: Option<String>,
+    pub run_as_user: String,
+    pub poll_interval_secs: i32,
+    pub max_concurrent_tasks: i32,
+    pub max_tasks_per_poll: i32,
+    pub auto_create_pr: bool,
+    pub skip_followup: bool,
+    pub created_by: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateIntakeSourceRequest {
+    pub name: String,
+    pub provider: String,
+    pub config: Option<serde_json::Value>,
+    pub api_token: String,
+    pub target_repo: String,
+    pub target_base_branch: Option<String>,
+    pub label_filter: Option<Vec<String>>,
+    pub prompt_template: Option<String>,
+    pub run_as_user: String,
+    pub poll_interval_secs: Option<i32>,
+    pub max_concurrent_tasks: Option<i32>,
+    pub max_tasks_per_poll: Option<i32>,
+    pub auto_create_pr: Option<bool>,
+    pub skip_followup: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateIntakeSourceRequest {
+    pub name: Option<String>,
+    pub provider: Option<String>,
+    pub config: Option<serde_json::Value>,
+    pub api_token: Option<String>,
+    pub target_repo: Option<String>,
+    pub target_base_branch: Option<String>,
+    pub label_filter: Option<Vec<String>>,
+    pub prompt_template: Option<String>,
+    pub run_as_user: Option<String>,
+    pub poll_interval_secs: Option<i32>,
+    pub max_concurrent_tasks: Option<i32>,
+    pub max_tasks_per_poll: Option<i32>,
+    pub auto_create_pr: Option<bool>,
+    pub skip_followup: Option<bool>,
+}
+
+// ── Intake Issues ──
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct IntakeIssue {
+    pub id: i64,
+    pub source_id: i64,
+    pub external_id: String,
+    pub external_url: Option<String>,
+    pub external_title: String,
+    pub external_body: Option<String>,
+    pub external_labels: Vec<String>,
+    pub external_updated_at: Option<String>,
+    pub task_id: Option<String>,
+    pub status: String,
+    pub error_message: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+// ── Intake Poll Log ──
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct IntakePollLog {
+    pub id: i64,
+    pub source_id: i64,
+    pub polled_at: String,
+    pub issues_found: i32,
+    pub issues_created: i32,
+    pub issues_skipped: i32,
+    pub error_message: Option<String>,
+    pub duration_ms: Option<i32>,
 }

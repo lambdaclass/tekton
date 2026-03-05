@@ -16,8 +16,15 @@ import {
   deleteOrgPolicy,
   listPresets,
   getMe,
+  listIntakeSources,
+  createIntakeSource,
+  deleteIntakeSource,
+  toggleIntakeSource,
+  listIntakeIssues,
+  listIntakeLogs,
+  testPollSource,
 } from '@/lib/api';
-import type { PolicyPreset } from '@/lib/api';
+import type { PolicyPreset, IntakeSource, IntakeIssue, IntakePollLog } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -31,7 +38,8 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
-import { Users, KeyRound, Shield, Building, Trash2, Plus, X, Settings } from 'lucide-react';
+import { Textarea } from '@/components/ui/textarea';
+import { Users, KeyRound, Shield, Building, Trash2, Plus, X, Settings, Zap, Eye, ScrollText, FlaskConical } from 'lucide-react';
 import { Navigate } from 'react-router-dom';
 
 const ROLES = ['admin', 'member', 'viewer'] as const;
@@ -51,6 +59,7 @@ export default function Admin() {
       <SecretsSection queryClient={queryClient} />
       <PoliciesSection queryClient={queryClient} />
       <OrgPoliciesSection queryClient={queryClient} />
+      <IntakeSourcesSection queryClient={queryClient} />
     </div>
   );
 }
@@ -1207,5 +1216,550 @@ function OrgPoliciesSection({ queryClient }: { queryClient: ReturnType<typeof us
         </Dialog>
       </CardContent>
     </Card>
+  );
+}
+
+interface IntakeFormState {
+  name: string;
+  provider: string;
+  api_token: string;
+  target_repo: string;
+  target_base_branch: string;
+  label_filter: string;
+  run_as_user: string;
+  poll_interval_secs: number;
+  max_concurrent_tasks: number;
+  prompt_template: string;
+  skip_followup: boolean;
+}
+
+const INITIAL_INTAKE_FORM: IntakeFormState = {
+  name: '',
+  provider: 'github',
+  api_token: '',
+  target_repo: '',
+  target_base_branch: 'main',
+  label_filter: '',
+  run_as_user: '',
+  poll_interval_secs: 300,
+  max_concurrent_tasks: 3,
+  prompt_template: '',
+  skip_followup: true,
+};
+
+function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof useQueryClient> }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [testSourceId, setTestSourceId] = useState<number | null>(null);
+  const [issuesSourceId, setIssuesSourceId] = useState<number | null>(null);
+  const [logsSourceId, setLogsSourceId] = useState<number | null>(null);
+  const [newSource, setNewSource] = useState<IntakeFormState>({ ...INITIAL_INTAKE_FORM });
+
+  const { data: sources, isLoading } = useQuery({
+    queryKey: ['admin-intake-sources'],
+    queryFn: listIntakeSources,
+  });
+
+  const createMutation = useMutation({
+    mutationFn: (data: Parameters<typeof createIntakeSource>[0]) => createIntakeSource(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-intake-sources'] });
+      setShowAdd(false);
+      setNewSource({ ...INITIAL_INTAKE_FORM });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => deleteIntakeSource(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-intake-sources'] });
+      setDeleteId(null);
+    },
+  });
+
+  const toggleMutation = useMutation({
+    mutationFn: (id: number) => toggleIntakeSource(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-intake-sources'] });
+    },
+  });
+
+  const handleCreate = (e: React.FormEvent) => {
+    e.preventDefault();
+    const labels = newSource.label_filter.split(',').map((l) => l.trim()).filter(Boolean);
+    createMutation.mutate({
+      name: newSource.name,
+      provider: newSource.provider,
+      api_token: newSource.api_token,
+      target_repo: newSource.target_repo,
+      target_base_branch: newSource.target_base_branch || 'main',
+      label_filter: labels.length ? labels : undefined,
+      prompt_template: newSource.prompt_template || undefined,
+      run_as_user: newSource.run_as_user,
+      poll_interval_secs: newSource.poll_interval_secs,
+      max_concurrent_tasks: newSource.max_concurrent_tasks,
+      skip_followup: newSource.skip_followup,
+    });
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <CardTitle className="flex items-center gap-2">
+            <Zap className="size-5" />
+            Intake Sources
+          </CardTitle>
+          <Button size="sm" onClick={() => setShowAdd(true)}>
+            <Plus className="size-4 mr-1" />
+            Add Source
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <p className="text-muted-foreground text-sm">Loading intake sources...</p>
+        ) : !sources?.length ? (
+          <p className="text-muted-foreground text-sm">No intake sources configured.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
+                  <th className="pb-2 pr-4 font-medium">Name</th>
+                  <th className="pb-2 pr-4 font-medium">Provider</th>
+                  <th className="pb-2 pr-4 font-medium">Target Repo</th>
+                  <th className="pb-2 pr-4 font-medium">Enabled</th>
+                  <th className="pb-2 pr-4 font-medium">Poll Interval</th>
+                  <th className="pb-2 pr-4 font-medium">Run As</th>
+                  <th className="pb-2 font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sources.map((s) => (
+                  <tr key={s.id} className="border-b border-border/50 hover:bg-secondary/40 transition-colors duration-100">
+                    <td className="py-2 pr-4 font-mono">{s.name}</td>
+                    <td className="py-2 pr-4">
+                      <Badge variant="secondary">{s.provider}</Badge>
+                    </td>
+                    <td className="py-2 pr-4 font-mono">{s.target_repo}</td>
+                    <td className="py-2 pr-4">
+                      <Badge
+                        variant={s.enabled ? 'default' : 'outline'}
+                        className="cursor-pointer"
+                        onClick={() => toggleMutation.mutate(s.id)}
+                      >
+                        {s.enabled ? 'On' : 'Off'}
+                      </Badge>
+                    </td>
+                    <td className="py-2 pr-4">{s.poll_interval_secs}s</td>
+                    <td className="py-2 pr-4">{s.run_as_user}</td>
+                    <td className="py-2">
+                      <div className="flex gap-1">
+                        <Button variant="ghost" size="sm" onClick={() => setTestSourceId(s.id)} title="Test Poll">
+                          <FlaskConical className="size-4" />
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => setIssuesSourceId(s.id)} title="View Issues">
+                          <Eye className="size-4" />
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => setLogsSourceId(s.id)} title="View Logs">
+                          <ScrollText className="size-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setDeleteId(s.id)}
+                          className="text-destructive hover:text-destructive"
+                          title="Delete"
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Add Source Dialog */}
+        <Dialog open={showAdd} onOpenChange={setShowAdd}>
+          <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Add Intake Source</DialogTitle>
+              <DialogDescription>
+                Configure an external issue tracker to automatically poll and dispatch tasks.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleCreate} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="intake-name">Name</Label>
+                <Input
+                  id="intake-name"
+                  placeholder="My GitHub Issues"
+                  value={newSource.name}
+                  onChange={(e) => setNewSource((s) => ({ ...s, name: e.target.value }))}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="intake-provider">Provider</Label>
+                <select
+                  id="intake-provider"
+                  value={newSource.provider}
+                  onChange={(e) => setNewSource((s) => ({ ...s, provider: e.target.value }))}
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                >
+                  <option value="github">GitHub</option>
+                  <option value="linear">Linear</option>
+                  <option value="jira">Jira</option>
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="intake-token">API Token</Label>
+                <Input
+                  id="intake-token"
+                  type="password"
+                  placeholder="Token for the issue tracker"
+                  value={newSource.api_token}
+                  onChange={(e) => setNewSource((s) => ({ ...s, api_token: e.target.value }))}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="intake-repo">Target Repo</Label>
+                <Input
+                  id="intake-repo"
+                  placeholder="owner/repo"
+                  value={newSource.target_repo}
+                  onChange={(e) => setNewSource((s) => ({ ...s, target_repo: e.target.value }))}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="intake-branch">Base Branch</Label>
+                <Input
+                  id="intake-branch"
+                  placeholder="main"
+                  value={newSource.target_base_branch}
+                  onChange={(e) => setNewSource((s) => ({ ...s, target_base_branch: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="intake-labels">Label Filter (comma-separated)</Label>
+                <Input
+                  id="intake-labels"
+                  placeholder="agent, auto-fix"
+                  value={newSource.label_filter}
+                  onChange={(e) => setNewSource((s) => ({ ...s, label_filter: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="intake-user">Run As User</Label>
+                <Input
+                  id="intake-user"
+                  placeholder="Tekton user login"
+                  value={newSource.run_as_user}
+                  onChange={(e) => setNewSource((s) => ({ ...s, run_as_user: e.target.value }))}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="intake-interval">Poll Interval (seconds)</Label>
+                <Input
+                  id="intake-interval"
+                  type="number"
+                  min={30}
+                  value={newSource.poll_interval_secs}
+                  onChange={(e) => setNewSource((s) => ({ ...s, poll_interval_secs: Number(e.target.value) }))}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="intake-max-concurrent">Max Concurrent Tasks</Label>
+                <Input
+                  id="intake-max-concurrent"
+                  type="number"
+                  min={1}
+                  value={newSource.max_concurrent_tasks}
+                  onChange={(e) => setNewSource((s) => ({ ...s, max_concurrent_tasks: Number(e.target.value) }))}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="intake-prompt">Prompt Template (optional)</Label>
+                <Textarea
+                  id="intake-prompt"
+                  placeholder="Custom prompt template for created tasks..."
+                  value={newSource.prompt_template}
+                  onChange={(e) => setNewSource((s) => ({ ...s, prompt_template: e.target.value }))}
+                  rows={3}
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  id="intake-skip-followup"
+                  type="checkbox"
+                  checked={newSource.skip_followup}
+                  onChange={(e) => setNewSource((s) => ({ ...s, skip_followup: e.target.checked }))}
+                  className="rounded border-input"
+                />
+                <Label htmlFor="intake-skip-followup">Skip Followup</Label>
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setShowAdd(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={createMutation.isPending}>
+                  {createMutation.isPending ? 'Creating...' : 'Create Source'}
+                </Button>
+              </DialogFooter>
+              {createMutation.isError && (
+                <p className="text-destructive text-sm">
+                  {(createMutation.error as Error).message}
+                </p>
+              )}
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        {/* Delete Confirmation Dialog */}
+        <Dialog open={deleteId !== null} onOpenChange={(open) => { if (!open) setDeleteId(null); }}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Delete Intake Source</DialogTitle>
+              <DialogDescription>
+                Are you sure you want to delete this intake source? This action cannot be undone.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDeleteId(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => deleteId !== null && deleteMutation.mutate(deleteId)}
+                disabled={deleteMutation.isPending}
+              >
+                {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Test Poll Dialog */}
+        {testSourceId !== null && (
+          <TestPollDialog sourceId={testSourceId} onClose={() => setTestSourceId(null)} />
+        )}
+
+        {/* View Issues Dialog */}
+        {issuesSourceId !== null && (
+          <IntakeIssuesDialog sourceId={issuesSourceId} onClose={() => setIssuesSourceId(null)} />
+        )}
+
+        {/* View Logs Dialog */}
+        {logsSourceId !== null && (
+          <IntakeLogsDialog sourceId={logsSourceId} onClose={() => setLogsSourceId(null)} />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function TestPollDialog({ sourceId, onClose }: { sourceId: number; onClose: () => void }) {
+  const testMutation = useMutation({
+    mutationFn: () => testPollSource(sourceId),
+  });
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Test Poll</DialogTitle>
+          <DialogDescription>
+            Dry-run poll to see which issues would be imported.
+          </DialogDescription>
+        </DialogHeader>
+        {!testMutation.data && !testMutation.isPending && !testMutation.isError && (
+          <Button onClick={() => testMutation.mutate()}>Run Test Poll</Button>
+        )}
+        {testMutation.isPending && (
+          <p className="text-muted-foreground text-sm">Polling...</p>
+        )}
+        {testMutation.isError && (
+          <p className="text-destructive text-sm">{(testMutation.error as Error).message}</p>
+        )}
+        {testMutation.data && (
+          testMutation.data.length === 0 ? (
+            <p className="text-muted-foreground text-sm">No matching issues found.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
+                    <th className="pb-2 pr-4 font-medium">Title</th>
+                    <th className="pb-2 pr-4 font-medium">Labels</th>
+                    <th className="pb-2 font-medium">URL</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {testMutation.data.map((issue, i) => (
+                    <tr key={i} className="border-b border-border/50">
+                      <td className="py-2 pr-4">{issue.title}</td>
+                      <td className="py-2 pr-4">
+                        <div className="flex flex-wrap gap-1">
+                          {issue.labels.map((l) => (
+                            <Badge key={l} variant="secondary" className="text-xs">{l}</Badge>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="py-2">
+                        {issue.url ? (
+                          <a href={issue.url} target="_blank" rel="noopener noreferrer" className="text-primary underline text-xs">
+                            Link
+                          </a>
+                        ) : '-'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Close</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function IntakeIssuesDialog({ sourceId, onClose }: { sourceId: number; onClose: () => void }) {
+  const { data: issues, isLoading } = useQuery({
+    queryKey: ['admin-intake-issues', sourceId],
+    queryFn: () => listIntakeIssues(sourceId),
+  });
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Intake Issues</DialogTitle>
+          <DialogDescription>
+            Issues imported from this source.
+          </DialogDescription>
+        </DialogHeader>
+        {isLoading ? (
+          <p className="text-muted-foreground text-sm">Loading...</p>
+        ) : !issues?.length ? (
+          <p className="text-muted-foreground text-sm">No issues found.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
+                  <th className="pb-2 pr-4 font-medium">Title</th>
+                  <th className="pb-2 pr-4 font-medium">Status</th>
+                  <th className="pb-2 pr-4 font-medium">Task</th>
+                  <th className="pb-2 pr-4 font-medium">Labels</th>
+                  <th className="pb-2 font-medium">Created</th>
+                </tr>
+              </thead>
+              <tbody>
+                {issues.map((issue) => (
+                  <tr key={issue.id} className="border-b border-border/50">
+                    <td className="py-2 pr-4">
+                      {issue.external_url ? (
+                        <a href={issue.external_url} target="_blank" rel="noopener noreferrer" className="text-primary underline">
+                          {issue.external_title}
+                        </a>
+                      ) : issue.external_title}
+                    </td>
+                    <td className="py-2 pr-4">
+                      <Badge variant={issue.status === 'created' ? 'default' : issue.status === 'error' ? 'destructive' : 'secondary'}>
+                        {issue.status}
+                      </Badge>
+                    </td>
+                    <td className="py-2 pr-4 font-mono text-xs">{issue.task_id ?? '-'}</td>
+                    <td className="py-2 pr-4">
+                      <div className="flex flex-wrap gap-1">
+                        {issue.external_labels.map((l) => (
+                          <Badge key={l} variant="outline" className="text-xs">{l}</Badge>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="py-2 text-xs">{new Date(issue.created_at).toLocaleDateString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Close</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function IntakeLogsDialog({ sourceId, onClose }: { sourceId: number; onClose: () => void }) {
+  const { data: logs, isLoading } = useQuery({
+    queryKey: ['admin-intake-logs', sourceId],
+    queryFn: () => listIntakeLogs(sourceId),
+  });
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Poll Logs</DialogTitle>
+          <DialogDescription>
+            Recent polling activity for this source.
+          </DialogDescription>
+        </DialogHeader>
+        {isLoading ? (
+          <p className="text-muted-foreground text-sm">Loading...</p>
+        ) : !logs?.length ? (
+          <p className="text-muted-foreground text-sm">No poll logs yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
+                  <th className="pb-2 pr-4 font-medium">Polled At</th>
+                  <th className="pb-2 pr-4 font-medium">Found</th>
+                  <th className="pb-2 pr-4 font-medium">Created</th>
+                  <th className="pb-2 pr-4 font-medium">Skipped</th>
+                  <th className="pb-2 pr-4 font-medium">Duration</th>
+                  <th className="pb-2 font-medium">Error</th>
+                </tr>
+              </thead>
+              <tbody>
+                {logs.map((log) => (
+                  <tr key={log.id} className="border-b border-border/50">
+                    <td className="py-2 pr-4 text-xs">{new Date(log.polled_at).toLocaleString()}</td>
+                    <td className="py-2 pr-4">{log.issues_found}</td>
+                    <td className="py-2 pr-4">{log.issues_created}</td>
+                    <td className="py-2 pr-4">{log.issues_skipped}</td>
+                    <td className="py-2 pr-4">{log.duration_ms != null ? `${log.duration_ms}ms` : '-'}</td>
+                    <td className="py-2">
+                      {log.error_message ? (
+                        <span className="text-destructive text-xs">{log.error_message}</span>
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Close</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
