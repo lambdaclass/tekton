@@ -857,6 +857,10 @@ async fn build_claude_auth_env(
                 String::new(),
             ))
         }
+        Some(cfg) if cfg.provider == "anthropic-oauth" => Ok((
+            format!("export CLAUDE_CODE_OAUTH_TOKEN='{}' ANTHROPIC_API_KEY=''", cfg.api_key),
+            String::new(),
+        )),
         Some(cfg) => Ok((
             format!("export ANTHROPIC_API_KEY='{}'", cfg.api_key),
             String::new(),
@@ -877,6 +881,10 @@ async fn build_claude_auth_env(
                         String::new(),
                     ))
                 }
+                Some(cfg) if cfg.provider == "anthropic-oauth" => Ok((
+                    format!("export CLAUDE_CODE_OAUTH_TOKEN='{}' ANTHROPIC_API_KEY=''", cfg.api_key),
+                    String::new(),
+                )),
                 Some(cfg) => Ok((
                     format!("export ANTHROPIC_API_KEY='{}'", cfg.api_key),
                     String::new(),

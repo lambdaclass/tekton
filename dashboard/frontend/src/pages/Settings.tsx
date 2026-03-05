@@ -25,6 +25,13 @@ const PROVIDERS = [
     linkLabel: 'Get an Anthropic API key',
   },
   {
+    value: 'anthropic-oauth',
+    label: 'Claude Max / Teams (OAuth)',
+    description: 'Use an OAuth token from claude login',
+    link: 'https://docs.anthropic.com/en/docs/claude-code/overview',
+    linkLabel: 'Learn about Claude Code OAuth',
+  },
+  {
     value: 'openrouter',
     label: 'OpenRouter',
     description: 'Access Claude and other models via openrouter.ai',
