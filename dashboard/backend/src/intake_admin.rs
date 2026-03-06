@@ -472,6 +472,7 @@ pub async fn list_all_issues(
              TO_CHAR(i.created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
              TO_CHAR(i.updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
              s.name as source_name, \
+             s.target_repo as source_repo, \
              t.status as task_status \
          FROM intake_issues i \
          JOIN intake_sources s ON s.id = i.source_id \

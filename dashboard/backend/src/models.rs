@@ -418,6 +418,7 @@ pub struct IntakeIssueWithDetails {
     pub created_at: String,
     pub updated_at: String,
     pub source_name: String,
+    pub source_repo: String,
     pub task_status: Option<String>,
 }
 

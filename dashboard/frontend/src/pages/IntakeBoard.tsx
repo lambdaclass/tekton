@@ -21,6 +21,7 @@ import {
   Search,
   ExternalLink,
   AlertTriangle,
+  GitBranch,
   Inbox,
   Clock,
   Play,
@@ -178,18 +179,21 @@ function IssueCard({ issue, index }: IssueCardProps) {
             {issue.external_title}
           </p>
 
-          {/* Source + external link */}
-          <div className="flex items-center gap-1.5 mb-2">
-            <span className="text-xs text-muted-foreground truncate">
-              {issue.source_name}
+          {/* Repo + source */}
+          <div className="flex items-center gap-1.5 mb-2 text-xs text-muted-foreground">
+            <GitBranch className="size-3 shrink-0" />
+            <span className="truncate font-mono" title={issue.source_repo}>
+              {issue.source_repo}
             </span>
+            <span className="shrink-0">·</span>
+            <span className="truncate">{issue.source_name}</span>
             {issue.external_url && (
               <a
                 href={issue.external_url}
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={(e) => e.stopPropagation()}
-                className="text-muted-foreground hover:text-foreground transition-colors"
+                className="shrink-0 hover:text-foreground transition-colors"
                 title="Open external issue"
               >
                 <ExternalLink className="size-3" />
@@ -358,11 +362,13 @@ export default function IntakeBoard() {
   // Unique sources for dropdown
   const sources = useMemo(() => {
     if (!issues) return [];
-    const map = new Map<number, string>();
+    const map = new Map<number, { name: string; repo: string }>();
     for (const issue of issues) {
-      map.set(issue.source_id, issue.source_name);
+      if (!map.has(issue.source_id)) {
+        map.set(issue.source_id, { name: issue.source_name, repo: issue.source_repo });
+      }
     }
-    return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+    return Array.from(map.entries()).sort((a, b) => a[1].name.localeCompare(b[1].name));
   }, [issues]);
 
   // Filtered issues
@@ -473,9 +479,9 @@ export default function IntakeBoard() {
             className="h-8 rounded-md border border-input bg-background px-2.5 text-sm text-foreground"
           >
             <option value="all">All sources</option>
-            {sources.map(([id, name]) => (
+            {sources.map(([id, { name, repo }]) => (
               <option key={id} value={String(id)}>
-                {name}
+                {name} ({repo})
               </option>
             ))}
           </select>

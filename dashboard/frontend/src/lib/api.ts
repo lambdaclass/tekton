@@ -475,6 +475,7 @@ export const testPollSource = (id: number) =>
 // Intake Board (all issues across sources)
 export interface IntakeIssueWithMeta extends IntakeIssue {
   source_name: string;
+  source_repo: string;
   task_status: string | null;
 }
 
