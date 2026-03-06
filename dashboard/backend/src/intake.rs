@@ -326,13 +326,15 @@ async fn poll_source(
             Arc::new(config.clone()),
             db.clone(),
             task_channels.clone(),
-            prompt,
-            source.target_repo.clone(),
-            source.target_base_branch.clone(),
-            source.run_as_user.clone(),
-            Some(source_type),
-            Some(intake_issue_id.0),
-            source.skip_followup,
+            crate::tasks::SpawnTaskParams {
+                prompt,
+                repo: source.target_repo.clone(),
+                base_branch: source.target_base_branch.clone(),
+                created_by: source.run_as_user.clone(),
+                source_type: Some(source_type),
+                intake_issue_id: Some(intake_issue_id.0),
+                skip_followup: source.skip_followup,
+            },
         )
         .await
         {

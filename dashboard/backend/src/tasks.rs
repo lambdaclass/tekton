@@ -306,20 +306,33 @@ pub async fn get_subtasks(
     Ok(Json(subtasks))
 }
 
+pub(crate) struct SpawnTaskParams {
+    pub prompt: String,
+    pub repo: String,
+    pub base_branch: String,
+    pub created_by: String,
+    pub source_type: Option<String>,
+    pub intake_issue_id: Option<i64>,
+    pub skip_followup: bool,
+}
+
 /// Internal task spawning for both HTTP handler and intake daemon.
 /// Returns the created Task.
 pub(crate) async fn spawn_task_internal(
     config: Arc<Config>,
     db: PgPool,
     task_channels: TaskChannels,
-    prompt: String,
-    repo: String,
-    base_branch: String,
-    created_by: String,
-    source_type: Option<String>,
-    intake_issue_id: Option<i64>,
-    skip_followup: bool,
+    params: SpawnTaskParams,
 ) -> Result<Task, AppError> {
+    let SpawnTaskParams {
+        prompt,
+        repo,
+        base_branch,
+        created_by,
+        source_type,
+        intake_issue_id,
+        skip_followup,
+    } = params;
     let id = Uuid::new_v4().to_string();
     let short_id = id[..6].to_string();
 
@@ -333,7 +346,7 @@ pub(crate) async fn spawn_task_internal(
     .bind(&base_branch)
     .bind(&created_by)
     .bind(&source_type)
-    .bind(&intake_issue_id)
+    .bind(intake_issue_id)
     .execute(&db)
     .await?;
 
