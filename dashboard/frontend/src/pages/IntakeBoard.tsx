@@ -115,11 +115,11 @@ function labelColor(label: string): string {
 
 function BoardSkeleton() {
   return (
-    <div className="flex gap-4 overflow-x-auto pb-4">
+    <div className="flex gap-3 pb-4">
       {COLUMNS.map((col) => (
         <div
           key={col.id}
-          className="flex-shrink-0 w-[320px] rounded-xl bg-muted/40 border border-border/50 p-3"
+          className="flex-1 min-w-0 rounded-xl bg-muted/40 border border-border/50 p-3"
         >
           <div className="flex items-center gap-2 mb-3 px-1">
             <Skeleton className="h-4 w-24 rounded" />
@@ -274,7 +274,7 @@ function BoardColumn({ column, issues }: BoardColumnProps) {
   }, [issues.length]);
 
   return (
-    <div className="flex-shrink-0 w-[320px] flex flex-col rounded-xl bg-muted/40 border border-border/50">
+    <div className="flex-1 min-w-0 flex flex-col rounded-xl bg-muted/40 border border-border/50">
       {/* Column header */}
       <div className="flex items-center gap-2 px-3 pt-3 pb-2">
         <span className={cn('size-2 rounded-full', column.dotColor)} />
@@ -446,7 +446,7 @@ export default function IntakeBoard() {
   const totalCount = issues?.length ?? 0;
 
   return (
-    <div className="flex flex-col h-[calc(100vh-theme(spacing.12)-theme(spacing.12))]">
+    <div className="flex flex-col">
       {/* Page header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <div>
@@ -487,7 +487,7 @@ export default function IntakeBoard() {
         <BoardSkeleton />
       ) : (
         <DragDropContext onDragEnd={onDragEnd}>
-          <div className="flex gap-4 overflow-x-auto flex-1 pb-2">
+          <div className="flex gap-3 flex-1 pb-2">
             {COLUMNS.map((col) => (
               <BoardColumn
                 key={col.id}
