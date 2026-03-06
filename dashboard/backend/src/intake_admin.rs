@@ -4,7 +4,8 @@ use axum::Json;
 use crate::auth::AdminUser;
 use crate::error::AppError;
 use crate::models::{
-    CreateIntakeSourceRequest, IntakeIssue, IntakePollLog, IntakeSource, UpdateIntakeSourceRequest,
+    CreateIntakeSourceRequest, IntakeIssue, IntakeIssueWithDetails, IntakePollLog, IntakeSource,
+    UpdateIntakeIssueStatusRequest, UpdateIntakeSourceRequest,
 };
 use crate::secrets;
 
@@ -455,4 +456,70 @@ pub async fn test_poll_source(
         .collect();
 
     Ok(Json(previews))
+}
+
+/// GET /api/admin/intake/issues
+/// List all intake issues across all sources, joined with source name and task status.
+pub async fn list_all_issues(
+    _admin: AdminUser,
+    State(state): State<crate::AppState>,
+) -> Result<Json<Vec<IntakeIssueWithDetails>>, AppError> {
+    let issues = sqlx::query_as::<_, IntakeIssueWithDetails>(
+        "SELECT i.id, i.source_id, i.external_id, i.external_url, i.external_title, \
+             i.external_body, i.external_labels, \
+             TO_CHAR(i.external_updated_at, 'YYYY-MM-DD HH24:MI:SS') as external_updated_at, \
+             i.task_id, i.status, i.error_message, \
+             TO_CHAR(i.created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
+             TO_CHAR(i.updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+             s.name as source_name, \
+             t.status as task_status \
+         FROM intake_issues i \
+         JOIN intake_sources s ON s.id = i.source_id \
+         LEFT JOIN tasks t ON t.id = i.task_id \
+         ORDER BY i.updated_at DESC",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(issues))
+}
+
+const VALID_ISSUE_STATUSES: &[&str] = &[
+    "backlog",
+    "pending",
+    "task_created",
+    "in_progress",
+    "review",
+    "done",
+    "failed",
+];
+
+/// PATCH /api/admin/intake/issues/{id}/status
+/// Update the status of an intake issue.
+pub async fn update_issue_status(
+    _admin: AdminUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<UpdateIntakeIssueStatusRequest>,
+) -> Result<Json<IntakeIssue>, AppError> {
+    if !VALID_ISSUE_STATUSES.contains(&req.status.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "Invalid status '{}'. Valid statuses: {}",
+            req.status,
+            VALID_ISSUE_STATUSES.join(", ")
+        )));
+    }
+
+    let issue = sqlx::query_as::<_, IntakeIssue>(&format!(
+        "UPDATE intake_issues SET status = $1, updated_at = NOW() \
+         WHERE id = $2 RETURNING {ISSUE_COLUMNS}"
+    ))
+    .bind(&req.status)
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    match issue {
+        Some(i) => Ok(Json(i)),
+        None => Err(AppError::NotFound("Intake issue not found".into())),
+    }
 }

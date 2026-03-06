@@ -400,6 +400,32 @@ pub struct IntakeIssue {
     pub updated_at: String,
 }
 
+// ── Intake Issue (with joined fields for Kanban board) ──
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct IntakeIssueWithDetails {
+    pub id: i64,
+    pub source_id: i64,
+    pub external_id: String,
+    pub external_url: Option<String>,
+    pub external_title: String,
+    pub external_body: Option<String>,
+    pub external_labels: Vec<String>,
+    pub external_updated_at: Option<String>,
+    pub task_id: Option<String>,
+    pub status: String,
+    pub error_message: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub source_name: String,
+    pub task_status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateIntakeIssueStatusRequest {
+    pub status: String,
+}
+
 // ── Intake Poll Log ──
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]

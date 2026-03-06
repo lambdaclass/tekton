@@ -157,6 +157,12 @@ async fn main() -> anyhow::Result<()> {
             "/admin/intake/sources/{id}/test",
             post(intake_admin::test_poll_source),
         )
+        // Admin: Intake Issues (all sources)
+        .route("/admin/intake/issues", get(intake_admin::list_all_issues))
+        .route(
+            "/admin/intake/issues/{id}/status",
+            patch(intake_admin::update_issue_status),
+        )
         // Admin: Audit Log
         .route("/admin/audit-log", get(audit::list_audit_log))
         // Settings

@@ -472,6 +472,21 @@ export const listIntakeLogs = (sourceId: number) =>
 export const testPollSource = (id: number) =>
   apiFetch<{ title: string; url: string; labels: string[] }[]>(`/api/admin/intake/sources/${id}/test`, { method: 'POST' });
 
+// Intake Board (all issues across sources)
+export interface IntakeIssueWithMeta extends IntakeIssue {
+  source_name: string;
+  task_status: string | null;
+}
+
+export const listAllIntakeIssues = () =>
+  apiFetch<IntakeIssueWithMeta[]>('/api/admin/intake/issues');
+
+export const updateIntakeIssueStatus = (id: number, status: string) =>
+  apiFetch<IntakeIssueWithMeta>(`/api/admin/intake/issues/${id}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  });
+
 // WebSocket helpers
 export function connectPreviewLogs(slug: string): WebSocket {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
