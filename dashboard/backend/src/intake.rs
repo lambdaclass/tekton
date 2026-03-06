@@ -133,11 +133,7 @@ fn build_prompt(source: &IntakeSource, issue: &ExternalIssue) -> String {
 
 // ── Polling daemon ──
 
-pub async fn start_intake_daemon(
-    config: Arc<Config>,
-    db: PgPool,
-    task_channels: TaskChannels,
-) {
+pub async fn start_intake_daemon(config: Arc<Config>, db: PgPool, task_channels: TaskChannels) {
     if !config.intake_enabled {
         tracing::info!("Intake daemon disabled (INTAKE_ENABLED != true)");
         return;
@@ -227,16 +223,12 @@ async fn poll_source(
     let poll_start = std::time::Instant::now();
 
     // Fetch the encrypted API token (not included in IntakeSource to avoid leaking)
-    let token_row: (String,) = sqlx::query_as(
-        "SELECT api_token_encrypted FROM intake_sources WHERE id = $1",
-    )
-    .bind(source.id)
-    .fetch_one(db)
-    .await?;
-    let api_token = crate::secrets::decrypt_secret(
-        &config.secrets_encryption_key,
-        &token_row.0,
-    )?;
+    let token_row: (String,) =
+        sqlx::query_as("SELECT api_token_encrypted FROM intake_sources WHERE id = $1")
+            .bind(source.id)
+            .fetch_one(db)
+            .await?;
+    let api_token = crate::secrets::decrypt_secret(&config.secrets_encryption_key, &token_row.0)?;
 
     // Fetch issues from provider
     let issues = match source.provider.as_str() {
