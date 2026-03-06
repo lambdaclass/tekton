@@ -446,7 +446,7 @@ export default function IntakeBoard() {
   const totalCount = issues?.length ?? 0;
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col" style={{ minHeight: 'calc(100vh - 3rem - 3rem)' }}>
       {/* Page header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <div>
@@ -486,17 +486,19 @@ export default function IntakeBoard() {
       {isLoading ? (
         <BoardSkeleton />
       ) : (
-        <DragDropContext onDragEnd={onDragEnd}>
-          <div className="flex gap-3 flex-1 pb-2">
-            {COLUMNS.map((col) => (
-              <BoardColumn
-                key={col.id}
-                column={col}
-                issues={columnData.get(col.id) ?? []}
-              />
-            ))}
-          </div>
-        </DragDropContext>
+        <div className="flex-1 flex flex-col">
+          <DragDropContext onDragEnd={onDragEnd}>
+            <div className="flex gap-3 flex-1 pb-2">
+              {COLUMNS.map((col) => (
+                <BoardColumn
+                  key={col.id}
+                  column={col}
+                  issues={columnData.get(col.id) ?? []}
+                />
+              ))}
+            </div>
+          </DragDropContext>
+        </div>
       )}
     </div>
   );
