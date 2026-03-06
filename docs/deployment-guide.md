@@ -450,3 +450,83 @@ GOOGLE_CLIENT_ID=your-client-id
 ```
 
 Tekton forwards any matching keys into the container's `/etc/preview.env` at create time. If a key is missing, tekton warns but does not abort.
+
+## Local Development
+
+You can run the dashboard (frontend + backend) locally for UI and API development. Agent containers, task execution, and preview deployments require the full NixOS server setup and **will not work locally** — those features depend on systemd-nspawn, NixOS containers, and the server's Caddy/Cloudflare networking stack.
+
+### Prerequisites
+
+- **PostgreSQL** (14+) running locally
+- **Rust** (stable toolchain, install via [rustup](https://rustup.rs/))
+- **Node.js** (22+)
+- A **GitHub OAuth App** for local login (see below)
+
+### Create a GitHub OAuth App
+
+1. Go to [GitHub Settings > Developer settings > OAuth Apps](https://github.com/settings/developers) and click **New OAuth App**
+2. Fill in:
+   - **Application name**: anything (e.g. "Tekton Local Dev")
+   - **Homepage URL**: `http://localhost:5173`
+   - **Authorization callback URL**: `http://localhost:5173/api/auth/callback`
+3. Click **Register application**
+4. Copy the **Client ID** from the app page
+5. Click **Generate a new client secret** and copy it (shown once)
+
+You'll also need the name of a GitHub organization you belong to — only members of that org can log in.
+
+**Important**: The callback URL must match exactly. For local development it must be `http://localhost:5173/api/auth/callback` (not `localhost:3200` — the Vite dev server proxies API requests to the backend). If you reuse an existing OAuth App that points to a production URL, login will fail. Create a separate OAuth App for local dev.
+
+### Quick start
+
+```bash
+make deps
+```
+
+This checks prerequisites, creates the `dashboard` PostgreSQL database, installs frontend npm packages, and creates `dashboard/backend/.env` with placeholders.
+
+Edit `dashboard/backend/.env` and fill in three values:
+
+```
+GITHUB_CLIENT_ID=<your client id>
+GITHUB_CLIENT_SECRET=<your client secret>
+GITHUB_ORG=<your github org>
+```
+
+If your PostgreSQL uses a different socket path or requires a password, also adjust `DATABASE_URL` (e.g., `postgresql://user:pass@localhost/dashboard`).
+
+Then:
+
+```bash
+make run
+```
+
+This starts the Rust backend (port 3200) and the Vite dev server at `http://localhost:5173` (proxies `/api` to the backend). Ctrl-C stops both. Database tables are auto-created on first startup.
+
+### Other commands
+
+```bash
+make run-backend    # Run only the backend
+make run-frontend   # Run only the frontend
+make stop           # Kill running dev servers
+make clean          # Drop the local database
+```
+
+### What works locally
+
+- Dashboard UI (all pages, navigation, admin panel)
+- GitHub OAuth login
+- Task list, task detail (viewing existing data)
+- Intake board (Kanban view, drag-and-drop status changes)
+- Admin settings (intake sources, policy presets, AI settings)
+- Cost dashboard, audit log
+- API endpoints
+
+### What does NOT work locally
+
+- **Creating and running tasks** — requires agent containers (NixOS + systemd-nspawn)
+- **Preview deployments** — requires the preview container system and Caddy reverse proxy
+- **Screenshots** — requires Chromium inside agent containers
+- **Claude Code execution** — requires the Claude binary and OAuth token inside containers
+
+For testing these features, deploy to a server using `./deploy.sh`.
