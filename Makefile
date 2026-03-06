@@ -1,28 +1,46 @@
-.PHONY: deps run run-backend run-frontend stop clean help
+.PHONY: deps run run-backend run-frontend stop down clean help
 
 ENV_FILE := dashboard/backend/.env
+PG_CONTAINER := tekton-postgres
 
 help:
 	@echo "Usage:"
-	@echo "  make deps    — install dependencies and create local database"
+	@echo "  make deps    — install dependencies and start local database"
 	@echo "  make run     — start backend + frontend (Ctrl-C to stop both)"
-	@echo "  make stop    — kill any running dev servers"
-	@echo "  make clean   — drop local database"
+	@echo "  make stop    — kill running dev servers (keeps database running)"
+	@echo "  make down    — stop everything: dev servers + database container"
+	@echo "  make clean   — stop everything and delete database data"
 
 # ---------------------------------------------------------------------------
-# deps: check prerequisites, create DB, install npm packages, scaffold .env
+# deps: check prerequisites, start postgres via Docker, install npm, scaffold .env
 # ---------------------------------------------------------------------------
 
 deps:
 	@echo "Checking prerequisites..."
-	@command -v psql >/dev/null 2>&1 || { echo "ERROR: PostgreSQL not found. Install it first."; exit 1; }
+	@command -v docker >/dev/null 2>&1 || { echo "ERROR: Docker not found. Install Docker Desktop: https://docs.docker.com/get-docker/"; exit 1; }
 	@command -v cargo >/dev/null 2>&1 || { echo "ERROR: Rust not found. Install via https://rustup.rs"; exit 1; }
 	@command -v node >/dev/null 2>&1 || { echo "ERROR: Node.js not found. Install Node 22+."; exit 1; }
-	@echo "Creating database 'dashboard' (if it doesn't exist)..."
-	@psql -lqt 2>/dev/null | cut -d\| -f1 | grep -qw dashboard \
-		|| createdb dashboard 2>/dev/null \
-		|| sudo -u postgres createdb dashboard 2>/dev/null \
-		|| { echo "ERROR: Could not create database. Create it manually: createdb dashboard"; exit 1; }
+	@echo "Starting PostgreSQL via Docker..."
+	@if docker ps --format '{{.Names}}' | grep -qw $(PG_CONTAINER); then \
+		echo "PostgreSQL container already running."; \
+	elif docker ps -a --format '{{.Names}}' | grep -qw $(PG_CONTAINER); then \
+		docker start $(PG_CONTAINER); \
+		echo "PostgreSQL container restarted."; \
+	else \
+		docker run -d \
+			--name $(PG_CONTAINER) \
+			-e POSTGRES_USER=tekton \
+			-e POSTGRES_PASSWORD=tekton \
+			-e POSTGRES_DB=dashboard \
+			-p 5432:5432 \
+			postgres:16-alpine; \
+		echo "Waiting for PostgreSQL to be ready..."; \
+		for i in 1 2 3 4 5 6 7 8 9 10; do \
+			docker exec $(PG_CONTAINER) pg_isready -U tekton >/dev/null 2>&1 && break; \
+			sleep 1; \
+		done; \
+		echo "PostgreSQL is ready."; \
+	fi
 	@echo "Installing frontend dependencies..."
 	cd dashboard/frontend && npm install
 	@if [ ! -f $(ENV_FILE) ]; then \
@@ -31,7 +49,7 @@ deps:
 		echo "See docs/deployment-guide.md 'Local Development' for how to create them."; \
 		echo ""; \
 		echo 'LISTEN_ADDR=127.0.0.1:3200' > $(ENV_FILE); \
-		echo 'DATABASE_URL=postgresql:///dashboard?host=/tmp' >> $(ENV_FILE); \
+		echo 'DATABASE_URL=postgresql://tekton:tekton@localhost:5432/dashboard' >> $(ENV_FILE); \
 		echo 'JWT_SECRET=local-dev-secret-change-me' >> $(ENV_FILE); \
 		echo 'GITHUB_CLIENT_ID=REPLACE_ME' >> $(ENV_FILE); \
 		echo 'GITHUB_CLIENT_SECRET=REPLACE_ME' >> $(ENV_FILE); \
@@ -59,6 +77,10 @@ run:
 		echo "Fill in your GitHub OAuth credentials. See docs/deployment-guide.md for instructions."; \
 		exit 1; \
 	fi
+	@if ! docker ps --format '{{.Names}}' | grep -qw $(PG_CONTAINER); then \
+		echo "Starting PostgreSQL container..."; \
+		docker start $(PG_CONTAINER) 2>/dev/null || { echo "ERROR: PostgreSQL container not found. Run 'make deps' first."; exit 1; }; \
+	fi
 	@trap 'kill 0' EXIT; \
 	( cd dashboard/backend && set -a && . ./.env && set +a && cargo run ) & \
 	( cd dashboard/frontend && npm run dev ) & \
@@ -71,15 +93,22 @@ run-frontend:
 	@cd dashboard/frontend && npm run dev
 
 # ---------------------------------------------------------------------------
-# stop / clean
+# stop / down / clean
 # ---------------------------------------------------------------------------
 
 stop:
 	@-pkill -f 'cargo run' 2>/dev/null
 	@-pkill -f 'vite' 2>/dev/null
-	@echo "Stopped."
+	@echo "Dev servers stopped. Database is still running (use 'make down' to stop everything)."
+
+down:
+	@-pkill -f 'cargo run' 2>/dev/null
+	@-pkill -f 'vite' 2>/dev/null
+	@-docker stop $(PG_CONTAINER) 2>/dev/null
+	@echo "Everything stopped."
 
 clean:
-	@echo "Dropping local 'dashboard' database..."
-	@dropdb dashboard 2>/dev/null || sudo -u postgres dropdb dashboard 2>/dev/null || true
-	@echo "Done."
+	@-pkill -f 'cargo run' 2>/dev/null
+	@-pkill -f 'vite' 2>/dev/null
+	@-docker rm -f $(PG_CONTAINER) 2>/dev/null
+	@echo "Database container removed."

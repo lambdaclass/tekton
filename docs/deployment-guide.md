@@ -457,7 +457,7 @@ You can run the dashboard (frontend + backend) locally for UI and API developmen
 
 ### Prerequisites
 
-- **PostgreSQL** (14+) running locally
+- **Docker** (install [Docker Desktop](https://docs.docker.com/get-docker/))
 - **Rust** (stable toolchain, install via [rustup](https://rustup.rs/))
 - **Node.js** (22+)
 - A **GitHub OAuth App** for local login (see below)
@@ -483,7 +483,7 @@ You'll also need the name of a GitHub organization you belong to — only member
 make deps
 ```
 
-This checks prerequisites, creates the `dashboard` PostgreSQL database, installs frontend npm packages, and creates `dashboard/backend/.env` with placeholders.
+This checks prerequisites, starts a PostgreSQL container via Docker, installs frontend npm packages, and creates `dashboard/backend/.env` with placeholders.
 
 Edit `dashboard/backend/.env` and fill in three values:
 
@@ -492,8 +492,6 @@ GITHUB_CLIENT_ID=<your client id>
 GITHUB_CLIENT_SECRET=<your client secret>
 GITHUB_ORG=<your github org>
 ```
-
-If your PostgreSQL uses a different socket path or requires a password, also adjust `DATABASE_URL` (e.g., `postgresql://user:pass@localhost/dashboard`).
 
 Then:
 
@@ -508,8 +506,9 @@ This starts the Rust backend (port 3200) and the Vite dev server at `http://loca
 ```bash
 make run-backend    # Run only the backend
 make run-frontend   # Run only the frontend
-make stop           # Kill running dev servers
-make clean          # Drop the local database
+make stop           # Kill running dev servers (keeps database running)
+make down           # Stop everything: dev servers + database container
+make clean          # Stop everything and delete database data
 ```
 
 ### What works locally
