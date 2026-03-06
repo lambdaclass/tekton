@@ -24,7 +24,7 @@ import {
   listIntakeLogs,
   testPollSource,
 } from '@/lib/api';
-import type { PolicyPreset, IntakeSource, IntakeIssue, IntakePollLog } from '@/lib/api';
+import type { PolicyPreset } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';

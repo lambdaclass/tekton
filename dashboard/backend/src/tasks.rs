@@ -938,7 +938,12 @@ async fn run_task_pipeline(
     } else {
         // For intake tasks: mark as completed immediately
         update_task_status(db, task_id, "completed", None).await?;
-        log_and_send(db, task_id, &tx, "[STATUS] Task auto-completed (intake mode)");
+        log_and_send(
+            db,
+            task_id,
+            &tx,
+            "[STATUS] Task auto-completed (intake mode)",
+        );
     }
 
     // Step 5: Destroy agent container

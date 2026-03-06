@@ -198,8 +198,7 @@ pub async fn update_source(
                 "SECRETS_ENCRYPTION_KEY is not configured".into(),
             ));
         }
-        let encrypted =
-            secrets::encrypt_secret(&state.config.secrets_encryption_key, api_token)?;
+        let encrypted = secrets::encrypt_secret(&state.config.secrets_encryption_key, api_token)?;
         query = query.bind(encrypted);
     }
     if let Some(ref target_repo) = req.target_repo {
@@ -402,9 +401,8 @@ pub async fn test_poll_source(
         }
     };
 
-    let mut url = format!(
-        "https://api.github.com/repos/{owner}/{repo}/issues?state=open&per_page=20"
-    );
+    let mut url =
+        format!("https://api.github.com/repos/{owner}/{repo}/issues?state=open&per_page=20");
 
     // Add label filter if configured
     if !source.label_filter.is_empty() {
@@ -424,10 +422,7 @@ pub async fn test_poll_source(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "unknown".into());
+        let body = response.text().await.unwrap_or_else(|_| "unknown".into());
         return Err(AppError::Internal(format!(
             "GitHub API returned {status}: {body}"
         )));
