@@ -50,7 +50,12 @@ export default function Webhooks() {
 
   return (
     <div className="space-y-6 max-w-3xl">
-      <h1 className="text-2xl font-bold">Webhooks</h1>
+      <h1 className="text-2xl font-bold">Automated Previews</h1>
+      <p className="text-muted-foreground">
+        When enabled, a preview environment is automatically created for every new pull request
+        and kept up to date as commits are pushed. This works via a GitHub webhook that you can
+        activate per repository below.
+      </p>
 
       {isForbiddenError && (
         <div className="flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 px-4 py-3">
@@ -69,10 +74,10 @@ export default function Webhooks() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Webhook className="size-5" />
-            Repository Webhooks
+            Repositories
           </CardTitle>
           <p className="text-sm text-muted-foreground">
-            Enable or disable preview webhooks on repositories where you have admin access.
+            Only repositories where you have GitHub admin access are shown.
           </p>
         </CardHeader>
         <CardContent>

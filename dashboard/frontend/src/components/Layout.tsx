@@ -38,7 +38,7 @@ const NAV_ITEMS = [
   { to: '/', label: 'Home', icon: LayoutDashboard },
   { to: '/previews', label: 'Previews', icon: Container },
   { to: '/tasks', label: 'Tasks', icon: BrainCircuit },
-  { to: '/webhooks', label: 'Webhooks', icon: Webhook },
+  { to: '/webhooks', label: 'Automated Previews', icon: Webhook },
   { to: '/settings', label: 'Settings', icon: SlidersHorizontal },
 ];
 
