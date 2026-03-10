@@ -18,8 +18,14 @@ export async function readPreviewMeta(slug: string): Promise<PreviewMeta | null>
 const PREVIEW_BIN = "/run/current-system/sw/bin/preview";
 
 export function prToSlug(repoName: string, prNumber: number): string {
-  const name = repoName.split("/").pop() ?? repoName;
-  return `${name}-${prNumber}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+  const MAX_LEN = 11; // nixos-container limit (ve-<name> must fit in 15-char IFNAMSIZ)
+  const name = (repoName.split("/").pop() ?? repoName)
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-");
+  const suffix = `-${prNumber}`;
+  const maxNameLen = MAX_LEN - suffix.length;
+  const truncated = name.slice(0, maxNameLen).replace(/-+$/, "");
+  return `${truncated}${suffix}`;
 }
 
 async function runPreview(args: string[]): Promise<void> {
