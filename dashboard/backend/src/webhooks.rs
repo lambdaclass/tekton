@@ -30,7 +30,7 @@ pub async fn list_repos_with_webhook_status(
     let client = reqwest::Client::new();
     let org = &state.config.github_org;
     let webhook_url = format!(
-        "https://webhook.preview.{}/webhook/github",
+        "https://webhook.{}/webhook/github",
         state.config.preview_domain
     );
 
@@ -167,7 +167,7 @@ pub async fn create_webhook(
     let client = reqwest::Client::new();
     let full_name = format!("{owner}/{repo}");
     let webhook_url = format!(
-        "https://webhook.preview.{}/webhook/github",
+        "https://webhook.{}/webhook/github",
         state.config.preview_domain
     );
 
