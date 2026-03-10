@@ -402,6 +402,18 @@ export const setGlobalAiSettings = (data: { provider: string; api_key?: string; 
 export const deleteGlobalAiSettings = () =>
   apiFetch<{ deleted: boolean }>('/api/admin/settings/ai', { method: 'DELETE' });
 
+// Webhooks
+export interface RepoWebhookInfo {
+  full_name: string;
+  hook_id: number | null;
+  active: boolean;
+}
+export const listRepoWebhooks = () => apiFetch<RepoWebhookInfo[]>('/api/webhooks/repos');
+export const createRepoWebhook = (owner: string, repo: string) =>
+  apiFetch<RepoWebhookInfo>(`/api/webhooks/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, { method: 'POST' });
+export const deleteRepoWebhook = (owner: string, repo: string, hookId: number) =>
+  apiFetch<{ deleted: boolean }>(`/api/webhooks/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${hookId}`, { method: 'DELETE' });
+
 // WebSocket helpers
 export function connectPreviewLogs(slug: string): WebSocket {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';

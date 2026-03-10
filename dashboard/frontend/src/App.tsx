@@ -7,6 +7,7 @@ import Tasks from './pages/Tasks';
 import TaskDetail from './pages/TaskDetail';
 import Admin from './pages/Admin';
 import Settings from './pages/Settings';
+import Webhooks from './pages/Webhooks';
 import CostDashboard from './pages/CostDashboard';
 import AuditLog from './pages/AuditLog';
 
@@ -23,6 +24,7 @@ export default function App() {
         <Route path="/cost" element={<CostDashboard />} />
         <Route path="/audit" element={<AuditLog />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/webhooks" element={<Webhooks />} />
       </Route>
     </Routes>
   );
