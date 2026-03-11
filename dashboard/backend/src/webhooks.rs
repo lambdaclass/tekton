@@ -1,10 +1,53 @@
 use axum::extract::{Path, State};
 use axum::Json;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::auth::MemberUser;
 use crate::error::AppError;
 use crate::AppState;
+
+// GraphQL response types for organization repositories query
+#[derive(Debug, Deserialize)]
+struct GraphQLResponse {
+    data: Option<GraphQLData>,
+    errors: Option<Vec<GraphQLError>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQLData {
+    organization: GraphQLOrg,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQLOrg {
+    repositories: GraphQLRepoConnection,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQLRepoConnection {
+    page_info: GraphQLPageInfo,
+    nodes: Vec<GraphQLRepoNode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQLPageInfo {
+    has_next_page: bool,
+    end_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQLRepoNode {
+    name_with_owner: String,
+    viewer_can_administer: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQLError {
+    message: String,
+}
 
 async fn get_github_token(state: &AppState, github_login: &str) -> Result<String, AppError> {
     sqlx::query_scalar("SELECT github_token FROM users WHERE github_login = $1")
@@ -34,60 +77,63 @@ pub async fn list_repos_with_webhook_status(
         state.config.preview_domain
     );
 
-    // Fetch all org repos (paginated)
-    let mut all_repos: Vec<serde_json::Value> = Vec::new();
-    let mut page = 1u32;
+    // Fetch admin repos via GraphQL (single query with cursor pagination)
+    let query = r#"
+        query($org: String!, $cursor: String) {
+            organization(login: $org) {
+                repositories(first: 100, after: $cursor) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes { nameWithOwner viewerCanAdminister }
+                }
+            }
+        }
+    "#;
+
+    let mut admin_repos: Vec<String> = Vec::new();
+    let mut cursor: Option<String> = None;
 
     loop {
-        let resp = client
-            .get(format!(
-                "https://api.github.com/orgs/{org}/repos?per_page=100&page={page}"
-            ))
-            .header("Authorization", format!("token {token}"))
+        let body = serde_json::json!({
+            "query": query,
+            "variables": { "org": org, "cursor": cursor },
+        });
+
+        let resp: GraphQLResponse = client
+            .post("https://api.github.com/graphql")
+            .header("Authorization", format!("bearer {token}"))
             .header("User-Agent", "tekton-dashboard")
-            .header("Accept", "application/vnd.github+json")
+            .json(&body)
             .send()
             .await
-            .map_err(|e| AppError::Internal(format!("GitHub API request failed: {e}")))?;
+            .map_err(|e| AppError::Internal(format!("GitHub GraphQL request failed: {e}")))?
+            .json()
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to parse GraphQL response: {e}")))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+        if let Some(errors) = resp.errors {
+            let msgs: Vec<String> = errors.into_iter().map(|e| e.message).collect();
             return Err(AppError::Internal(format!(
-                "GitHub API returned {status}: {text}"
+                "GitHub GraphQL errors: {}",
+                msgs.join("; ")
             )));
         }
 
-        let items: Vec<serde_json::Value> = resp
-            .json()
-            .await
-            .map_err(|e| AppError::Internal(format!("Failed to parse repos response: {e}")))?;
+        let data = resp
+            .data
+            .ok_or_else(|| AppError::Internal("GitHub GraphQL returned no data".into()))?;
 
-        if items.is_empty() {
-            break;
-        }
+        let conn = data.organization.repositories;
 
-        all_repos.extend(items.iter().cloned());
-
-        if items.len() < 100 {
-            break;
-        }
-        page += 1;
-    }
-
-    // Filter to repos where user has admin permission
-    let mut admin_repos: Vec<String> = Vec::new();
-    for repo in &all_repos {
-        let has_admin = repo
-            .get("permissions")
-            .and_then(|p| p.get("admin"))
-            .and_then(|a| a.as_bool())
-            .unwrap_or(false);
-
-        if has_admin {
-            if let Some(full_name) = repo["full_name"].as_str() {
-                admin_repos.push(full_name.to_string());
+        for node in &conn.nodes {
+            if node.viewer_can_administer {
+                admin_repos.push(node.name_with_owner.clone());
             }
+        }
+
+        if conn.page_info.has_next_page {
+            cursor = conn.page_info.end_cursor;
+        } else {
+            break;
         }
     }
 
@@ -216,9 +262,7 @@ pub async fn create_webhook(
     });
 
     let resp = client
-        .post(format!(
-            "https://api.github.com/repos/{owner}/{repo}/hooks"
-        ))
+        .post(format!("https://api.github.com/repos/{owner}/{repo}/hooks"))
         .header("Authorization", format!("token {token}"))
         .header("User-Agent", "tekton-dashboard")
         .header("Accept", "application/vnd.github+json")

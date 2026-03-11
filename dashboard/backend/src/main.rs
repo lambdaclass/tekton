@@ -136,9 +136,18 @@ async fn main() -> anyhow::Result<()> {
         .route("/settings/ai", put(settings::put_ai_settings))
         .route("/settings/ai", delete(settings::delete_ai_settings))
         // Webhooks
-        .route("/webhooks/repos", get(webhooks::list_repos_with_webhook_status))
-        .route("/webhooks/repos/{owner}/{repo}", post(webhooks::create_webhook))
-        .route("/webhooks/repos/{owner}/{repo}/{hook_id}", delete(webhooks::delete_webhook))
+        .route(
+            "/webhooks/repos",
+            get(webhooks::list_repos_with_webhook_status),
+        )
+        .route(
+            "/webhooks/repos/{owner}/{repo}",
+            post(webhooks::create_webhook),
+        )
+        .route(
+            "/webhooks/repos/{owner}/{repo}/{hook_id}",
+            delete(webhooks::delete_webhook),
+        )
         // Repos
         .route("/repos", get(tasks::list_repos))
         .route("/repos/{owner}/{repo}/branches", get(tasks::list_branches))
