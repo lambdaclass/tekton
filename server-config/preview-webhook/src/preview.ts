@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { execa } from "execa";
 import { promises as fs } from "fs";
 import type { TokenProvider } from "./auth.js";
@@ -16,16 +17,42 @@ export async function readPreviewMeta(slug: string): Promise<PreviewMeta | null>
 }
 
 const PREVIEW_BIN = "/run/current-system/sw/bin/preview";
+const MAX_SLUG_LEN = 11; // nixos-container limit (ve-<name> must fit in 15-char IFNAMSIZ)
 
 export function prToSlug(repoName: string, prNumber: number): string {
-  const MAX_LEN = 11; // nixos-container limit (ve-<name> must fit in 15-char IFNAMSIZ)
   const name = (repoName.split("/").pop() ?? repoName)
     .toLowerCase()
     .replace(/[^a-z0-9-]/g, "-");
   const suffix = `-${prNumber}`;
-  const maxNameLen = MAX_LEN - suffix.length;
+  const maxNameLen = MAX_SLUG_LEN - suffix.length;
   const truncated = name.slice(0, maxNameLen).replace(/-+$/, "");
   return `${truncated}${suffix}`;
+}
+
+export function resolveUniqueSlug(
+  repoName: string,
+  prNumber: number,
+  activeSlugs: ReadonlySet<string>
+): string | null {
+  let candidate = prToSlug(repoName, prNumber);
+
+  for (let i = 0; i < 10; i++) {
+    if (!activeSlugs.has(candidate)) {
+      return candidate;
+    }
+    console.warn(
+      `[preview] Slug collision: "${candidate}", rehashing (attempt ${i + 1})`
+    );
+    candidate = createHash("sha256")
+      .update(candidate)
+      .digest("hex")
+      .slice(0, MAX_SLUG_LEN);
+  }
+
+  console.error(
+    `[preview] Failed to resolve unique slug for ${repoName}#${prNumber} after 10 attempts`
+  );
+  return null;
 }
 
 async function runPreview(args: string[]): Promise<void> {
