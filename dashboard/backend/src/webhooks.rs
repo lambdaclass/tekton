@@ -69,7 +69,9 @@ pub async fn list_repos_with_webhook_status(
     user: MemberUser,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<RepoWebhookInfo>>, AppError> {
+    let t_start = std::time::Instant::now();
     let token = get_github_token(&state, &user.0.sub).await?;
+    tracing::info!(elapsed_ms = t_start.elapsed().as_millis() as u64, "webhooks/repos: fetched github token");
     let client = reqwest::Client::new();
     let org = &state.config.github_org;
     let webhook_url = format!(
@@ -91,8 +93,11 @@ pub async fn list_repos_with_webhook_status(
 
     let mut admin_repos: Vec<String> = Vec::new();
     let mut cursor: Option<String> = None;
+    let mut graphql_page = 0u32;
 
     loop {
+        graphql_page += 1;
+        let t_page = std::time::Instant::now();
         let body = serde_json::json!({
             "query": query,
             "variables": { "org": org, "cursor": cursor },
@@ -124,6 +129,15 @@ pub async fn list_repos_with_webhook_status(
 
         let conn = data.organization.repositories;
 
+        let admin_in_page = conn.nodes.iter().filter(|n| n.viewer_can_administer).count();
+        tracing::info!(
+            page = graphql_page,
+            repos_in_page = conn.nodes.len(),
+            admin_in_page,
+            elapsed_ms = t_page.elapsed().as_millis() as u64,
+            "webhooks/repos: GraphQL page fetched"
+        );
+
         for node in &conn.nodes {
             if node.viewer_can_administer {
                 admin_repos.push(node.name_with_owner.clone());
@@ -137,12 +151,21 @@ pub async fn list_repos_with_webhook_status(
         }
     }
 
+    tracing::info!(
+        total_admin_repos = admin_repos.len(),
+        graphql_pages = graphql_page,
+        elapsed_ms = t_start.elapsed().as_millis() as u64,
+        "webhooks/repos: finished GraphQL pagination"
+    );
+
     // If ALLOWED_REPOS is non-empty, further filter
     if !state.config.allowed_repos.is_empty() {
         admin_repos.retain(|r| state.config.allowed_repos.contains(r));
+        tracing::info!(filtered_repos = admin_repos.len(), "webhooks/repos: filtered by ALLOWED_REPOS");
     }
 
     // Check webhook status for each repo concurrently using JoinSet
+    let t_hooks = std::time::Instant::now();
     let mut join_set = tokio::task::JoinSet::new();
 
     for repo_name in admin_repos {
@@ -197,8 +220,19 @@ pub async fn list_repos_with_webhook_status(
         }
     }
 
+    tracing::info!(
+        repos_checked = results.len(),
+        elapsed_ms = t_hooks.elapsed().as_millis() as u64,
+        "webhooks/repos: finished webhook status checks"
+    );
+
     // Sort by repo name for consistent ordering
     results.sort_by(|a, b| a.full_name.cmp(&b.full_name));
+
+    tracing::info!(
+        total_elapsed_ms = t_start.elapsed().as_millis() as u64,
+        "webhooks/repos: request complete"
+    );
 
     Ok(Json(results))
 }
