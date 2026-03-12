@@ -117,9 +117,15 @@ async function main(): Promise<void> {
 
     // For create events, resolve a unique slug; for others, look up the stored one
     const isCreate = event.action === "opened" || event.action === "reopened";
-    const slug = isCreate
-      ? resolveUniqueSlug(repoName, prNumber, activePreviews)
-      : slugByPR.get(mapKey) ?? prToSlug(repoName, prNumber);
+    let slug: string | null;
+    if (isCreate) {
+      // Query actual containers — the in-memory set may be stale after restarts
+      const liveSlugs = await listActiveSlugs();
+      const allSlugs = new Set([...activePreviews, ...liveSlugs]);
+      slug = resolveUniqueSlug(repoName, prNumber, allSlugs);
+    } else {
+      slug = slugByPR.get(mapKey) ?? prToSlug(repoName, prNumber);
+    }
 
     if (!slug) {
       console.error(`[webhook] Could not resolve slug for ${repo}#${prNumber}, skipping`);
