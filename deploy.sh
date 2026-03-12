@@ -121,6 +121,7 @@ deploy_dashboard() {
 deploy_webhook() {
     info "Building and deploying preview webhook..."
     $SSH "
+        rm -rf /opt/preview-webhook/src && \
         cp -r ${REMOTE_SRC}/server-config/preview-webhook/src /opt/preview-webhook/src && \
         cp ${REMOTE_SRC}/server-config/preview-webhook/package*.json /opt/preview-webhook/ && \
         cp ${REMOTE_SRC}/server-config/preview-webhook/tsconfig.json /opt/preview-webhook/ && \
