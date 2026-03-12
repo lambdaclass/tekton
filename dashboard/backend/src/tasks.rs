@@ -587,7 +587,11 @@ async fn run_task_pipeline(
          cd repo && git checkout -b '{branch_name}' && \
          git config user.name '{escaped_name}' && git config user.email '{escaped_email}'"
     );
-    shell::agent_exec(&agent_name, &clone_cmd, tx.clone()).await?;
+    if let Err(e) = shell::agent_exec(&agent_name, &clone_cmd, tx.clone()).await {
+        let raw = e.to_string();
+        let friendly = map_git_clone_error(&raw);
+        return Err(AppError::Internal(format!("{friendly}\n---STDERR---\n{raw}")));
+    }
     update_task_field(db, task_id, "branch_name", &branch_name).await?;
 
     // Step 2a: Push the empty branch to GitHub, then start the preview on it.
@@ -976,6 +980,24 @@ async fn generate_task_name(
         name
     };
     Ok(name)
+}
+
+/// Map raw git clone stderr to a user-friendly error message.
+fn map_git_clone_error(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    if lower.contains("repository") && lower.contains("not found") {
+        "Repository not found. Check that the repo exists and your GitHub token has access.".into()
+    } else if lower.contains("could not read username") || lower.contains("authentication failed") {
+        "Authentication failed. Your GitHub token may be expired or revoked.".into()
+    } else if lower.contains("remote branch") && lower.contains("not found") {
+        "Branch not found on this repository.".into()
+    } else if lower.contains("unable to access") {
+        "Could not connect to GitHub. This may be a network issue.".into()
+    } else if lower.contains("connection refused") || lower.contains("connection timed out") {
+        "Could not connect to the build agent.".into()
+    } else {
+        "Git clone failed. See details below.".into()
+    }
 }
 
 /// Convert a task name into a slug suitable for git branch names.
@@ -2621,7 +2643,11 @@ async fn run_reopen_pipeline(
              cd repo && git checkout '{branch_name}' && \
              git config user.name '{escaped_name}' && git config user.email '{escaped_email}'"
         );
-        shell::agent_exec(&name, &clone_cmd, tx.clone()).await?;
+        if let Err(e) = shell::agent_exec(&name, &clone_cmd, tx.clone()).await {
+            let raw = e.to_string();
+            let friendly = map_git_clone_error(&raw);
+            return Err(AppError::Internal(format!("{friendly}\n---STDERR---\n{raw}")));
+        }
 
         // Step 2b: Load and inject secrets
         let repo_secrets =
@@ -3366,4 +3392,57 @@ pub async fn get_task_logs(
     .fetch_all(&state.db)
     .await?;
     Ok(Json(logs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_map_git_clone_error_repo_not_found() {
+        let raw = "fatal: repository 'https://github.com/foo/bar.git/' not found";
+        assert!(map_git_clone_error(raw).contains("Repository not found"));
+    }
+
+    #[test]
+    fn test_map_git_clone_error_auth_failed() {
+        let raw = "fatal: Authentication failed for 'https://github.com/foo/bar.git/'";
+        assert!(map_git_clone_error(raw).contains("Authentication failed"));
+    }
+
+    #[test]
+    fn test_map_git_clone_error_could_not_read_username() {
+        let raw = "fatal: could not read Username for 'https://github.com': terminal prompts disabled";
+        assert!(map_git_clone_error(raw).contains("Authentication failed"));
+    }
+
+    #[test]
+    fn test_map_git_clone_error_remote_branch_not_found() {
+        let raw = "fatal: Remote branch 'nonexistent' not found in upstream origin";
+        assert!(map_git_clone_error(raw).contains("Branch not found"));
+    }
+
+    #[test]
+    fn test_map_git_clone_error_unable_to_access() {
+        let raw = "fatal: unable to access 'https://github.com/foo/bar.git/': Could not resolve host: github.com";
+        assert!(map_git_clone_error(raw).contains("Could not connect to GitHub"));
+    }
+
+    #[test]
+    fn test_map_git_clone_error_connection_refused() {
+        let raw = "ssh: connect to host 10.0.0.1 port 22: Connection refused";
+        assert!(map_git_clone_error(raw).contains("Could not connect to the build agent"));
+    }
+
+    #[test]
+    fn test_map_git_clone_error_connection_timed_out() {
+        let raw = "ssh: connect to host 10.0.0.1 port 22: Connection timed out";
+        assert!(map_git_clone_error(raw).contains("Could not connect to the build agent"));
+    }
+
+    #[test]
+    fn test_map_git_clone_error_fallback() {
+        let raw = "some unknown error happened";
+        assert!(map_git_clone_error(raw).contains("Git clone failed"));
+    }
 }

@@ -87,10 +87,13 @@ pub async fn run_cmd_streaming(
         }
     });
 
+    let stderr_lines = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let stderr_lines_clone = stderr_lines.clone();
     let stderr_handle = tokio::spawn(async move {
         let reader = BufReader::new(stderr);
         let mut lines = reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
+            stderr_lines_clone.lock().await.push(line.clone());
             let _ = tx2.send(line);
         }
     });
@@ -104,8 +107,14 @@ pub async fn run_cmd_streaming(
         .map_err(|e| AppError::Internal(format!("Failed to wait on {cmd}: {e}")))?;
 
     if !status.success() {
+        let stderr_output = stderr_lines.lock().await.join("\n");
+        let detail = if stderr_output.is_empty() {
+            String::new()
+        } else {
+            format!(": {stderr_output}")
+        };
         return Err(AppError::Internal(format!(
-            "{cmd} exited with status {status}"
+            "{cmd} exited with status {status}{detail}"
         )));
     }
     Ok(())

@@ -46,7 +46,8 @@ const CHAT_STATUSES = ['awaiting_followup', 'running_claude', 'pushing', 'creati
 function defaultTab(status: string | undefined): string {
   if (!status) return 'logs';
   if (['running_claude', 'awaiting_followup'].includes(status)) return 'conversation';
-  if (['completed', 'failed'].includes(status)) return 'diff';
+  if (status === 'completed') return 'diff';
+  if (status === 'failed') return 'info';
   return 'logs';
 }
 
@@ -392,12 +393,41 @@ export default function TaskDetail() {
           )}
 
           {/* Error message */}
-          {task?.error_message && (
-            <div className="mb-6 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3">
-              <span className="text-destructive text-xs font-medium uppercase tracking-wider">Error</span>
-              <p className="mt-1 text-sm text-destructive/80">{task.error_message}</p>
-            </div>
-          )}
+          {task?.error_message && (() => {
+            const parts = task.error_message.split('\n---STDERR---\n');
+            const friendly = parts[0];
+            const rawStderr = parts.length > 1 ? parts.slice(1).join('\n---STDERR---\n') : null;
+            return (
+              <div className="mb-6 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-destructive text-xs font-medium uppercase tracking-wider">Error</span>
+                  {canReopen && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => reopenMutation.mutate()}
+                      disabled={reopenMutation.isPending}
+                      className="text-destructive border-destructive/30 hover:bg-destructive/10 h-7 text-xs"
+                    >
+                      <RotateCcw className="size-3 mr-1" />
+                      {reopenMutation.isPending ? 'Retrying...' : 'Retry Task'}
+                    </Button>
+                  )}
+                </div>
+                <p className="mt-1 text-sm text-destructive/80">{friendly}</p>
+                {rawStderr && (
+                  <details className="mt-2">
+                    <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
+                      Show raw error output
+                    </summary>
+                    <pre className="mt-1 text-xs font-mono whitespace-pre-wrap bg-muted/30 rounded p-2 text-muted-foreground max-h-48 overflow-y-auto">
+                      {rawStderr}
+                    </pre>
+                  </details>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Subtasks */}
           {subtasks && subtasks.length > 0 && (
