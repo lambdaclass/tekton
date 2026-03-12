@@ -19,6 +19,9 @@ export default function Webhooks() {
     mutationFn: ({ owner, repo }: { owner: string; repo: string }) =>
       createRepoWebhook(owner, repo),
     onSuccess: (data) => {
+      queryClient.setQueryData<RepoWebhookInfo[]>(['webhook-repos'], (old) =>
+        old?.map((r) => r.full_name === data.full_name ? data : r),
+      );
       queryClient.invalidateQueries({ queryKey: ['webhook-repos'] });
       toast.success(`Webhook enabled for ${data.full_name}`);
     },
@@ -29,8 +32,12 @@ export default function Webhooks() {
     mutationFn: ({ owner, repo, hookId }: { owner: string; repo: string; hookId: number }) =>
       deleteRepoWebhook(owner, repo, hookId),
     onSuccess: (_data, variables) => {
+      const fullName = `${variables.owner}/${variables.repo}`;
+      queryClient.setQueryData<RepoWebhookInfo[]>(['webhook-repos'], (old) =>
+        old?.map((r) => r.full_name === fullName ? { ...r, active: false, hook_id: null } : r),
+      );
       queryClient.invalidateQueries({ queryKey: ['webhook-repos'] });
-      toast.success(`Webhook disabled for ${variables.owner}/${variables.repo}`);
+      toast.success(`Webhook disabled for ${fullName}`);
     },
     onError: (e: Error) => toast.error(e.message),
   });
