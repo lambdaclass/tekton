@@ -590,7 +590,9 @@ async fn run_task_pipeline(
     if let Err(e) = shell::agent_exec(&agent_name, &clone_cmd, tx.clone()).await {
         let raw = e.to_string();
         let friendly = map_git_clone_error(&raw);
-        return Err(AppError::Internal(format!("{friendly}\n---STDERR---\n{raw}")));
+        return Err(AppError::Internal(format!(
+            "{friendly}\n---STDERR---\n{raw}"
+        )));
     }
     update_task_field(db, task_id, "branch_name", &branch_name).await?;
 
@@ -2646,7 +2648,9 @@ async fn run_reopen_pipeline(
         if let Err(e) = shell::agent_exec(&name, &clone_cmd, tx.clone()).await {
             let raw = e.to_string();
             let friendly = map_git_clone_error(&raw);
-            return Err(AppError::Internal(format!("{friendly}\n---STDERR---\n{raw}")));
+            return Err(AppError::Internal(format!(
+                "{friendly}\n---STDERR---\n{raw}"
+            )));
         }
 
         // Step 2b: Load and inject secrets
@@ -3412,7 +3416,8 @@ mod tests {
 
     #[test]
     fn test_map_git_clone_error_could_not_read_username() {
-        let raw = "fatal: could not read Username for 'https://github.com': terminal prompts disabled";
+        let raw =
+            "fatal: could not read Username for 'https://github.com': terminal prompts disabled";
         assert!(map_git_clone_error(raw).contains("Authentication failed"));
     }
 
