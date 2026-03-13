@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { listPreviews, createPreview, destroyPreview } from '@/lib/api';
@@ -7,6 +7,13 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 export default function Previews() {
   const queryClient = useQueryClient();
@@ -17,10 +24,22 @@ export default function Previews() {
     refetchInterval: 10000,
   });
 
+  const [selectedRepo, setSelectedRepo] = useState<string>('all');
   const [showCreate, setShowCreate] = useState(false);
   const [repo, setRepo] = useState('');
   const [branch, setBranch] = useState('');
   const [slug, setSlug] = useState('');
+
+  const repos = useMemo(() => {
+    if (!previews?.length) return [];
+    return [...new Set(previews.map((p) => p.repo))].sort();
+  }, [previews]);
+
+  const filteredPreviews = useMemo(() => {
+    if (!previews) return [];
+    if (selectedRepo === 'all') return previews;
+    return previews.filter((p) => p.repo === selectedRepo);
+  }, [previews, selectedRepo]);
 
   const createMutation = useMutation({
     mutationFn: createPreview,
@@ -51,13 +70,30 @@ export default function Previews() {
     <div>
       <div className="flex items-center justify-between mb-10">
         <h1 className="text-xl font-medium tracking-tight">Previews</h1>
-        <Button
-          variant={showCreate ? 'outline' : 'default'}
-          size="sm"
-          onClick={() => setShowCreate(!showCreate)}
-        >
-          {showCreate ? 'Cancel' : 'Create Preview'}
-        </Button>
+        <div className="flex items-center gap-3">
+          {repos.length > 1 && (
+            <Select value={selectedRepo} onValueChange={setSelectedRepo}>
+              <SelectTrigger size="sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All repos</SelectItem>
+                {repos.map((r) => (
+                  <SelectItem key={r} value={r}>
+                    {r}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          <Button
+            variant={showCreate ? 'outline' : 'default'}
+            size="sm"
+            onClick={() => setShowCreate(!showCreate)}
+          >
+            {showCreate ? 'Cancel' : 'Create Preview'}
+          </Button>
+        </div>
       </div>
 
       {showCreate && (
@@ -113,11 +149,13 @@ export default function Previews() {
 
       {isLoading ? (
         <p className="text-sm text-muted-foreground py-8 text-center">Loading previews...</p>
-      ) : !previews?.length ? (
-        <p className="text-sm text-muted-foreground py-8 text-center">No active previews.</p>
+      ) : !filteredPreviews.length ? (
+        <p className="text-sm text-muted-foreground py-8 text-center">
+          {selectedRepo !== 'all' ? 'No previews for this repo.' : 'No active previews.'}
+        </p>
       ) : (
         <div className="divide-y divide-border border rounded-md">
-          {previews.map((p) => (
+          {filteredPreviews.map((p) => (
             <div key={p.slug} className="flex items-center justify-between px-4 py-3 hover:bg-secondary/40 transition-colors">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-3">

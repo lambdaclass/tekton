@@ -10,4 +10,5 @@ test-results/
 .claude/
 
 # Server stuff
-server-config/preview-webhook
+server-config/preview-webhook/dist
+server-config/preview-webhook/node_modules
