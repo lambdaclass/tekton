@@ -242,7 +242,8 @@ pub async fn create_webhook(
                 .as_i64()
                 .ok_or_else(|| AppError::Internal("Existing webhook missing id".into()))?;
 
-            // Ensure the existing hook has the correct config
+            // Ensure the existing hook is active and has the correct config
+            let is_active = hook["active"].as_bool().unwrap_or(false);
             let needs_update = {
                 let current_events: Vec<String> = hook
                     .get("events")
@@ -254,7 +255,9 @@ pub async fn create_webhook(
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                current_events != vec!["pull_request"] || current_content_type != "json"
+                !is_active
+                    || current_events != vec!["pull_request"]
+                    || current_content_type != "json"
             };
 
             if needs_update {
