@@ -62,7 +62,7 @@ pub struct CallbackQuery {
 pub async fn login(State(state): State<AppState>) -> Redirect {
     let url = format!(
         "https://github.com/login/oauth/authorize?\
-         client_id={}&redirect_uri={}&scope=repo%20read:org&allow_signup=false",
+         client_id={}&redirect_uri={}&scope=repo%20read:org%20admin:repo_hook&allow_signup=false",
         state.config.github_client_id,
         urlencoding::encode(&state.config.github_redirect_uri),
     );

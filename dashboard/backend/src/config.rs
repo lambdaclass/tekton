@@ -18,6 +18,7 @@ pub struct Config {
     pub claude_config_dir: String,
     pub chromium_bin: String,
     pub secrets_encryption_key: String,
+    pub github_webhook_secret: String,
 }
 
 impl Config {
@@ -49,6 +50,8 @@ impl Config {
                 .unwrap_or_else(|_| "/var/secrets/claude".into()),
             chromium_bin: env::var("CHROMIUM_BIN").unwrap_or_else(|_| "chromium".into()),
             secrets_encryption_key: env::var("SECRETS_ENCRYPTION_KEY")
+                .unwrap_or_else(|_| String::new()),
+            github_webhook_secret: env::var("GITHUB_WEBHOOK_SECRET")
                 .unwrap_or_else(|_| String::new()),
         })
     }
