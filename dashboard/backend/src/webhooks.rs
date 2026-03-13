@@ -238,10 +238,71 @@ pub async fn create_webhook(
         });
 
         if let Some(hook) = existing {
-            let hook_id = hook["id"].as_i64();
+            let hook_id = hook["id"]
+                .as_i64()
+                .ok_or_else(|| AppError::Internal("Existing webhook missing id".into()))?;
+
+            // Ensure the existing hook has the correct config
+            let needs_update = {
+                let current_events: Vec<String> = hook
+                    .get("events")
+                    .and_then(|e| serde_json::from_value(e.clone()).ok())
+                    .unwrap_or_default();
+                let current_content_type = hook
+                    .get("config")
+                    .and_then(|c| c.get("content_type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                current_events != vec!["pull_request"] || current_content_type != "json"
+            };
+
+            if needs_update {
+                let patch_body = serde_json::json!({
+                    "active": true,
+                    "events": ["pull_request"],
+                    "config": {
+                        "url": webhook_url,
+                        "content_type": "json",
+                        "secret": state.config.github_webhook_secret,
+                        "insecure_ssl": "0"
+                    }
+                });
+
+                let patch_resp = client
+                    .patch(format!(
+                        "https://api.github.com/repos/{owner}/{repo}/hooks/{hook_id}"
+                    ))
+                    .header("Authorization", format!("token {token}"))
+                    .header("User-Agent", "tekton-dashboard")
+                    .header("Accept", "application/vnd.github+json")
+                    .json(&patch_body)
+                    .send()
+                    .await
+                    .map_err(|e| AppError::Internal(format!("GitHub API request failed: {e}")))?;
+
+                if !patch_resp.status().is_success() {
+                    let status = patch_resp.status();
+                    let text = patch_resp.text().await.unwrap_or_default();
+                    return Err(AppError::Internal(format!(
+                        "Failed to update webhook: GitHub returned {status}: {text}"
+                    )));
+                }
+
+                crate::audit::log_event(
+                    &state.db,
+                    "webhook.updated",
+                    &user.0.sub,
+                    Some(&full_name),
+                    serde_json::json!({ "hook_id": hook_id }),
+                    None,
+                )
+                .await;
+            }
+
             return Ok(Json(RepoWebhookInfo {
                 full_name,
-                hook_id,
+                hook_id: Some(hook_id),
                 active: true,
             }));
         }
