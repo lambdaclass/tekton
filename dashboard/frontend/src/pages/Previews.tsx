@@ -24,6 +24,8 @@ const FRIENDLY_MESSAGES: Record<string, string> = {
     'The slug contains invalid characters. Use only lowercase letters, numbers, and hyphens.',
   branch_not_found:
     'The branch was not found in the repository. Please check that the branch name is correct.',
+  slug_too_long:
+    'The slug is too long. It must be 11 characters or fewer.',
 };
 
 function friendlyCreateError(error: unknown): string {

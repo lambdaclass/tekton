@@ -175,6 +175,15 @@ fn classify_create_error(err: AppError, repo: &str, slug: Option<&str>) -> AppEr
         };
     }
 
+    // Slug too long
+    if lower.contains("is too long") {
+        tracing::warn!("Preview creation failed (slug_too_long): {msg}");
+        return AppError::UserError {
+            code: "slug_too_long",
+            message: "The slug is too long. It must be 11 characters or fewer.".to_string(),
+        };
+    }
+
     // Branch not found
     if lower.contains("did not match any")
         || (lower.contains("pathspec") && lower.contains("did not match"))
