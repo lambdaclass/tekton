@@ -18,6 +18,8 @@ pub struct Config {
     pub claude_config_dir: String,
     pub chromium_bin: String,
     pub secrets_encryption_key: String,
+    pub intake_enabled: bool,
+    pub intake_max_global_concurrent: i32,
 }
 
 impl Config {
@@ -50,6 +52,11 @@ impl Config {
             chromium_bin: env::var("CHROMIUM_BIN").unwrap_or_else(|_| "chromium".into()),
             secrets_encryption_key: env::var("SECRETS_ENCRYPTION_KEY")
                 .unwrap_or_else(|_| String::new()),
+            intake_enabled: env::var("INTAKE_ENABLED").unwrap_or_else(|_| "false".into()) == "true",
+            intake_max_global_concurrent: env::var("INTAKE_MAX_GLOBAL_CONCURRENT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10),
         })
     }
 }
