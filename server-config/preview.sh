@@ -886,6 +886,7 @@ cmd_list() {
         echo -e "  ${CYAN}(no previews)${NC}"
     fi
 
+    echo "returning 0"
     return 0
 }
 
