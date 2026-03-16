@@ -656,6 +656,8 @@ cmd_destroy() {
     # Stop and destroy container
     nixos-container stop "$slug" 2>/dev/null || true
     nixos-container destroy "$slug"
+    # Clean up stale veth interface if the kernel didn't remove it
+    ip link delete "ve-${slug}" 2>/dev/null || true
 
     # Drop PostgreSQL database if it was on the host
     local meta_file="$PREVIEW_DIR/${slug}.meta"
@@ -804,6 +806,8 @@ cmd_update() {
         # Stop + destroy old container
         nixos-container stop "$slug" 2>/dev/null || true
         nixos-container destroy "$slug"
+        # Clean up stale veth interface if the kernel didn't remove it
+        ip link delete "ve-${slug}" 2>/dev/null || true
 
         # systemd needs to re-read unit files after destroy creates a new config
         systemctl daemon-reload
