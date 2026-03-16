@@ -809,7 +809,7 @@ cmd_update() {
         # Clean up stale veth interface if the kernel didn't remove it
         ip link delete "ve-${slug}" 2>/dev/null || true
 
-        # systemd needs to re-read unit files after destroy creates a new config
+        # systemd needs to forget the old unit files after destroy
         systemctl daemon-reload
 
         # Handle DB mode transitions
@@ -827,6 +827,9 @@ cmd_update() {
             --system-path "$new_toplevel" \
             --host-address "$host_ip" \
             --local-address "$local_ip"
+
+        # systemd needs to pick up the new container unit files before start
+        systemctl daemon-reload
 
         # Write environment files
         write_env_files "$slug" "$repo" "$branch" "$domain" "$host_ip" "$new_db_mode" "$db_pass" "$meta_file" "$github_token"
