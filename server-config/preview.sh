@@ -350,6 +350,77 @@ generate_secret_base64() {
     head -c "$bytes" /dev/urandom | base64 | tr -d '\n'
 }
 
+# -- Container environment helpers --------------------------------------------
+
+# Writes /etc/preview-token and /etc/preview.env into the container root.
+# Args: slug repo branch domain host_ip db_mode db_pass meta_file github_token
+write_env_files() {
+    local slug="$1" repo="$2" branch="$3" domain="$4" host_ip="$5"
+    local db_mode="$6" db_pass="$7" meta_file="$8" github_token="$9"
+
+    local container_root="/var/lib/nixos-containers/${slug}"
+    mkdir -p "${container_root}/etc"
+
+    local preview_host="${slug}.${domain}"
+    local preview_url="https://${preview_host}"
+
+    local db_name="preview_${slug//-/_}"
+    local db_user="preview_${slug//-/_}"
+
+    # /etc/preview-token — readable by preview user (604)
+    local token_file="${container_root}/etc/preview-token"
+    echo "$github_token" > "$token_file"
+    chmod 604 "$token_file"
+
+    # /etc/preview.env — readable by preview user (644); safe values only (no token).
+    local env_file="${container_root}/etc/preview.env"
+    {
+        echo "PREVIEW_REPO_URL='https://github.com/${repo}.git'"
+        echo "PREVIEW_BRANCH='${branch}'"
+        echo "PREVIEW_HOST='${preview_host}'"
+        echo "PREVIEW_URL='${preview_url}'"
+
+        if [[ "$db_mode" == "host" ]]; then
+            echo "DATABASE_URL='postgresql://${db_user}:${db_pass}@${host_ip}:5432/${db_name}'"
+        fi
+
+        # Forward host secrets declared by the repo's preview-config.nix
+        local n_secrets
+        n_secrets=$(jq '.hostSecrets | length' "$meta_file")
+        if [[ $n_secrets -gt 0 ]]; then
+            while IFS= read -r secret_key; do
+                local secret_val
+                secret_val=$(grep "^${secret_key}=" "$SECRETS_FILE" | head -1 | cut -d= -f2- || true)
+                if [[ -n "$secret_val" ]]; then
+                    echo "${secret_key}=${secret_val}"
+                else
+                    warn "hostSecret ${secret_key} not found in $SECRETS_FILE — writing empty value" >&2
+                    echo "${secret_key}="
+                fi
+            done < <(jq -r '.hostSecrets[]' "$meta_file")
+        fi
+
+        # Append secrets from the dashboard DB (admin panel).
+        local db_secrets
+        db_secrets=$(curl -sf "http://127.0.0.1:3200/internal/secrets/${repo}" 2>/dev/null || true)
+        if [[ -n "$db_secrets" ]]; then
+            echo "$db_secrets"
+        fi
+    } > "$env_file"
+    chmod 644 "$env_file"
+}
+
+# Reads service names from meta JSON and starts them via nixos-container run.
+# Args: slug meta_file
+start_container_services() {
+    local slug="$1" meta_file="$2"
+    local setup_service
+    setup_service=$(jq -r '.setupService' "$meta_file")
+    local -a app_services
+    readarray -t app_services < <(jq -r '.appServices[]' "$meta_file")
+    nixos-container run "$slug" -- systemctl start "$setup_service" "${app_services[@]}" &
+}
+
 # -- Meta helpers -------------------------------------------------------------
 
 get_meta_file() {
@@ -526,57 +597,7 @@ cmd_create() {
     bump_slot
 
     # Write container environment files
-    local container_root="/var/lib/nixos-containers/${slug}"
-    mkdir -p "${container_root}/etc"
-
-    local preview_host="${slug}.${domain}"
-    local preview_url="https://${preview_host}"
-
-    # /etc/preview-token — readable by preview user (604); contains the GitHub token
-    # for git operations inside the container.  The setup service runs as the 'preview'
-    # user so it needs read access.  644 is also acceptable; the container is isolated
-    # and the token expires with the GitHub App session anyway.
-    local token_file="${container_root}/etc/preview-token"
-    echo "$github_token" > "$token_file"
-    chmod 604 "$token_file"
-
-    # /etc/preview.env — readable by preview user (644); safe values only (no token).
-    local env_file="${container_root}/etc/preview.env"
-    {
-        echo "PREVIEW_REPO_URL='https://github.com/${repo}.git'"
-        echo "PREVIEW_BRANCH='${branch}'"
-        echo "PREVIEW_HOST='${preview_host}'"
-        echo "PREVIEW_URL='${preview_url}'"
-
-        if [[ "$db_mode" == "host" ]]; then
-            echo "DATABASE_URL='postgresql://${db_user}:${db_pass}@${host_ip}:5432/${db_name}'"
-        fi
-
-        # Forward host secrets declared by the repo's preview-config.nix
-        local n_secrets
-        n_secrets=$(jq '.hostSecrets | length' "$meta_file")
-        if [[ $n_secrets -gt 0 ]]; then
-            while IFS= read -r secret_key; do
-                local secret_val
-                secret_val=$(grep "^${secret_key}=" "$SECRETS_FILE" | head -1 | cut -d= -f2- || true)
-                if [[ -n "$secret_val" ]]; then
-                    echo "${secret_key}=${secret_val}"
-                else
-                    warn "hostSecret ${secret_key} not found in $SECRETS_FILE — writing empty value" >&2
-                    echo "${secret_key}="
-                fi
-            done < <(jq -r '.hostSecrets[]' "$meta_file")
-        fi
-
-        # Append secrets from the dashboard DB (admin panel).
-        # The dashboard runs on port 3200 and has a localhost-only endpoint.
-        local db_secrets
-        db_secrets=$(curl -sf "http://127.0.0.1:3200/internal/secrets/${repo}" 2>/dev/null || true)
-        if [[ -n "$db_secrets" ]]; then
-            echo "$db_secrets"
-        fi
-    } > "$env_file"
-    chmod 644 "$env_file"
+    write_env_files "$slug" "$repo" "$branch" "$domain" "$host_ip" "$db_mode" "$db_pass" "$meta_file" "$github_token"
 
     # Track the preview
     echo "${slot} ${host_ip} ${local_ip} ${repo} ${branch}" > "$PREVIEW_DIR/$slug"
@@ -586,14 +607,12 @@ cmd_create() {
     nixos-container start "$slug"
 
     # Kick off setup and app services in background
-    local setup_service
-    setup_service=$(jq -r '.setupService' "$meta_file")
-    local -a app_services
-    readarray -t app_services < <(jq -r '.appServices[]' "$meta_file")
-    nixos-container run "$slug" -- systemctl start "$setup_service" "${app_services[@]}" &
+    start_container_services "$slug" "$meta_file"
 
     # Write Caddy config from meta routes
     write_caddy_config "$slug" "$local_ip" "$domain" "$meta_file"
+
+    local preview_url="https://${slug}.${domain}"
 
     success "Preview '$slug' created and starting."
     echo ""
@@ -667,45 +686,161 @@ cmd_update() {
     fi
 
     ensure_root
+    ensure_dirs
     load_secrets
 
     if [[ ! -f "$PREVIEW_DIR/$slug" ]]; then
         fatal "Preview '$slug' not found."
     fi
 
-    read -r _slot _host_ip _local_ip _repo _branch < "$PREVIEW_DIR/$slug"
+    # Read tracking file
+    local slot host_ip local_ip repo branch
+    read -r slot host_ip local_ip repo branch < "$PREVIEW_DIR/$slug"
 
-    # Resolve service names from meta (or legacy .type file)
-    local SETUP_SERVICE
-    local -a APP_SERVICES
-    read_service_names "$slug"
+    local domain="${PREVIEW_DOMAIN:-preview.example.com}"
+    local admin_ssh_key="${ADMIN_SSH_KEY:-}"
+    if [[ -z "$admin_ssh_key" ]]; then
+        fatal "ADMIN_SSH_KEY not set in $SECRETS_FILE"
+    fi
 
-    info "Updating preview '$slug' (pulling latest code and rebuilding)..."
-
-    # Refresh the GitHub token so git can pull latest changes
     local github_token
     github_token=$(get_github_token)
 
-    if [[ -n "$github_token" ]]; then
+    # Fetch latest commit SHA from GitHub
+    local new_sha
+    new_sha=$(get_commit_sha "$repo" "$branch" "$github_token")
+
+    # Compare with stored SHA — exit early if unchanged
+    local old_sha=""
+    local sha_file="$PREVIEW_DIR/${slug}.sha"
+    if [[ -f "$sha_file" ]]; then
+        old_sha=$(cat "$sha_file")
+    fi
+
+    if [[ -n "$old_sha" ]] && [[ "$old_sha" == "$new_sha" ]]; then
+        info "No new commits for '$slug' (${new_sha:0:8}). Nothing to do."
+        return
+    fi
+
+    info "Updating preview '$slug': ${old_sha:0:8} → ${new_sha:0:8}"
+
+    # Fetch config and build closure for the new commit
+    local config_file
+    config_file=$(get_or_fetch_config "$repo" "$branch" "$new_sha" "$github_token")
+    build_preview_closure "$config_file" "$new_sha" "$admin_ssh_key"
+
+    # Determine whether the NixOS closure changed
+    local old_toplevel="" new_toplevel=""
+    new_toplevel=$(cat "$CLOSURE_CACHE_DIR/${new_sha}.toplevel")
+
+    if [[ -n "$old_sha" ]] && [[ -f "$CLOSURE_CACHE_DIR/${old_sha}.toplevel" ]]; then
+        old_toplevel=$(cat "$CLOSURE_CACHE_DIR/${old_sha}.toplevel")
+    fi
+
+    if [[ -n "$old_toplevel" ]] && [[ "$old_toplevel" == "$new_toplevel" ]]; then
+        # ── CODE-ONLY UPDATE (fast path) ──────────────────────────────────
+        info "NixOS closure unchanged — doing code-only update"
+
+        # Refresh token inside the container
         local container_root="/var/lib/nixos-containers/${slug}"
-        # Overwrite /etc/preview-token with the fresh token (setup scripts read this for git auth)
         local token_file="${container_root}/etc/preview-token"
         if [[ -f "$token_file" ]]; then
             echo "$github_token" > "$token_file"
         fi
-        # Also refresh any already-cloned git remote URL so ongoing fetches work immediately
+
+        # Refresh git remote URL so ongoing fetches use the fresh token
         local git_config="${container_root}/home/preview/app/.git/config"
         if [[ -f "$git_config" ]]; then
             sed -i "s|x-access-token:[^@]*|x-access-token:${github_token}|" "$git_config"
         fi
+
+        # Update SHA tracking
+        echo "$new_sha" > "$sha_file"
+
+        # Signal the setup service to do a full rebuild
+        nixos-container run "$slug" -- su -s /bin/sh preview -c "touch /tmp/force-rebuild"
+
+        local SETUP_SERVICE
+        local -a APP_SERVICES
+        read_service_names "$slug"
+        nixos-container run "$slug" -- systemctl restart "$SETUP_SERVICE" "${APP_SERVICES[@]}"
+
+        success "Preview '$slug' is rebuilding (code-only). Check progress with: preview logs $slug --follow"
+    else
+        # ── CLOSURE CHANGED — full container rebuild ──────────────────────
+        info "NixOS closure changed — rebuilding container"
+
+        # Copy new meta to preview dir and validate
+        local new_meta_store
+        new_meta_store=$(cat "$CLOSURE_CACHE_DIR/${new_sha}.meta-path")
+        local meta_file="$PREVIEW_DIR/${slug}.meta"
+        local old_meta_file="${meta_file}.old"
+
+        # Preserve old meta for DB-mode comparison
+        if [[ -f "$meta_file" ]]; then
+            cp "$meta_file" "$old_meta_file"
+        fi
+
+        cp "$new_meta_store" "$meta_file"
+
+        # Validate required meta fields
+        for field in setupService appServices database routes; do
+            if ! jq -e ".${field}" "$meta_file" >/dev/null 2>&1; then
+                # Restore old meta on failure
+                if [[ -f "$old_meta_file" ]]; then
+                    mv "$old_meta_file" "$meta_file"
+                fi
+                fatal "preview-config.nix is missing required meta field: ${field}"
+            fi
+        done
+
+        local new_db_mode old_db_mode
+        new_db_mode=$(jq -r '.database' "$meta_file")
+        old_db_mode="none"
+        if [[ -f "$old_meta_file" ]]; then
+            old_db_mode=$(jq -r '.database' "$old_meta_file")
+        fi
+
+        # Stop + destroy old container
+        nixos-container stop "$slug" 2>/dev/null || true
+        nixos-container destroy "$slug"
+
+        # Handle DB mode transitions
+        if [[ "$old_db_mode" == "host" ]]; then
+            drop_db "$slug"
+        fi
+
+        local db_pass=""
+        if [[ "$new_db_mode" == "host" ]]; then
+            db_pass=$(create_db "$slug")
+        fi
+
+        # Create new container reusing existing IPs
+        nixos-container create "$slug" \
+            --system-path "$new_toplevel" \
+            --host-address "$host_ip" \
+            --local-address "$local_ip"
+
+        # Write environment files
+        write_env_files "$slug" "$repo" "$branch" "$domain" "$host_ip" "$new_db_mode" "$db_pass" "$meta_file" "$github_token"
+
+        # Update SHA tracking
+        echo "$new_sha" > "$sha_file"
+
+        # Start the container
+        nixos-container start "$slug"
+
+        # Start services
+        start_container_services "$slug" "$meta_file"
+
+        # Rewrite Caddy config from new meta
+        write_caddy_config "$slug" "$local_ip" "$domain" "$meta_file"
+
+        # Clean up
+        rm -f "$old_meta_file"
+
+        success "Preview '$slug' rebuilt with new config. Check progress with: preview logs $slug --follow"
     fi
-
-    # Signal the setup service to do a full rebuild
-    nixos-container run "$slug" -- su -s /bin/sh preview -c "touch /tmp/force-rebuild"
-
-    nixos-container run "$slug" -- systemctl restart "$SETUP_SERVICE" "${APP_SERVICES[@]}"
-
-    success "Preview '$slug' is rebuilding. Check progress with: preview logs $slug --follow"
 }
 
 cmd_list() {
