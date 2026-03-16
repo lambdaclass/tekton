@@ -851,7 +851,6 @@ cmd_update() {
 }
 
 cmd_list() {
-    set +e
     ensure_dirs
     load_secrets
 
@@ -866,8 +865,9 @@ cmd_list() {
         # Skip hidden files and metadata files
         [[ "$name" == .* ]]    && continue
         [[ "$name" == *.type ]] && continue
-        [[ "$name" == *.meta ]] && continue
-        [[ "$name" == *.sha ]]  && continue
+        [[ "$name" == *.meta ]]     && continue
+        [[ "$name" == *.meta.old ]] && continue
+        [[ "$name" == *.sha ]]      && continue
 
         found=1
         read -r _slot _host_ip _local_ip _repo branch < "$f"
