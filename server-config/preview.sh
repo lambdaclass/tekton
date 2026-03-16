@@ -851,6 +851,7 @@ cmd_update() {
 }
 
 cmd_list() {
+    set +e
     ensure_dirs
     load_secrets
 
