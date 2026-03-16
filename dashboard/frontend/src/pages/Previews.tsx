@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
+import { ExternalLink } from 'lucide-react';
 import { listPreviews, createPreview, destroyPreview } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -156,37 +157,55 @@ export default function Previews() {
       ) : (
         <div className="divide-y divide-border border rounded-md">
           {filteredPreviews.map((p) => (
-            <div key={p.slug} className="flex items-center justify-between px-4 py-3 hover:bg-secondary/40 transition-colors">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-3">
-                  <span className="font-mono text-sm font-medium">{p.slug}</span>
-                  <Badge variant="outline">{p.repo}</Badge>
-                  <Badge variant="outline">{p.branch}</Badge>
+            <div key={p.slug} className="px-4 py-3 hover:bg-secondary/40 transition-colors">
+              <div className="flex items-center justify-between">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-3">
+                    <span className="font-mono text-sm font-medium">{p.slug}</span>
+                    <Badge variant="outline">{p.repo}</Badge>
+                    <Badge variant="outline">{p.branch}</Badge>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 ml-4">
+                  <Button variant="outline" size="sm" asChild>
+                    <a href={p.url} target="_blank" rel="noopener noreferrer">
+                      Open
+                    </a>
+                  </Button>
+                  <Button variant="outline" size="sm" asChild>
+                    <Link to={`/previews/${p.slug}`}>Logs</Link>
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-destructive hover:text-destructive"
+                    onClick={() => {
+                      if (confirm(`Destroy preview "${p.slug}"?`)) {
+                        destroyMutation.mutate(p.slug);
+                      }
+                    }}
+                    disabled={destroyMutation.isPending}
+                  >
+                    Destroy
+                  </Button>
                 </div>
               </div>
-              <div className="flex items-center gap-2 ml-4">
-                <Button variant="outline" size="sm" asChild>
-                  <a href={p.url} target="_blank" rel="noopener noreferrer">
-                    Open
-                  </a>
-                </Button>
-                <Button variant="outline" size="sm" asChild>
-                  <Link to={`/previews/${p.slug}`}>Logs</Link>
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-destructive hover:text-destructive"
-                  onClick={() => {
-                    if (confirm(`Destroy preview "${p.slug}"?`)) {
-                      destroyMutation.mutate(p.slug);
-                    }
-                  }}
-                  disabled={destroyMutation.isPending}
-                >
-                  Destroy
-                </Button>
-              </div>
+              {p.extra_urls?.length > 0 && (
+                <div className="flex flex-wrap gap-2 mt-2 ml-1">
+                  {p.extra_urls.map((eu) => (
+                    <a
+                      key={eu.label}
+                      href={eu.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      {eu.label}
+                      <ExternalLink className="size-3" />
+                    </a>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>

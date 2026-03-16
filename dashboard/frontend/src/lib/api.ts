@@ -4,11 +4,17 @@ export interface UserInfo {
   role: string;
 }
 
+export interface ExtraUrl {
+  label: string;
+  url: string;
+}
+
 export interface Preview {
   slug: string;
   repo: string;
   branch: string;
   url: string;
+  extra_urls: ExtraUrl[];
 }
 
 export interface Task {

@@ -6,7 +6,7 @@ use tokio::sync::broadcast;
 
 use crate::config::Config;
 use crate::error::AppError;
-use crate::models::Preview;
+use crate::models::{ExtraUrl, Preview};
 
 /// A structured action extracted from Claude's stream-json output.
 #[derive(Debug, Clone)]
@@ -139,7 +139,34 @@ pub async fn list_previews(config: &Config) -> Result<Vec<Preview>, AppError> {
     parse_preview_list(&clean, &config.preview_domain)
 }
 
-fn parse_preview_list(output: &str, _domain: &str) -> Result<Vec<Preview>, AppError> {
+/// Read the `.meta` file for a preview and extract extra host URLs.
+fn read_extra_urls(slug: &str, domain: &str) -> Vec<ExtraUrl> {
+    let meta_path = format!("/var/lib/preview-deploys/{slug}.meta");
+    let content = match std::fs::read_to_string(&meta_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let meta: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let extra_hosts = match meta.get("extraHosts").and_then(|v| v.as_array()) {
+        Some(hosts) => hosts,
+        None => return Vec::new(),
+    };
+    extra_hosts
+        .iter()
+        .filter_map(|h| {
+            let prefix = h.get("prefix")?.as_str()?;
+            Some(ExtraUrl {
+                label: prefix.to_string(),
+                url: format!("https://{prefix}-{slug}.{domain}"),
+            })
+        })
+        .collect()
+}
+
+fn parse_preview_list(output: &str, domain: &str) -> Result<Vec<Preview>, AppError> {
     let mut previews = Vec::new();
     let preview_dir = "/var/lib/preview-deploys";
 
@@ -171,11 +198,14 @@ fn parse_preview_list(output: &str, _domain: &str) -> Result<Vec<Preview>, AppEr
                 })
                 .unwrap_or_default();
 
+            let extra_urls = read_extra_urls(&slug, domain);
+
             previews.push(Preview {
                 slug,
                 repo,
                 branch,
                 url,
+                extra_urls,
             });
         }
     }
@@ -812,6 +842,8 @@ SLUG                STATUS          BRANCH                          URL
         assert_eq!(result[0].slug, "123");
         assert_eq!(result[0].branch, "feat/foo");
         assert_eq!(result[0].url, "https://123.example.com");
+        // extra_urls will be empty since .meta files don't exist in test
+        assert!(result[0].extra_urls.is_empty());
         assert_eq!(result[1].slug, "456");
     }
 
