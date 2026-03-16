@@ -365,3 +365,110 @@ VALUES
     ('testmember', 'testorg/testrepo'),
     ('testmember', 'testorg/frontend'),
     ('testviewer', 'testorg/testrepo');
+
+-- ============================================================
+-- Intake: Add columns to tasks table
+-- ============================================================
+
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS intake_issue_id BIGINT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS source_type TEXT DEFAULT 'manual';
+
+-- ============================================================
+-- Intake: Create tables
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS intake_sources (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT true,
+    config JSONB NOT NULL DEFAULT '{}',
+    api_token_encrypted TEXT NOT NULL,
+    target_repo TEXT NOT NULL,
+    target_base_branch TEXT NOT NULL DEFAULT 'main',
+    label_filter TEXT[] NOT NULL DEFAULT '{}',
+    prompt_template TEXT,
+    run_as_user TEXT NOT NULL,
+    poll_interval_secs INTEGER NOT NULL DEFAULT 300,
+    max_concurrent_tasks INTEGER NOT NULL DEFAULT 3,
+    max_tasks_per_poll INTEGER NOT NULL DEFAULT 5,
+    auto_create_pr BOOLEAN NOT NULL DEFAULT false,
+    skip_followup BOOLEAN NOT NULL DEFAULT true,
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS intake_issues (
+    id BIGSERIAL PRIMARY KEY,
+    source_id BIGINT NOT NULL REFERENCES intake_sources(id) ON DELETE CASCADE,
+    external_id TEXT NOT NULL,
+    external_url TEXT,
+    external_title TEXT NOT NULL,
+    external_body TEXT,
+    external_labels TEXT[] NOT NULL DEFAULT '{}',
+    external_updated_at TIMESTAMPTZ,
+    task_id TEXT REFERENCES tasks(id),
+    status TEXT NOT NULL DEFAULT 'pending',
+    error_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(source_id, external_id)
+);
+
+CREATE TABLE IF NOT EXISTS intake_poll_log (
+    id BIGSERIAL PRIMARY KEY,
+    source_id BIGINT NOT NULL REFERENCES intake_sources(id) ON DELETE CASCADE,
+    polled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    issues_found INTEGER NOT NULL DEFAULT 0,
+    issues_created INTEGER NOT NULL DEFAULT 0,
+    issues_skipped INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    duration_ms INTEGER
+);
+
+-- ============================================================
+-- Seed: Intake sources
+-- ============================================================
+
+INSERT INTO intake_sources (name, provider, enabled, api_token_encrypted, target_repo, run_as_user, poll_interval_secs, created_by)
+VALUES
+    ('GitHub Bugs', 'github', true, 'encrypted:fake_gh_token', 'testorg/testrepo', 'testadmin', 120, 'testadmin'),
+    ('Linear Features', 'linear', false, 'encrypted:fake_linear_token', 'testorg/frontend', 'testmember', 300, 'testadmin');
+
+-- ============================================================
+-- Seed: Intake issues (8 rows covering all 6 statuses)
+-- ============================================================
+
+INSERT INTO intake_issues (source_id, external_id, external_url, external_title, external_body, status, task_id, error_message, created_at, updated_at)
+VALUES
+    (1, 'GH-101', 'https://github.com/testorg/testrepo/issues/101', 'Fix null pointer in auth module', 'Auth module throws NPE when token is expired.', 'backlog', NULL, NULL, NOW() - INTERVAL '2 days', NOW() - INTERVAL '2 days'),
+    (1, 'GH-102', 'https://github.com/testorg/testrepo/issues/102', 'Login page crashes on Safari', 'Safari 17 shows blank screen on login.', 'pending', NULL, NULL, NOW() - INTERVAL '1 day', NOW() - INTERVAL '1 day'),
+    (1, 'GH-103', 'https://github.com/testorg/testrepo/issues/103', 'Add rate limiting to API', 'Need rate limiting on public endpoints.', 'task_created', 'task-running-1', NULL, NOW() - INTERVAL '1 day', NOW() - INTERVAL '12 hours'),
+    (1, 'GH-104', 'https://github.com/testorg/testrepo/issues/104', 'Review security headers', 'Audit response headers for OWASP compliance.', 'review', 'task-completed-1', NULL, NOW() - INTERVAL '3 days', NOW() - INTERVAL '6 hours'),
+    (1, 'GH-105', 'https://github.com/testorg/testrepo/issues/105', 'Upgrade dependencies to latest', 'Bump all deps to latest patch versions.', 'done', 'task-completed-2', NULL, NOW() - INTERVAL '4 days', NOW() - INTERVAL '1 day'),
+    (1, 'GH-106', 'https://github.com/testorg/testrepo/issues/106', 'Fix flaky CI test', 'test_auth_flow fails intermittently.', 'failed', 'task-failed-1', 'Agent timed out after 300s', NOW() - INTERVAL '2 days', NOW() - INTERVAL '3 hours'),
+    (2, 'LIN-201', 'https://linear.app/testorg/issue/LIN-201', 'Add dark mode toggle', 'Users want dark mode support.', 'backlog', NULL, NULL, NOW() - INTERVAL '5 days', NOW() - INTERVAL '5 days'),
+    (2, 'LIN-202', 'https://linear.app/testorg/issue/LIN-202', 'Implement CSV export', 'Export table data as CSV.', 'pending', NULL, NULL, NOW() - INTERVAL '3 days', NOW() - INTERVAL '2 days');
+
+-- ============================================================
+-- Seed: Intake poll log
+-- ============================================================
+
+INSERT INTO intake_poll_log (source_id, polled_at, issues_found, issues_created, issues_skipped, error_message, duration_ms)
+VALUES
+    (1, NOW() - INTERVAL '6 hours', 3, 2, 1, NULL, 1200),
+    (1, NOW() - INTERVAL '4 hours', 1, 1, 0, NULL, 800),
+    (1, NOW() - INTERVAL '2 hours', 2, 0, 2, NULL, 950),
+    (1, NOW() - INTERVAL '30 minutes', 0, 0, 0, 'Rate limit exceeded, partial results', 3500),
+    (2, NOW() - INTERVAL '5 hours', 2, 2, 0, NULL, 1500),
+    (2, NOW() - INTERVAL '1 hour', 1, 0, 1, NULL, 600);
+
+-- ============================================================
+-- Link tasks to intake issues
+-- ============================================================
+
+UPDATE tasks SET source_type = 'intake_github', intake_issue_id = 3 WHERE id = 'task-running-1';
+UPDATE tasks SET source_type = 'intake_github', intake_issue_id = 4 WHERE id = 'task-completed-1';
+UPDATE tasks SET source_type = 'intake_github', intake_issue_id = 5 WHERE id = 'task-completed-2';
+UPDATE tasks SET source_type = 'intake_github', intake_issue_id = 6 WHERE id = 'task-failed-1';
