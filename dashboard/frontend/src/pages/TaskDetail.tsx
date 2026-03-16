@@ -27,6 +27,7 @@ import {
   getTask,
   listSubtasks,
   listTaskActions,
+  listPreviews,
   getMe,
   parseImageUrls,
   reopenTask,
@@ -87,6 +88,14 @@ export default function TaskDetail() {
     enabled: !!task?.branch_name,
     staleTime: 30_000,
   });
+
+  const { data: previews } = useQuery({
+    queryKey: ['previews'],
+    queryFn: listPreviews,
+    enabled: !!task?.preview_slug,
+  });
+
+  const previewExtraUrls = previews?.find((p) => p.slug === task?.preview_slug)?.extra_urls ?? [];
 
   const onConnectionChange = useCallback((c: boolean) => setConnected(c), []);
 
@@ -336,17 +345,29 @@ export default function TaskDetail() {
         {/* Preview tab — embedded iframe of the deployed preview */}
         {task?.preview_url && (
           <TabsContent value="preview" className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-card/50">
+            <div className="flex items-center gap-3 px-4 py-2 border-b border-border bg-card/50">
               <span className="text-sm text-muted-foreground truncate">{task.preview_url}</span>
               <a
                 href={task.preview_url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 text-sm text-blue-600 dark:text-blue-400 hover:underline shrink-0 ml-3"
+                className="inline-flex items-center gap-1.5 text-sm text-blue-600 dark:text-blue-400 hover:underline shrink-0"
               >
                 <ExternalLink className="size-3.5" />
-                Open in new tab
+                Open
               </a>
+              {previewExtraUrls.map((eu) => (
+                <a
+                  key={eu.label}
+                  href={eu.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline shrink-0"
+                >
+                  <ExternalLink className="size-3" />
+                  {eu.label}
+                </a>
+              ))}
             </div>
             <iframe
               src={task.preview_url}
