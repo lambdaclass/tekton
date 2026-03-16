@@ -885,6 +885,8 @@ cmd_list() {
     if [[ $found -eq 0 ]]; then
         echo -e "  ${CYAN}(no previews)${NC}"
     fi
+
+    return 0
 }
 
 cmd_logs() {
