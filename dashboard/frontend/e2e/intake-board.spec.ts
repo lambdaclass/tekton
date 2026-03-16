@@ -49,7 +49,7 @@ test.describe('Intake Board', () => {
 
     // Select GitHub Bugs source
     const sourceSelect = page.locator('select').first();
-    await sourceSelect.selectOption({ label: /GitHub Bugs/ });
+    await sourceSelect.selectOption({ label: 'GitHub Bugs (testorg/testrepo)' });
 
     // GitHub issues should be visible
     await expect(page.getByText(ISSUES.backlogAuth)).toBeVisible();
