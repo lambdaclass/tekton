@@ -805,6 +805,9 @@ cmd_update() {
         nixos-container stop "$slug" 2>/dev/null || true
         nixos-container destroy "$slug"
 
+        # systemd needs to re-read unit files after destroy creates a new config
+        systemctl daemon-reload
+
         # Handle DB mode transitions
         if [[ "$old_db_mode" == "host" ]]; then
             drop_db "$slug"
