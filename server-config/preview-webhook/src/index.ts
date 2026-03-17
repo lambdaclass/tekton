@@ -3,6 +3,7 @@ import { config, tokenProvider } from "./config.js";
 import { verifySignature, parsePREvent } from "./github.js";
 import {
   prToSlug,
+  resolveUniqueSlug,
   createPreview,
   updatePreview,
   destroyPreview,
@@ -14,6 +15,8 @@ import {
 
 // Track active preview slugs so we can re-add links on PR body edits
 const activePreviews = new Set<string>();
+// Maps "repo#pr" → slug for looking up hashed slugs on non-create events
+const slugByPR = new Map<string, string>();
 
 // Keyed on the raw IncomingMessage so the route handler can retrieve the original bytes
 // without a JSON round-trip that could normalise unicode escapes and break HMAC.
@@ -97,7 +100,7 @@ async function main(): Promise<void> {
     const repoName = event.repository.name;
     const prNumber = event.number;
     const branch = event.pull_request.head.ref;
-    const slug = prToSlug(repoName, prNumber);
+    const mapKey = `${repo}#${prNumber}`;
 
     // Check repo allowlist
     if (
@@ -112,6 +115,23 @@ async function main(): Promise<void> {
       `[webhook] PR #${prNumber} ${event.action} on ${repo} (branch: ${branch})`
     );
 
+    // For create events, resolve a unique slug; for others, look up the stored one
+    const isCreate = event.action === "opened" || event.action === "reopened";
+    let slug: string | null;
+    if (isCreate) {
+      // Query actual containers — the in-memory set may be stale after restarts
+      const liveSlugs = await listActiveSlugs();
+      const allSlugs = new Set([...activePreviews, ...liveSlugs]);
+      slug = resolveUniqueSlug(repoName, prNumber, allSlugs);
+    } else {
+      slug = slugByPR.get(mapKey) ?? prToSlug(repoName, prNumber);
+    }
+
+    if (!slug) {
+      console.error(`[webhook] Could not resolve slug for ${repo}#${prNumber}, skipping`);
+      return reply.code(500).send({ error: "slug_collision" });
+    }
+
     // Respond 202 immediately, process in background
     void reply.code(202).send({ status: "accepted", slug });
 
@@ -123,6 +143,7 @@ async function main(): Promise<void> {
           case "reopened": {
             await createPreview(repo, branch, slug);
             activePreviews.add(slug);
+            slugByPR.set(mapKey, slug);
             const url = `https://${slug}.${config.previewDomain}`;
             const meta = await readPreviewMeta(slug);
             const extraUrls = (meta?.extraHosts ?? []).map(
@@ -143,6 +164,7 @@ async function main(): Promise<void> {
           }
           case "closed": {
             activePreviews.delete(slug);
+            slugByPR.delete(mapKey);
             await destroyPreview(slug);
             break;
           }
