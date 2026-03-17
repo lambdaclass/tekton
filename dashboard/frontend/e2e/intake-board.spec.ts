@@ -7,7 +7,7 @@ test.describe('Intake Board', () => {
     await page.goto('/intake');
 
     await expect(page.getByRole('heading', { name: 'Intake Board' })).toBeVisible();
-    await expect(page.getByText('8 issue(s) across all sources')).toBeVisible();
+    await expect(page.getByText('8 issues across all sources')).toBeVisible();
   });
 
   test('renders all 6 columns', async ({ adminPage: page }) => {
@@ -30,8 +30,8 @@ test.describe('Intake Board', () => {
   test('cards show repo name', async ({ adminPage: page }) => {
     await page.goto('/intake');
 
-    await expect(page.getByText('testorg/testrepo').first()).toBeVisible();
-    await expect(page.getByText('testorg/frontend').first()).toBeVisible();
+    await expect(page.locator('.font-mono', { hasText: 'testorg/testrepo' }).first()).toBeAttached();
+    await expect(page.locator('.font-mono', { hasText: 'testorg/frontend' }).first()).toBeAttached();
   });
 
   test('search filters issues by title', async ({ adminPage: page }) => {

@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import {
   DragDropContext,
   Droppable,
@@ -10,6 +10,7 @@ import {
 import {
   listAllIntakeIssues,
   updateIntakeIssueStatus,
+  getMe,
   type IntakeIssueWithMeta,
 } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
@@ -446,6 +447,7 @@ function BoardColumn({ column, issues, onSelect }: BoardColumnProps) {
 
 export default function IntakeBoard() {
   const queryClient = useQueryClient();
+  const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMe });
 
   const { data: issues, isLoading } = useQuery({
     queryKey: ['intake-issues-all'],
@@ -539,6 +541,10 @@ export default function IntakeBoard() {
   };
 
   const totalCount = issues?.length ?? 0;
+
+  if (me && me.role !== 'admin') {
+    return <Navigate to="/" replace />;
+  }
 
   return (
     <div className="flex flex-col" style={{ minHeight: 'calc(100vh - 3rem - 3rem)' }}>
