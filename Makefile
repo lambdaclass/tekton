@@ -1,4 +1,4 @@
-.PHONY: deps run run-backend run-frontend stop down clean help
+.PHONY: deps run run-backend run-frontend e2e stop down clean help
 
 ENV_FILE := dashboard/backend/.env
 PG_CONTAINER := tekton-postgres
@@ -9,6 +9,7 @@ help:
 	@echo "  make run     — start backend + frontend (Ctrl-C to stop both)"
 	@echo "  make stop    — kill running dev servers (keeps database running)"
 	@echo "  make down    — stop everything: dev servers + database container"
+	@echo "  make e2e     — run E2E tests (creates tekton_test DB if needed)"
 	@echo "  make clean   — stop everything and delete database data"
 
 # ---------------------------------------------------------------------------
@@ -91,6 +92,19 @@ run-backend:
 
 run-frontend:
 	@cd dashboard/frontend && npm run dev
+
+# ---------------------------------------------------------------------------
+# e2e: run end-to-end tests (Playwright)
+# ---------------------------------------------------------------------------
+
+e2e:
+	@if ! docker ps --format '{{.Names}}' | grep -qw $(PG_CONTAINER); then \
+		echo "Starting PostgreSQL container..."; \
+		docker start $(PG_CONTAINER) 2>/dev/null || { echo "ERROR: PostgreSQL container not found. Run 'make deps' first."; exit 1; }; \
+	fi
+	@docker exec $(PG_CONTAINER) psql -U tekton -tc "SELECT 1 FROM pg_database WHERE datname = 'tekton_test'" | grep -q 1 \
+		|| docker exec $(PG_CONTAINER) psql -U tekton -c "CREATE DATABASE tekton_test;"
+	cd dashboard/frontend && DATABASE_URL="postgres://tekton:tekton@localhost:5432/tekton_test" npm run test:e2e
 
 # ---------------------------------------------------------------------------
 # stop / down / clean
