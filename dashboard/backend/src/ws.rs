@@ -19,6 +19,19 @@ pub async fn preview_logs_ws(
 }
 
 async fn handle_preview_logs(mut socket: WebSocket, state: AppState, slug: String) {
+    // First, send all existing logs (history) before starting live stream
+    if let Ok(history) = shell::get_preview_logs(&state.config, &slug, usize::MAX).await {
+        for line in history.lines() {
+            if socket
+                .send(Message::Text(line.to_string().into()))
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+    }
+
     let (tx, mut rx) = broadcast::channel::<String>(256);
 
     let config = state.config.clone();
