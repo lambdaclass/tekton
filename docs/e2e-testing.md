@@ -110,6 +110,10 @@ global-setup.ts                      global-teardown.ts
 
 ## Test Patterns & Conventions
 
+### No mocks
+
+Tests hit the real stack: a real PostgreSQL database, the real Rust backend, and a real Chromium browser. **Do not mock the database, API responses, or any backend behavior.** The goal is to catch the bugs that only surface when every layer is wired together. If a test is hard to write without mocking, that's a signal the feature needs better seed data or a test-specific API state — not a mock.
+
 ### Fixtures
 
 Always import from `./fixtures`, not from `@playwright/test` directly:
