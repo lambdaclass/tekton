@@ -91,7 +91,7 @@
     authentication = ''
       local dashboard dashboard peer map=dashboard
       local all all peer
-      host all all 10.100.0.0/24 md5
+      host all all 10.100.0.0/16 md5
     '';
     identMap = ''
       dashboard root dashboard
