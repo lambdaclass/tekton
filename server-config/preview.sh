@@ -52,7 +52,7 @@ ensure_dirs() {
 
 # -- IP allocation (shared with agents) --------------------------------------
 # Slots are recycled: we scan tracking files to find used slots, then pick
-# the lowest available one.  Max slot is 127 (produces .254/.255).
+# the lowest available one.  Uses a /16 subnet (10.100.0.0–10.100.255.255).
 
 MAX_SLOT=32512
 
