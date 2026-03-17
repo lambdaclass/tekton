@@ -22,7 +22,7 @@ End-to-end tests live in `dashboard/frontend/e2e/` and run with [Playwright](htt
 make deps
 
 # 2. Create the test database (make deps creates "dashboard", not "tekton_test")
-docker exec -i tekton-postgres psql -U tekton -c "CREATE DATABASE tekton_test;"
+docker exec -i tekton-postgres psql -U tekton -d postgres -c "CREATE DATABASE tekton_test;"
 
 # 3. Install Playwright browsers
 cd dashboard/frontend
