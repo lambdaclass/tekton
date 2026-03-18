@@ -6,12 +6,12 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use crate::auth::{self, AuthUser, MemberUser};
+use crate::auth::{self, AdminUser, AuthUser, MemberUser};
 use crate::config::Config;
 use crate::error::AppError;
 use crate::models::{
-    CreateTaskRequest, ListMessagesQuery, ListTasksQuery, PaginatedTasks, SendMessageRequest, Task,
-    TaskAction, TaskLog, TaskMessage, UpdateTaskNameRequest,
+    CreateTaskRequest, DeleteTaskRequest, ListMessagesQuery, ListTasksQuery, PaginatedTasks,
+    SendMessageRequest, Task, TaskAction, TaskLog, TaskMessage, UpdateTaskNameRequest,
 };
 use crate::policies;
 use crate::secrets;
@@ -3366,4 +3366,138 @@ pub async fn get_task_logs(
     .fetch_all(&state.db)
     .await?;
     Ok(Json(logs))
+}
+
+/// Admin-only: cascade-delete a task and all its descendants.
+/// Destroys associated agent containers, previews, and optionally remote branches.
+pub async fn admin_delete_task(
+    admin: AdminUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<String>,
+    body: Option<Json<DeleteTaskRequest>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let delete_branch = body.map(|b| b.delete_branch).unwrap_or(false);
+
+    // 1. Verify the root task exists
+    let _root = sqlx::query_scalar::<_, String>("SELECT id FROM tasks WHERE id = $1")
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Task {id} not found")))?;
+
+    // 2. Collect all descendant task IDs via recursive CTE
+    let descendant_ids: Vec<String> = sqlx::query_scalar::<_, String>(
+        "WITH RECURSIVE descendants AS ( \
+           SELECT id FROM tasks WHERE id = $1 \
+           UNION ALL \
+           SELECT t.id FROM tasks t JOIN descendants d ON t.parent_task_id = d.id \
+         ) SELECT id FROM descendants",
+    )
+    .bind(&id)
+    .fetch_all(&state.db)
+    .await?;
+
+    // 3. Fetch task details for resource cleanup
+    struct TaskResources {
+        agent_name: Option<String>,
+        preview_slug: Option<String>,
+        branch_name: Option<String>,
+        repo: String,
+    }
+    let tasks_info: Vec<TaskResources> = {
+        let rows = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, String)>(
+            "SELECT agent_name, preview_slug, branch_name, repo FROM tasks WHERE id = ANY($1)",
+        )
+        .bind(&descendant_ids)
+        .fetch_all(&state.db)
+        .await?;
+        rows.into_iter()
+            .map(|(agent_name, preview_slug, branch_name, repo)| TaskResources {
+                agent_name,
+                preview_slug,
+                branch_name,
+                repo,
+            })
+            .collect()
+    };
+
+    // 4. Best-effort resource cleanup (log errors but continue)
+    let github_token = if delete_branch {
+        sqlx::query_scalar::<_, String>(
+            "SELECT github_token FROM users WHERE github_login = $1",
+        )
+        .bind(&admin.0.sub)
+        .fetch_optional(&state.db)
+        .await?
+    } else {
+        None
+    };
+
+    for task_res in &tasks_info {
+        if let Some(agent) = &task_res.agent_name {
+            if let Err(e) = shell::destroy_agent(&state.config, agent).await {
+                tracing::warn!("Failed to destroy agent {agent}: {e}");
+            }
+        }
+        if let Some(slug) = &task_res.preview_slug {
+            if let Err(e) = shell::destroy_preview(&state.config, slug).await {
+                tracing::warn!("Failed to destroy preview {slug}: {e}");
+            }
+        }
+        if delete_branch {
+            if let (Some(branch), Some(token)) = (&task_res.branch_name, &github_token) {
+                if let Err(e) =
+                    shell::delete_remote_branch(&task_res.repo, branch, token).await
+                {
+                    tracing::warn!("Failed to delete branch {branch}: {e}");
+                }
+            }
+        }
+    }
+
+    // 5. Delete DB records in FK-safe order within a transaction
+    let mut tx = state.db.begin().await?;
+    sqlx::query("DELETE FROM task_actions WHERE task_id = ANY($1)")
+        .bind(&descendant_ids)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM task_logs WHERE task_id = ANY($1)")
+        .bind(&descendant_ids)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM task_messages WHERE task_id = ANY($1)")
+        .bind(&descendant_ids)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM task_state_transitions WHERE task_id = ANY($1)")
+        .bind(&descendant_ids)
+        .execute(&mut *tx)
+        .await?;
+    // Delete children before parents to satisfy FK constraints
+    // Reverse the CTE order (children come after parents in BFS order)
+    let mut reversed_ids = descendant_ids.clone();
+    reversed_ids.reverse();
+    for task_id in &reversed_ids {
+        sqlx::query("DELETE FROM tasks WHERE id = $1")
+            .bind(task_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+
+    // 6. Audit log
+    crate::audit::log_event(
+        &state.db,
+        "admin.task_deleted",
+        &admin.0.sub,
+        Some(&id),
+        serde_json::json!({
+            "deleted_count": descendant_ids.len(),
+            "delete_branch": delete_branch,
+        }),
+        None,
+    )
+    .await;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
