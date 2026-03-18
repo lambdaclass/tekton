@@ -289,7 +289,7 @@ async fn poll_source(
 
     let issues_found = issues.len() as i32;
     let mut issues_created = 0i32;
-    let mut issues_skipped = 0i32;
+    let issues_skipped;
 
     // Check global concurrency
     let global_active: (i64,) = sqlx::query_as(
@@ -365,21 +365,26 @@ async fn poll_source(
         max_this_poll
     );
 
-    for issue in issues.iter().take(max_this_poll as usize) {
-        // Dedup check
-        let existing: Option<(i64,)> = sqlx::query_as(
-            "SELECT id FROM intake_issues WHERE source_id = $1 AND external_id = $2",
-        )
-        .bind(source.id)
-        .bind(&issue.id)
-        .fetch_optional(db)
-        .await?;
+    // Batch dedup: fetch all existing external IDs for this source
+    let existing_ids: std::collections::HashSet<String> = sqlx::query_as::<_, (String,)>(
+        "SELECT external_id FROM intake_issues WHERE source_id = $1",
+    )
+    .bind(source.id)
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .map(|(id,)| id)
+    .collect();
 
-        if existing.is_some() {
-            issues_skipped += 1;
-            continue;
-        }
+    let new_issues: Vec<_> = issues
+        .iter()
+        .filter(|issue| !existing_ids.contains(&issue.id))
+        .take(max_this_poll as usize)
+        .collect();
 
+    issues_skipped = issues_found - new_issues.len() as i32;
+
+    for issue in &new_issues {
         let prompt = build_prompt(source, issue);
 
         // Insert intake_issue record
