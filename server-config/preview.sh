@@ -56,8 +56,9 @@ ensure_dirs() {
 
 claim_slot() {
     local slot_file="$AGENT_DIR/.next_slot"
-    flock "$slot_file" bash -c '
-        slot_file="'"$slot_file"'"
+    local slot
+    (
+        flock 9
         if [[ -f "$slot_file" ]]; then
             slot=$(<"$slot_file")
         else
@@ -65,7 +66,7 @@ claim_slot() {
         fi
         echo $(( slot + 1 )) > "$slot_file"
         echo "$slot"
-    '
+    ) 9>"$slot_file.lock"
 }
 
 slot_to_ips() {
