@@ -21,7 +21,7 @@ import {
   listOrphanedPreviews,
   destroyPreview,
 } from '@/lib/api';
-import type { PolicyPreset, Task, Preview } from '@/lib/api';
+import type { PolicyPreset, Task } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
