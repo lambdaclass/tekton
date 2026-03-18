@@ -300,11 +300,32 @@ async fn poll_source(
     .fetch_one(db)
     .await?;
 
+    // Log breakdown of active intake task statuses for observability
+    let active_statuses: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT status, COUNT(*) FROM tasks WHERE source_type IS NOT NULL \
+         AND source_type != 'manual' \
+         AND status NOT IN ('completed', 'failed') \
+         GROUP BY status ORDER BY COUNT(*) DESC",
+    )
+    .fetch_all(db)
+    .await?;
+
+    let status_breakdown: String = active_statuses
+        .iter()
+        .map(|(s, c)| format!("{}={}", s, c))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    tracing::info!(
+        "Intake: global active tasks {}/{} [{}]",
+        global_active.0,
+        config.intake_max_global_concurrent,
+        status_breakdown
+    );
+
     if global_active.0 >= config.intake_max_global_concurrent as i64 {
         tracing::info!(
-            "Global intake concurrency limit reached ({}/{}), skipping source '{}'",
-            global_active.0,
-            config.intake_max_global_concurrent,
+            "Global intake concurrency limit reached, skipping source '{}'",
             source.name
         );
         let duration_ms = poll_start.elapsed().as_millis() as i32;
@@ -334,6 +355,15 @@ async fn poll_source(
 
     let available_slots = (source.max_concurrent_tasks as i64 - source_active.0).max(0) as i32;
     let max_this_poll = available_slots.min(source.max_tasks_per_poll);
+
+    tracing::info!(
+        "Intake: source '{}' active tasks {}/{}, available slots {}, max this poll {}",
+        source.name,
+        source_active.0,
+        source.max_concurrent_tasks,
+        available_slots,
+        max_this_poll
+    );
 
     for issue in issues.iter().take(max_this_poll as usize) {
         // Dedup check
