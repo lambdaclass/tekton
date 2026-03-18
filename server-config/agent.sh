@@ -57,23 +57,21 @@ get_system_path() {
 # -- IP allocation ------------------------------------------------------------
 # Each container gets a pair: host-address .{N*2} / local-address .{N*2+1}
 # Counter stored in $AGENT_DIR/.next_slot, starts at 1
+# Uses flock for atomic read-and-increment to prevent concurrent creates
+# from being assigned the same slot.
 
-next_slot() {
+claim_slot() {
     local slot_file="$AGENT_DIR/.next_slot"
-    local slot
-    if [[ -f "$slot_file" ]]; then
-        slot=$(cat "$slot_file")
-    else
-        slot=1
-    fi
-    echo "$slot"
-}
-
-bump_slot() {
-    local slot_file="$AGENT_DIR/.next_slot"
-    local current
-    current=$(next_slot)
-    echo $(( current + 1 )) > "$slot_file"
+    flock "$slot_file" bash -c '
+        slot_file="'"$slot_file"'"
+        if [[ -f "$slot_file" ]]; then
+            slot=$(<"$slot_file")
+        else
+            slot=1
+        fi
+        echo $(( slot + 1 )) > "$slot_file"
+        echo "$slot"
+    '
 }
 
 slot_to_ips() {
@@ -114,9 +112,9 @@ cmd_create() {
     local system_path
     system_path=$(get_system_path)
 
-    # Allocate IP
+    # Allocate IP (atomic to prevent concurrent creates getting the same slot)
     local slot
-    slot=$(next_slot)
+    slot=$(claim_slot)
     read -r host_ip local_ip <<< "$(slot_to_ips "$slot")"
 
     info "Creating agent '$name' (host=$host_ip, container=$local_ip)..."
@@ -135,7 +133,6 @@ cmd_create() {
 
     # Track the agent
     echo "${slot} ${host_ip} ${local_ip}" > "$AGENT_DIR/$name"
-    bump_slot
 
     # Start the container
     nixos-container start "$name"

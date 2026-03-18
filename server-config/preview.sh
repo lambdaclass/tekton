@@ -51,21 +51,21 @@ ensure_dirs() {
 }
 
 # -- IP allocation (shared with agents) --------------------------------------
+# Uses flock for atomic read-and-increment to prevent concurrent creates
+# from being assigned the same slot.
 
-next_slot() {
+claim_slot() {
     local slot_file="$AGENT_DIR/.next_slot"
-    if [[ -f "$slot_file" ]]; then
-        cat "$slot_file"
-    else
-        echo 1
-    fi
-}
-
-bump_slot() {
-    local slot_file="$AGENT_DIR/.next_slot"
-    local current
-    current=$(next_slot)
-    echo $(( current + 1 )) > "$slot_file"
+    flock "$slot_file" bash -c '
+        slot_file="'"$slot_file"'"
+        if [[ -f "$slot_file" ]]; then
+            slot=$(<"$slot_file")
+        else
+            slot=1
+        fi
+        echo $(( slot + 1 )) > "$slot_file"
+        echo "$slot"
+    '
 }
 
 slot_to_ips() {
@@ -494,9 +494,9 @@ cmd_create() {
     local system_path
     system_path=$(cat "$CLOSURE_CACHE_DIR/${commit_sha}.toplevel")
 
-    # Allocate IP
+    # Allocate IP (atomic to prevent concurrent creates getting the same slot)
     local slot
-    slot=$(next_slot)
+    slot=$(claim_slot)
     read -r host_ip local_ip <<< "$(slot_to_ips "$slot")"
 
     info "Creating preview '$slug' (host=$host_ip, container=$local_ip)..."
@@ -522,8 +522,6 @@ cmd_create() {
         --host-address "$host_ip" \
         --local-address "$local_ip"
 
-    # Claim the IP slot immediately so no concurrent create can reuse it
-    bump_slot
 
     # Write container environment files
     local container_root="/var/lib/nixos-containers/${slug}"
