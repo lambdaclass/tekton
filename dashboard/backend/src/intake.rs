@@ -145,12 +145,53 @@ pub async fn start_intake_daemon(config: Arc<Config>, db: PgPool, task_channels:
 
     tokio::spawn(async move {
         loop {
+            if let Err(e) = sync_intake_statuses(&db).await {
+                tracing::error!("Intake status sync failed: {e}");
+            }
             if let Err(e) = poll_all_sources(&config, &db, &task_channels).await {
                 tracing::error!("Intake poll cycle failed: {e}");
             }
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         }
     });
+}
+
+/// Sync intake issue statuses based on their linked task statuses.
+/// Moves `task_created` issues to `review` when the task completes,
+/// or to `failed` when the task fails.
+async fn sync_intake_statuses(db: &PgPool) -> Result<(), AppError> {
+    let moved_to_review = sqlx::query(
+        "UPDATE intake_issues SET status = 'review', updated_at = NOW() \
+         WHERE status = 'task_created' \
+         AND task_id IN (SELECT id FROM tasks WHERE status = 'completed')",
+    )
+    .execute(db)
+    .await?;
+
+    if moved_to_review.rows_affected() > 0 {
+        tracing::info!(
+            "Intake: moved {} issue(s) to review",
+            moved_to_review.rows_affected()
+        );
+    }
+
+    let moved_to_failed = sqlx::query(
+        "UPDATE intake_issues SET status = 'failed', \
+         error_message = 'Linked task failed', updated_at = NOW() \
+         WHERE status = 'task_created' \
+         AND task_id IN (SELECT id FROM tasks WHERE status = 'failed')",
+    )
+    .execute(db)
+    .await?;
+
+    if moved_to_failed.rows_affected() > 0 {
+        tracing::info!(
+            "Intake: moved {} issue(s) to failed",
+            moved_to_failed.rows_affected()
+        );
+    }
+
+    Ok(())
 }
 
 async fn poll_all_sources(
