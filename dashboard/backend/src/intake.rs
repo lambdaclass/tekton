@@ -160,13 +160,13 @@ pub async fn start_intake_daemon(config: Arc<Config>, db: PgPool, task_channels:
 }
 
 /// Sync intake issue statuses based on their linked task statuses.
-/// Moves `task_created` issues to `review` when the task completes,
-/// or to `failed` when the task fails.
+/// Moves `task_created` → `review` when the task reaches `awaiting_followup` or `completed`,
+/// and `task_created` → `failed` when the task fails.
 async fn sync_intake_statuses(db: &PgPool) -> Result<(), AppError> {
     let moved_to_review = sqlx::query(
         "UPDATE intake_issues SET status = 'review', updated_at = NOW() \
          WHERE status = 'task_created' \
-         AND task_id IN (SELECT id FROM tasks WHERE status = 'completed')",
+         AND task_id IN (SELECT id FROM tasks WHERE status IN ('awaiting_followup', 'completed'))",
     )
     .execute(db)
     .await?;
