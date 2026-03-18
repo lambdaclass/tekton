@@ -3412,23 +3412,23 @@ pub async fn admin_delete_task(
         .fetch_all(&state.db)
         .await?;
         rows.into_iter()
-            .map(|(agent_name, preview_slug, branch_name, repo)| TaskResources {
-                agent_name,
-                preview_slug,
-                branch_name,
-                repo,
-            })
+            .map(
+                |(agent_name, preview_slug, branch_name, repo)| TaskResources {
+                    agent_name,
+                    preview_slug,
+                    branch_name,
+                    repo,
+                },
+            )
             .collect()
     };
 
     // 4. Best-effort resource cleanup (log errors but continue)
     let github_token = if delete_branch {
-        sqlx::query_scalar::<_, String>(
-            "SELECT github_token FROM users WHERE github_login = $1",
-        )
-        .bind(&admin.0.sub)
-        .fetch_optional(&state.db)
-        .await?
+        sqlx::query_scalar::<_, String>("SELECT github_token FROM users WHERE github_login = $1")
+            .bind(&admin.0.sub)
+            .fetch_optional(&state.db)
+            .await?
     } else {
         None
     };
@@ -3446,9 +3446,7 @@ pub async fn admin_delete_task(
         }
         if delete_branch {
             if let (Some(branch), Some(token)) = (&task_res.branch_name, &github_token) {
-                if let Err(e) =
-                    shell::delete_remote_branch(&task_res.repo, branch, token).await
-                {
+                if let Err(e) = shell::delete_remote_branch(&task_res.repo, branch, token).await {
                     tracing::warn!("Failed to delete branch {branch}: {e}");
                 }
             }
