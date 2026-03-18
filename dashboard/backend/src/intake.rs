@@ -227,6 +227,14 @@ async fn poll_all_sources(
         };
 
         if !should_poll {
+            let remaining =
+                source.poll_interval_secs as i64 - elapsed_row.map(|(s,)| s).unwrap_or(0);
+            tracing::debug!(
+                "Intake: skipping source '{}' (id={}), next poll in {}s",
+                source.name,
+                source.id,
+                remaining
+            );
             continue;
         }
 
@@ -416,6 +424,15 @@ async fn poll_source(
     }
 
     let duration_ms = poll_start.elapsed().as_millis() as i32;
+    tracing::info!(
+        "Intake: polled source '{}' (id={}) in {}ms — found {}, created {}, skipped {}",
+        source.name,
+        source.id,
+        duration_ms,
+        issues_found,
+        issues_created,
+        issues_skipped
+    );
     sqlx::query(
         "INSERT INTO intake_poll_log \
          (source_id, issues_found, issues_created, issues_skipped, duration_ms) \
