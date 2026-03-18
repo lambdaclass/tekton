@@ -18,13 +18,14 @@ import {
   getMe,
   listIntakeSources,
   createIntakeSource,
+  updateIntakeSource,
   deleteIntakeSource,
   toggleIntakeSource,
   listIntakeIssues,
   listIntakeLogs,
   testPollSource,
 } from '@/lib/api';
-import type { PolicyPreset } from '@/lib/api';
+import type { PolicyPreset, IntakeSource } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -39,7 +40,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
-import { Users, KeyRound, Shield, Building, Trash2, Plus, X, Settings, Zap, Eye, ScrollText, FlaskConical } from 'lucide-react';
+import { Users, KeyRound, Shield, Building, Trash2, Plus, X, Settings, Zap, Eye, ScrollText, FlaskConical, Pencil } from 'lucide-react';
 import { Navigate } from 'react-router-dom';
 
 const ROLES = ['admin', 'member', 'viewer'] as const;
@@ -1249,6 +1250,8 @@ const INITIAL_INTAKE_FORM: IntakeFormState = {
 
 function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof useQueryClient> }) {
   const [showAdd, setShowAdd] = useState(false);
+  const [editSource, setEditSource] = useState<IntakeSource | null>(null);
+  const [editForm, setEditForm] = useState<IntakeFormState>({ ...INITIAL_INTAKE_FORM });
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const [testSourceId, setTestSourceId] = useState<number | null>(null);
   const [issuesSourceId, setIssuesSourceId] = useState<number | null>(null);
@@ -1283,6 +1286,53 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
       queryClient.invalidateQueries({ queryKey: ['admin-intake-sources'] });
     },
   });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: number; data: Record<string, unknown> }) => updateIntakeSource(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-intake-sources'] });
+      setEditSource(null);
+    },
+  });
+
+  const openEdit = (s: IntakeSource) => {
+    setEditSource(s);
+    setEditForm({
+      name: s.name,
+      provider: s.provider,
+      api_token: '',
+      target_repo: s.target_repo,
+      target_base_branch: s.target_base_branch,
+      label_filter: s.label_filter.join(', '),
+      run_as_user: s.run_as_user,
+      poll_interval_secs: s.poll_interval_secs,
+      max_concurrent_tasks: s.max_concurrent_tasks,
+      prompt_template: s.prompt_template ?? '',
+      skip_followup: s.skip_followup,
+    });
+  };
+
+  const handleUpdate = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editSource) return;
+    const labels = editForm.label_filter.split(',').map((l) => l.trim()).filter(Boolean);
+    const data: Record<string, unknown> = {
+      name: editForm.name,
+      provider: editForm.provider,
+      target_repo: editForm.target_repo,
+      target_base_branch: editForm.target_base_branch || 'main',
+      label_filter: labels.length ? labels : [],
+      prompt_template: editForm.prompt_template || null,
+      run_as_user: editForm.run_as_user,
+      poll_interval_secs: editForm.poll_interval_secs,
+      max_concurrent_tasks: editForm.max_concurrent_tasks,
+      skip_followup: editForm.skip_followup,
+    };
+    if (editForm.api_token) {
+      data.api_token = editForm.api_token;
+    }
+    updateMutation.mutate({ id: editSource.id, data });
+  };
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1356,6 +1406,9 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
                     <td className="py-2 pr-4">{s.run_as_user}</td>
                     <td className="py-2">
                       <div className="flex gap-1">
+                        <Button variant="ghost" size="sm" onClick={() => openEdit(s)} title="Edit">
+                          <Pencil className="size-4" />
+                        </Button>
                         <Button variant="ghost" size="sm" onClick={() => setTestSourceId(s.id)} title="Test Poll">
                           <FlaskConical className="size-4" />
                         </Button>
@@ -1543,6 +1596,144 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
                 {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
               </Button>
             </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Edit Source Dialog */}
+        <Dialog open={editSource !== null} onOpenChange={(open) => { if (!open) setEditSource(null); }}>
+          <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Edit Intake Source</DialogTitle>
+              <DialogDescription>
+                Update the configuration for this intake source.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleUpdate} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="edit-intake-name">Name</Label>
+                <Input
+                  id="edit-intake-name"
+                  placeholder="My GitHub Issues"
+                  value={editForm.name}
+                  onChange={(e) => setEditForm((s) => ({ ...s, name: e.target.value }))}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-intake-provider">Provider</Label>
+                <select
+                  id="edit-intake-provider"
+                  value={editForm.provider}
+                  onChange={(e) => setEditForm((s) => ({ ...s, provider: e.target.value }))}
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                >
+                  <option value="github">GitHub</option>
+                  <option value="linear">Linear</option>
+                  <option value="jira">Jira</option>
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-intake-token">API Token</Label>
+                <Input
+                  id="edit-intake-token"
+                  type="password"
+                  placeholder="Leave blank to keep current token"
+                  value={editForm.api_token}
+                  onChange={(e) => setEditForm((s) => ({ ...s, api_token: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-intake-repo">Target Repo</Label>
+                <Input
+                  id="edit-intake-repo"
+                  placeholder="owner/repo"
+                  value={editForm.target_repo}
+                  onChange={(e) => setEditForm((s) => ({ ...s, target_repo: e.target.value }))}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-intake-branch">Base Branch</Label>
+                <Input
+                  id="edit-intake-branch"
+                  placeholder="main"
+                  value={editForm.target_base_branch}
+                  onChange={(e) => setEditForm((s) => ({ ...s, target_base_branch: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-intake-labels">Label Filter (comma-separated)</Label>
+                <Input
+                  id="edit-intake-labels"
+                  placeholder="agent, auto-fix"
+                  value={editForm.label_filter}
+                  onChange={(e) => setEditForm((s) => ({ ...s, label_filter: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-intake-user">Run As User</Label>
+                <Input
+                  id="edit-intake-user"
+                  placeholder="Tekton user login"
+                  value={editForm.run_as_user}
+                  onChange={(e) => setEditForm((s) => ({ ...s, run_as_user: e.target.value }))}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-intake-interval">Poll Interval (seconds)</Label>
+                <Input
+                  id="edit-intake-interval"
+                  type="number"
+                  min={30}
+                  value={editForm.poll_interval_secs}
+                  onChange={(e) => setEditForm((s) => ({ ...s, poll_interval_secs: Number(e.target.value) }))}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-intake-max-concurrent">Max Concurrent Tasks</Label>
+                <Input
+                  id="edit-intake-max-concurrent"
+                  type="number"
+                  min={1}
+                  value={editForm.max_concurrent_tasks}
+                  onChange={(e) => setEditForm((s) => ({ ...s, max_concurrent_tasks: Number(e.target.value) }))}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-intake-prompt">Prompt Template (optional)</Label>
+                <Textarea
+                  id="edit-intake-prompt"
+                  placeholder="Custom prompt template for created tasks..."
+                  value={editForm.prompt_template}
+                  onChange={(e) => setEditForm((s) => ({ ...s, prompt_template: e.target.value }))}
+                  rows={3}
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  id="edit-intake-skip-followup"
+                  type="checkbox"
+                  checked={editForm.skip_followup}
+                  onChange={(e) => setEditForm((s) => ({ ...s, skip_followup: e.target.checked }))}
+                  className="rounded border-input"
+                />
+                <Label htmlFor="edit-intake-skip-followup">Skip Followup</Label>
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setEditSource(null)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={updateMutation.isPending}>
+                  {updateMutation.isPending ? 'Saving...' : 'Save Changes'}
+                </Button>
+              </DialogFooter>
+              {updateMutation.isError && (
+                <p className="text-destructive text-sm">
+                  {(updateMutation.error as Error).message}
+                </p>
+              )}
+            </form>
           </DialogContent>
         </Dialog>
 
