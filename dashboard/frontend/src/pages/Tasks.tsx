@@ -14,7 +14,7 @@ import { statusVariant } from '@/lib/status';
 import { timeAgo, formatCost } from '@/lib/utils';
 import VoiceInput from '@/components/VoiceInput';
 import BranchCombobox from '@/components/BranchCombobox';
-import { ImagePlus, X, ChevronLeft, ChevronRight, Search, BrainCircuit, LayoutGrid, List } from 'lucide-react';
+import { ImagePlus, X, ChevronLeft, ChevronRight, Search, BrainCircuit, LayoutGrid, List, Code } from 'lucide-react';
 
 type ViewMode = 'card' | 'list';
 const VIEW_STORAGE_KEY = 'tekton-task-view';
@@ -489,6 +489,18 @@ export default function Tasks() {
                           PR #{t.pr_number}
                         </a>
                       )}
+                      {t.branch_name && (
+                        <a
+                          href={`https://github.dev/${t.repo}/tree/${t.branch_name}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="shrink-0 inline-flex items-center gap-1 text-blue-400 hover:text-blue-300"
+                        >
+                          <Code className="size-3" />
+                          VS Code
+                        </a>
+                      )}
                       {t.preview_url && (
                         <a
                           href={t.preview_url}
@@ -559,6 +571,18 @@ export default function Tasks() {
                 <Badge variant="outline" className="shrink-0 text-[10px] px-1.5 py-0">
                   {t.repo.split('/').pop()}
                 </Badge>
+                {t.branch_name && (
+                  <a
+                    href={`https://github.dev/${t.repo}/tree/${t.branch_name}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="shrink-0 text-blue-400 hover:text-blue-300"
+                    title="Open in VS Code"
+                  >
+                    <Code className="size-3.5" />
+                  </a>
+                )}
                 {t.total_cost_usd ? (
                   <span className="shrink-0 text-xs text-muted-foreground tabular-nums w-14 text-right">
                     {formatCost(t.total_cost_usd)}

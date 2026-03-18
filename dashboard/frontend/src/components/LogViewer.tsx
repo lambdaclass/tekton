@@ -114,6 +114,8 @@ export default function LogViewer({ taskId, previewSlug, ws, onConnectionChange 
       currentSocket = socket;
 
       socket.addEventListener('open', () => {
+        // Clear terminal before replaying history to avoid duplicates on reconnect
+        term.clear();
         onConnectionChange?.(true);
       });
       socket.addEventListener('message', (ev) => {
