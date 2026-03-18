@@ -38,6 +38,19 @@ import {
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
+// Transition rules (must match backend valid_transitions)
+// ---------------------------------------------------------------------------
+
+const VALID_TRANSITIONS: Record<string, string[]> = {
+  backlog: ['pending', 'done'],
+  pending: ['backlog'],
+  task_created: ['failed'],
+  review: ['done', 'failed'],
+  failed: ['backlog', 'pending'],
+  done: [],
+};
+
+// ---------------------------------------------------------------------------
 // Column definitions
 // ---------------------------------------------------------------------------
 
@@ -255,11 +268,15 @@ function IssueDetailDialog({
             )}
           </div>
 
-          {/* Status changer */}
+          {/* Status changer — only show valid transitions */}
           <div>
             <p className="text-xs text-muted-foreground mb-1.5">Move to:</p>
             <div className="flex flex-wrap gap-1.5">
-              {COLUMNS.map((col) => (
+              {COLUMNS.filter(
+                (col) =>
+                  col.id === issue.status ||
+                  (VALID_TRANSITIONS[issue.status] ?? []).includes(col.id),
+              ).map((col) => (
                 <Button
                   key={col.id}
                   variant={issue.status === col.id ? 'default' : 'outline'}
@@ -531,16 +548,29 @@ export default function IntakeBoard() {
     const issueId = Number(draggableId);
     const issue = issues?.find((i) => i.id === issueId);
     if (!issue || issue.status === newStatus) return;
+    // Validate transition client-side — invalid drops snap back silently
+    const allowed = VALID_TRANSITIONS[issue.status] ?? [];
+    if (!allowed.includes(newStatus)) return;
     statusMutation.mutate({ id: issueId, status: newStatus });
   };
 
   const handleStatusChange = (status: string) => {
     if (!selectedIssue || selectedIssue.status === status) return;
+    const allowed = VALID_TRANSITIONS[selectedIssue.status] ?? [];
+    if (!allowed.includes(status)) return;
     statusMutation.mutate({ id: selectedIssue.id, status });
     setSelectedIssue({ ...selectedIssue, status });
   };
 
   const totalCount = issues?.length ?? 0;
+
+  // Concurrency indicator: count issues holding slots (task_created + review)
+  const slotsInUse = useMemo(() => {
+    if (!issues) return 0;
+    return issues.filter(
+      (i) => i.status === 'task_created' || i.status === 'review',
+    ).length;
+  }, [issues]);
 
   if (me && me.role !== 'admin') {
     return <Navigate to="/" replace />;
@@ -554,6 +584,12 @@ export default function IntakeBoard() {
           <h1 className="text-2xl font-bold tracking-tight">Intake Board</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             {totalCount} issue{totalCount !== 1 ? 's' : ''} across all sources
+            {slotsInUse > 0 && (
+              <span className="ml-2 inline-flex items-center gap-1 text-xs font-medium text-blue-600 dark:text-blue-400">
+                <span className="size-1.5 rounded-full bg-blue-500 animate-pulse" />
+                {slotsInUse} slot{slotsInUse !== 1 ? 's' : ''} in use
+              </span>
+            )}
           </p>
         </div>
         <div className="flex items-center gap-2">

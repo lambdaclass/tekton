@@ -148,7 +148,10 @@ pub async fn start_intake_daemon(config: Arc<Config>, db: PgPool, task_channels:
             if let Err(e) = sync_intake_statuses(&db).await {
                 tracing::error!("Intake status sync failed: {e}");
             }
-            if let Err(e) = poll_all_sources(&config, &db, &task_channels).await {
+            if let Err(e) = process_pending_issues(&config, &db, &task_channels).await {
+                tracing::error!("Intake process-pending cycle failed: {e}");
+            }
+            if let Err(e) = poll_all_sources(&config, &db).await {
                 tracing::error!("Intake poll cycle failed: {e}");
             }
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -194,11 +197,181 @@ async fn sync_intake_statuses(db: &PgPool) -> Result<(), AppError> {
     Ok(())
 }
 
-async fn poll_all_sources(
+// ── Process pending issues (user-promoted) into tasks ──
+
+/// Pick up `pending` intake issues and spawn tasks when concurrency allows.
+/// Called each daemon cycle between sync and poll.
+async fn process_pending_issues(
     config: &Arc<Config>,
     db: &PgPool,
     task_channels: &TaskChannels,
 ) -> Result<(), AppError> {
+    // Check global concurrency: slots held by task_created + review
+    let global_active: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM intake_issues WHERE status IN ('task_created', 'review')",
+    )
+    .fetch_one(db)
+    .await?;
+
+    if global_active.0 >= config.intake_max_global_concurrent as i64 {
+        tracing::debug!(
+            "Intake: global concurrency limit reached ({}/{}), skipping pending processing",
+            global_active.0,
+            config.intake_max_global_concurrent
+        );
+        return Ok(());
+    }
+
+    let mut global_remaining =
+        config.intake_max_global_concurrent as i64 - global_active.0;
+
+    // Fetch pending issues FIFO, joined with source config
+    let pending_issues: Vec<PendingIssueRow> = sqlx::query_as(
+        "SELECT i.id, i.source_id, i.prompt, \
+         s.provider, s.target_repo, s.target_base_branch, s.run_as_user, \
+         s.max_concurrent_tasks, s.skip_followup, s.name as source_name \
+         FROM intake_issues i \
+         JOIN intake_sources s ON s.id = i.source_id \
+         WHERE i.status = 'pending' AND s.enabled = true \
+         ORDER BY i.updated_at ASC",
+    )
+    .fetch_all(db)
+    .await?;
+
+    if pending_issues.is_empty() {
+        return Ok(());
+    }
+
+    tracing::info!(
+        "Intake: processing {} pending issue(s), global slots remaining: {}",
+        pending_issues.len(),
+        global_remaining
+    );
+
+    for issue in &pending_issues {
+        if global_remaining <= 0 {
+            break;
+        }
+
+        // Per-source concurrency check
+        let source_active: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM intake_issues WHERE source_id = $1 \
+             AND status IN ('task_created', 'review')",
+        )
+        .bind(issue.source_id)
+        .fetch_one(db)
+        .await?;
+
+        if source_active.0 >= issue.max_concurrent_tasks as i64 {
+            tracing::debug!(
+                "Intake: source '{}' at per-source limit ({}/{}), skipping issue {}",
+                issue.source_name,
+                source_active.0,
+                issue.max_concurrent_tasks,
+                issue.id
+            );
+            continue;
+        }
+
+        // Decrypt API token for task spawning
+        let token_row: (String,) =
+            sqlx::query_as("SELECT api_token_encrypted FROM intake_sources WHERE id = $1")
+                .bind(issue.source_id)
+                .fetch_one(db)
+                .await?;
+        let _api_token =
+            crate::secrets::decrypt_secret(&config.secrets_encryption_key, &token_row.0)?;
+
+        let prompt = match &issue.prompt {
+            Some(p) => p.clone(),
+            None => {
+                tracing::warn!(
+                    "Intake: issue {} has no stored prompt, marking failed",
+                    issue.id
+                );
+                sqlx::query(
+                    "UPDATE intake_issues SET status = 'failed', \
+                     error_message = 'No prompt stored', updated_at = NOW() WHERE id = $1",
+                )
+                .bind(issue.id)
+                .execute(db)
+                .await?;
+                continue;
+            }
+        };
+
+        let source_type = format!("intake_{}", issue.provider);
+        match crate::tasks::spawn_task_internal(
+            config.clone(),
+            db.clone(),
+            task_channels.clone(),
+            crate::tasks::SpawnTaskParams {
+                prompt,
+                repo: issue.target_repo.clone(),
+                base_branch: issue.target_base_branch.clone(),
+                created_by: issue.run_as_user.clone(),
+                source_type: Some(source_type),
+                intake_issue_id: Some(issue.id),
+                skip_followup: issue.skip_followup,
+            },
+        )
+        .await
+        {
+            Ok(task) => {
+                sqlx::query(
+                    "UPDATE intake_issues SET task_id = $1, status = 'task_created', \
+                     updated_at = NOW() WHERE id = $2",
+                )
+                .bind(&task.id)
+                .bind(issue.id)
+                .execute(db)
+                .await?;
+
+                tracing::info!(
+                    "Intake: created task {} for pending issue {} from source '{}'",
+                    task.id,
+                    issue.id,
+                    issue.source_name
+                );
+                global_remaining -= 1;
+            }
+            Err(e) => {
+                sqlx::query(
+                    "UPDATE intake_issues SET status = 'failed', error_message = $1, \
+                     updated_at = NOW() WHERE id = $2",
+                )
+                .bind(e.to_string())
+                .bind(issue.id)
+                .execute(db)
+                .await?;
+                tracing::error!(
+                    "Intake: failed to create task for pending issue {}: {e}",
+                    issue.id
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(sqlx::FromRow)]
+struct PendingIssueRow {
+    id: i64,
+    source_id: i64,
+    prompt: Option<String>,
+    provider: String,
+    target_repo: String,
+    target_base_branch: String,
+    run_as_user: String,
+    max_concurrent_tasks: i32,
+    skip_followup: bool,
+    source_name: String,
+}
+
+// ── Polling: fetch external issues → backlog ──
+
+async fn poll_all_sources(config: &Arc<Config>, db: &PgPool) -> Result<(), AppError> {
     let sources = sqlx::query_as::<_, IntakeSource>(
         "SELECT id, name, provider, enabled, config, target_repo, target_base_branch, \
          label_filter, prompt_template, run_as_user, poll_interval_secs, \
@@ -240,9 +413,8 @@ async fn poll_all_sources(
 
         let config = config.clone();
         let db = db.clone();
-        let channels = task_channels.clone();
         tokio::spawn(async move {
-            if let Err(e) = poll_source(&config, &db, &channels, &source).await {
+            if let Err(e) = poll_source(&config, &db, &source).await {
                 tracing::error!(
                     "Failed to poll intake source '{}' (id={}): {e}",
                     source.name,
@@ -263,15 +435,16 @@ async fn poll_all_sources(
     Ok(())
 }
 
+/// Poll a single source: fetch external issues, deduplicate, insert new ones as `backlog`.
+/// No tasks are spawned here — that happens in `process_pending_issues()`.
 async fn poll_source(
     config: &Config,
     db: &PgPool,
-    task_channels: &TaskChannels,
     source: &IntakeSource,
 ) -> Result<(), AppError> {
     let poll_start = std::time::Instant::now();
 
-    // Fetch the encrypted API token (not included in IntakeSource to avoid leaking)
+    // Fetch the encrypted API token
     let token_row: (String,) =
         sqlx::query_as("SELECT api_token_encrypted FROM intake_sources WHERE id = $1")
             .bind(source.id)
@@ -289,81 +462,6 @@ async fn poll_source(
 
     let issues_found = issues.len() as i32;
     let mut issues_created = 0i32;
-    let issues_skipped;
-
-    // Check global concurrency
-    let global_active: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM tasks WHERE source_type IS NOT NULL \
-         AND source_type != 'manual' \
-         AND status NOT IN ('completed', 'failed')",
-    )
-    .fetch_one(db)
-    .await?;
-
-    // Log breakdown of active intake task statuses for observability
-    let active_statuses: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT status, COUNT(*) FROM tasks WHERE source_type IS NOT NULL \
-         AND source_type != 'manual' \
-         AND status NOT IN ('completed', 'failed') \
-         GROUP BY status ORDER BY COUNT(*) DESC",
-    )
-    .fetch_all(db)
-    .await?;
-
-    let status_breakdown: String = active_statuses
-        .iter()
-        .map(|(s, c)| format!("{}={}", s, c))
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    tracing::info!(
-        "Intake: global active tasks {}/{} [{}]",
-        global_active.0,
-        config.intake_max_global_concurrent,
-        status_breakdown
-    );
-
-    if global_active.0 >= config.intake_max_global_concurrent as i64 {
-        tracing::info!(
-            "Global intake concurrency limit reached, skipping source '{}'",
-            source.name
-        );
-        let duration_ms = poll_start.elapsed().as_millis() as i32;
-        sqlx::query(
-            "INSERT INTO intake_poll_log \
-             (source_id, issues_found, issues_created, issues_skipped, duration_ms) \
-             VALUES ($1, $2, 0, $3, $4)",
-        )
-        .bind(source.id)
-        .bind(issues_found)
-        .bind(issues_found)
-        .bind(duration_ms)
-        .execute(db)
-        .await?;
-        return Ok(());
-    }
-
-    // Check per-source concurrency
-    let source_active: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM intake_issues WHERE source_id = $1 \
-         AND status = 'task_created' \
-         AND task_id IN (SELECT id FROM tasks WHERE status NOT IN ('completed', 'failed'))",
-    )
-    .bind(source.id)
-    .fetch_one(db)
-    .await?;
-
-    let available_slots = (source.max_concurrent_tasks as i64 - source_active.0).max(0) as i32;
-    let max_this_poll = available_slots.min(source.max_tasks_per_poll);
-
-    tracing::info!(
-        "Intake: source '{}' active tasks {}/{}, available slots {}, max this poll {}",
-        source.name,
-        source_active.0,
-        source.max_concurrent_tasks,
-        available_slots,
-        max_this_poll
-    );
 
     // Batch dedup: fetch all existing external IDs for this source
     let existing_ids: std::collections::HashSet<String> = sqlx::query_as::<_, (String,)>(
@@ -379,21 +477,20 @@ async fn poll_source(
     let new_issues: Vec<_> = issues
         .iter()
         .filter(|issue| !existing_ids.contains(&issue.id))
-        .take(max_this_poll as usize)
+        .take(source.max_tasks_per_poll as usize)
         .collect();
 
-    issues_skipped = issues_found - new_issues.len() as i32;
+    let issues_skipped = issues_found - new_issues.len() as i32;
 
     for issue in &new_issues {
         let prompt = build_prompt(source, issue);
 
-        // Insert intake_issue record
-        let intake_issue_id: (i64,) = sqlx::query_as(
+        // Insert intake_issue as backlog with pre-built prompt
+        sqlx::query(
             "INSERT INTO intake_issues \
              (source_id, external_id, external_url, external_title, \
-              external_body, external_labels, external_updated_at, status) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, 'pending') \
-             RETURNING id",
+              external_body, external_labels, external_updated_at, status, prompt) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, 'backlog', $8)",
         )
         .bind(source.id)
         .bind(&issue.id)
@@ -402,60 +499,11 @@ async fn poll_source(
         .bind(&issue.body)
         .bind(&issue.labels)
         .bind(&issue.updated_at)
-        .fetch_one(db)
+        .bind(&prompt)
+        .execute(db)
         .await?;
 
-        let source_type = format!("intake_{}", source.provider);
-        match crate::tasks::spawn_task_internal(
-            Arc::new(config.clone()),
-            db.clone(),
-            task_channels.clone(),
-            crate::tasks::SpawnTaskParams {
-                prompt,
-                repo: source.target_repo.clone(),
-                base_branch: source.target_base_branch.clone(),
-                created_by: source.run_as_user.clone(),
-                source_type: Some(source_type),
-                intake_issue_id: Some(intake_issue_id.0),
-                skip_followup: source.skip_followup,
-            },
-        )
-        .await
-        {
-            Ok(task) => {
-                sqlx::query(
-                    "UPDATE intake_issues SET task_id = $1, status = 'task_created', \
-                     updated_at = NOW() WHERE id = $2",
-                )
-                .bind(&task.id)
-                .bind(intake_issue_id.0)
-                .execute(db)
-                .await?;
-
-                tracing::info!(
-                    "Intake: created task {} for issue #{} from source '{}'",
-                    task.id,
-                    issue.id,
-                    source.name
-                );
-                issues_created += 1;
-            }
-            Err(e) => {
-                sqlx::query(
-                    "UPDATE intake_issues SET status = 'failed', error_message = $1, \
-                     updated_at = NOW() WHERE id = $2",
-                )
-                .bind(e.to_string())
-                .bind(intake_issue_id.0)
-                .execute(db)
-                .await?;
-                tracing::error!(
-                    "Intake: failed to create task for issue #{} from source '{}': {e}",
-                    issue.id,
-                    source.name
-                );
-            }
-        }
+        issues_created += 1;
     }
 
     let duration_ms = poll_start.elapsed().as_millis() as i32;

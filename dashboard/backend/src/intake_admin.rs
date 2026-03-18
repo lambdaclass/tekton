@@ -484,40 +484,77 @@ pub async fn list_all_issues(
     Ok(Json(issues))
 }
 
-const VALID_ISSUE_STATUSES: &[&str] = &[
-    "backlog",
-    "pending",
-    "task_created",
-    "in_progress",
-    "review",
-    "done",
-    "failed",
-];
+/// Returns the set of statuses reachable from the given status via the UI.
+/// `task_created` is daemon-only and cannot be targeted from the UI.
+/// `done` is terminal.
+fn valid_transitions(from: &str) -> &'static [&'static str] {
+    match from {
+        "backlog" => &["pending", "done"],
+        "pending" => &["backlog"],
+        "task_created" => &["failed"],
+        "review" => &["done", "failed"],
+        "failed" => &["backlog", "pending"],
+        _ => &[],
+    }
+}
 
 /// PATCH /api/admin/intake/issues/{id}/status
-/// Update the status of an intake issue.
+/// Update the status of an intake issue with transition validation.
 pub async fn update_issue_status(
     _admin: AdminUser,
     State(state): State<crate::AppState>,
     Path(id): Path<i64>,
     Json(req): Json<UpdateIntakeIssueStatusRequest>,
 ) -> Result<Json<IntakeIssue>, AppError> {
-    if !VALID_ISSUE_STATUSES.contains(&req.status.as_str()) {
+    // Fetch current status
+    let current: Option<(String,)> =
+        sqlx::query_as("SELECT status FROM intake_issues WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?;
+
+    let current_status = match current {
+        Some((s,)) => s,
+        None => return Err(AppError::NotFound("Intake issue not found".into())),
+    };
+
+    let allowed = valid_transitions(&current_status);
+    if !allowed.contains(&req.status.as_str()) {
         return Err(AppError::BadRequest(format!(
-            "Invalid status '{}'. Valid statuses: {}",
+            "Cannot transition from '{}' to '{}'. Valid targets: {}",
+            current_status,
             req.status,
-            VALID_ISSUE_STATUSES.join(", ")
+            if allowed.is_empty() {
+                "none (terminal status)".to_string()
+            } else {
+                allowed.join(", ")
+            }
         )));
     }
 
-    let issue = sqlx::query_as::<_, IntakeIssue>(&format!(
-        "UPDATE intake_issues SET status = $1, updated_at = NOW() \
-         WHERE id = $2 RETURNING {ISSUE_COLUMNS}"
-    ))
-    .bind(&req.status)
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await?;
+    // When retrying (failed → backlog/pending), clear task_id and error_message
+    let clear_task = current_status == "failed"
+        && (req.status == "backlog" || req.status == "pending");
+
+    let issue = if clear_task {
+        sqlx::query_as::<_, IntakeIssue>(&format!(
+            "UPDATE intake_issues SET status = $1, task_id = NULL, error_message = NULL, \
+             updated_at = NOW() WHERE id = $2 RETURNING {ISSUE_COLUMNS}"
+        ))
+        .bind(&req.status)
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+    } else {
+        sqlx::query_as::<_, IntakeIssue>(&format!(
+            "UPDATE intake_issues SET status = $1, updated_at = NOW() \
+             WHERE id = $2 RETURNING {ISSUE_COLUMNS}"
+        ))
+        .bind(&req.status)
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+    };
 
     match issue {
         Some(i) => Ok(Json(i)),

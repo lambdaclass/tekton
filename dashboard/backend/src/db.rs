@@ -328,8 +328,9 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
             external_labels TEXT[] NOT NULL DEFAULT '{}',
             external_updated_at TIMESTAMPTZ,
             task_id TEXT REFERENCES tasks(id),
-            status TEXT NOT NULL DEFAULT 'pending',
+            status TEXT NOT NULL DEFAULT 'backlog',
             error_message TEXT,
+            prompt TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             UNIQUE(source_id, external_id)
@@ -337,6 +338,20 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     )
     .execute(pool)
     .await?;
+
+    // Add prompt column and migrate status defaults for existing installs
+    for col_sql in &[
+        "ALTER TABLE intake_issues ADD COLUMN IF NOT EXISTS prompt TEXT",
+        "ALTER TABLE intake_issues ALTER COLUMN status SET DEFAULT 'backlog'",
+    ] {
+        let _ = sqlx::query(col_sql).execute(pool).await;
+    }
+    // Migrate orphan pending issues (no task spawned yet) to backlog
+    let _ = sqlx::query(
+        "UPDATE intake_issues SET status = 'backlog' WHERE status = 'pending' AND task_id IS NULL",
+    )
+    .execute(pool)
+    .await;
 
     // Create intake_poll_log table
     sqlx::query(
