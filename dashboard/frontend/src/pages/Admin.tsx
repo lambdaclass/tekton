@@ -1499,7 +1499,17 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="intake-labels">Label Filter (comma-separated)</Label>
+                <div className="flex items-center gap-1.5">
+                  <Label htmlFor="intake-labels">Label Filter (comma-separated)</Label>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Info className="h-4 w-4 text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs text-left">
+                      Only issues that have <strong>all</strong> of the specified labels will be picked up. Leave empty to match all issues.
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
                 <Input
                   id="intake-labels"
                   placeholder="agent, auto-fix"
@@ -1690,7 +1700,17 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="edit-intake-labels">Label Filter (comma-separated)</Label>
+                <div className="flex items-center gap-1.5">
+                  <Label htmlFor="edit-intake-labels">Label Filter (comma-separated)</Label>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Info className="h-4 w-4 text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs text-left">
+                      Only issues that have <strong>all</strong> of the specified labels will be picked up. Leave empty to match all issues.
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
                 <Input
                   id="edit-intake-labels"
                   placeholder="agent, auto-fix"
