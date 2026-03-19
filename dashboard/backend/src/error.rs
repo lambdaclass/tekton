@@ -9,6 +9,11 @@ pub enum AppError {
     NotFound(String),
     BadRequest(String),
     Internal(String),
+    /// A user-facing error with a machine-readable code for the frontend to map to friendly messages.
+    UserError {
+        code: &'static str,
+        message: String,
+    },
 }
 
 impl std::fmt::Display for AppError {
@@ -19,20 +24,30 @@ impl std::fmt::Display for AppError {
             Self::NotFound(msg) => write!(f, "Not found: {msg}"),
             Self::BadRequest(msg) => write!(f, "Bad request: {msg}"),
             Self::Internal(msg) => write!(f, "Internal error: {msg}"),
+            Self::UserError { code, message } => write!(f, "User error [{code}]: {message}"),
         }
     }
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, message) = match &self {
-            Self::Auth(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
-            Self::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
-            Self::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
-            Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
-            Self::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+        let (status, message, code) = match &self {
+            Self::Auth(msg) => (StatusCode::UNAUTHORIZED, msg.clone(), None),
+            Self::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone(), None),
+            Self::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone(), None),
+            Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone(), None),
+            Self::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone(), None),
+            Self::UserError { code, message } => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                message.clone(),
+                Some(*code),
+            ),
         };
-        let body = axum::Json(json!({ "error": message }));
+        let body = if let Some(code) = code {
+            axum::Json(json!({ "error": message, "error_code": code }))
+        } else {
+            axum::Json(json!({ "error": message }))
+        };
         (status, body).into_response()
     }
 }
