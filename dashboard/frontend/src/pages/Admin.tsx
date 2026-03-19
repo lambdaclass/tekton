@@ -1231,7 +1231,6 @@ interface IntakeFormState {
   poll_interval_secs: number;
   max_concurrent_tasks: number;
   prompt_template: string;
-  skip_followup: boolean;
 }
 
 const INITIAL_INTAKE_FORM: IntakeFormState = {
@@ -1245,7 +1244,6 @@ const INITIAL_INTAKE_FORM: IntakeFormState = {
   poll_interval_secs: 300,
   max_concurrent_tasks: 3,
   prompt_template: '',
-  skip_followup: true,
 };
 
 function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof useQueryClient> }) {
@@ -1308,7 +1306,6 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
       poll_interval_secs: s.poll_interval_secs,
       max_concurrent_tasks: s.max_concurrent_tasks,
       prompt_template: s.prompt_template ?? '',
-      skip_followup: s.skip_followup,
     });
   };
 
@@ -1326,7 +1323,6 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
       run_as_user: editForm.run_as_user,
       poll_interval_secs: editForm.poll_interval_secs,
       max_concurrent_tasks: editForm.max_concurrent_tasks,
-      skip_followup: editForm.skip_followup,
     };
     if (editForm.api_token) {
       data.api_token = editForm.api_token;
@@ -1348,7 +1344,6 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
       run_as_user: newSource.run_as_user,
       poll_interval_secs: newSource.poll_interval_secs,
       max_concurrent_tasks: newSource.max_concurrent_tasks,
-      skip_followup: newSource.skip_followup,
     });
   };
 
@@ -1548,16 +1543,6 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
                   rows={3}
                 />
               </div>
-              <div className="flex items-center gap-2">
-                <input
-                  id="intake-skip-followup"
-                  type="checkbox"
-                  checked={newSource.skip_followup}
-                  onChange={(e) => setNewSource((s) => ({ ...s, skip_followup: e.target.checked }))}
-                  className="rounded border-input"
-                />
-                <Label htmlFor="intake-skip-followup">Skip Followup</Label>
-              </div>
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setShowAdd(false)}>
                   Cancel
@@ -1709,16 +1694,6 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
                   onChange={(e) => setEditForm((s) => ({ ...s, prompt_template: e.target.value }))}
                   rows={3}
                 />
-              </div>
-              <div className="flex items-center gap-2">
-                <input
-                  id="edit-intake-skip-followup"
-                  type="checkbox"
-                  checked={editForm.skip_followup}
-                  onChange={(e) => setEditForm((s) => ({ ...s, skip_followup: e.target.checked }))}
-                  className="rounded border-input"
-                />
-                <Label htmlFor="edit-intake-skip-followup">Skip Followup</Label>
               </div>
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setEditSource(null)}>

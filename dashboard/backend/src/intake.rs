@@ -246,7 +246,7 @@ async fn process_pending_issues(
     let pending_issues: Vec<PendingIssueRow> = sqlx::query_as(
         "SELECT i.id, i.source_id, i.prompt, \
          s.provider, s.target_repo, s.target_base_branch, s.run_as_user, \
-         s.max_concurrent_tasks, s.skip_followup, s.name as source_name \
+         s.max_concurrent_tasks, s.name as source_name \
          FROM intake_issues i \
          JOIN intake_sources s ON s.id = i.source_id \
          WHERE i.status = 'pending' AND s.enabled = true \
@@ -329,7 +329,6 @@ async fn process_pending_issues(
                 created_by: issue.run_as_user.clone(),
                 source_type: Some(source_type),
                 intake_issue_id: Some(issue.id),
-                skip_followup: issue.skip_followup,
             },
         )
         .await
@@ -382,7 +381,6 @@ struct PendingIssueRow {
     target_base_branch: String,
     run_as_user: String,
     max_concurrent_tasks: i32,
-    skip_followup: bool,
     source_name: String,
 }
 
@@ -392,7 +390,7 @@ async fn poll_all_sources(config: &Arc<Config>, db: &PgPool) -> Result<(), AppEr
     let sources = sqlx::query_as::<_, IntakeSource>(
         "SELECT id, name, provider, enabled, config, target_repo, target_base_branch, \
          label_filter, prompt_template, run_as_user, poll_interval_secs, \
-         max_concurrent_tasks, max_tasks_per_poll, auto_create_pr, skip_followup, \
+         max_concurrent_tasks, max_tasks_per_poll, auto_create_pr, \
          created_by, TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at \
          FROM intake_sources WHERE enabled = true",

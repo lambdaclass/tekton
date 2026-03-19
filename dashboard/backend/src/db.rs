@@ -307,7 +307,6 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
             max_concurrent_tasks INTEGER NOT NULL DEFAULT 3,
             max_tasks_per_poll INTEGER NOT NULL DEFAULT 5,
             auto_create_pr BOOLEAN NOT NULL DEFAULT false,
-            skip_followup BOOLEAN NOT NULL DEFAULT true,
             created_by TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

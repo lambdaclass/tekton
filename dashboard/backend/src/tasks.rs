@@ -313,7 +313,6 @@ pub(crate) struct SpawnTaskParams {
     pub created_by: String,
     pub source_type: Option<String>,
     pub intake_issue_id: Option<i64>,
-    pub skip_followup: bool,
 }
 
 /// Internal task spawning for both HTTP handler and intake daemon.
@@ -331,7 +330,6 @@ pub(crate) async fn spawn_task_internal(
         created_by,
         source_type,
         intake_issue_id,
-        skip_followup,
     } = params;
     let id = Uuid::new_v4().to_string();
     let short_id = id[..6].to_string();
@@ -410,7 +408,6 @@ pub(crate) async fn spawn_task_internal(
             None,
             &created_by,
             tx.clone(),
-            skip_followup,
         )
         .await;
 
@@ -579,7 +576,6 @@ pub async fn create_task(
             custom_branch,
             &created_by,
             tx.clone(),
-            false,
         )
         .await;
 
@@ -617,7 +613,6 @@ async fn run_task_pipeline(
     custom_branch_name: Option<String>,
     created_by: &str,
     tx: broadcast::Sender<String>,
-    skip_followup: bool,
 ) -> Result<(), AppError> {
     let &PipelineCtx {
         config,
@@ -936,28 +931,17 @@ async fn run_task_pipeline(
     }
 
     // Step 4: Follow-up loop
-    if !skip_followup {
-        follow_up_loop(
-            ctx,
-            &agent_name,
-            &branch_name,
-            &mut branch_pushed,
-            &mut preview_created,
-            created_by,
-            &tx,
-            0,
-        )
-        .await?;
-    } else {
-        // For intake tasks: mark as completed immediately
-        update_task_status(db, task_id, "completed", None).await?;
-        log_and_send(
-            db,
-            task_id,
-            &tx,
-            "[STATUS] Task auto-completed (intake mode)",
-        );
-    }
+    follow_up_loop(
+        ctx,
+        &agent_name,
+        &branch_name,
+        &mut branch_pushed,
+        &mut preview_created,
+        created_by,
+        &tx,
+        0,
+    )
+    .await?;
 
     // Step 5: Destroy agent container
     log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");

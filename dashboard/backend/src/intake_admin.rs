@@ -12,7 +12,7 @@ use crate::secrets;
 const SOURCE_COLUMNS: &str = "id, name, provider, enabled, config, target_repo, \
      target_base_branch, label_filter, prompt_template, run_as_user, \
      poll_interval_secs, max_concurrent_tasks, max_tasks_per_poll, \
-     auto_create_pr, skip_followup, created_by, \
+     auto_create_pr, created_by, \
      TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
      TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at";
 
@@ -62,14 +62,13 @@ pub async fn create_source(
     let max_concurrent_tasks = req.max_concurrent_tasks.unwrap_or(3);
     let max_tasks_per_poll = req.max_tasks_per_poll.unwrap_or(5);
     let auto_create_pr = req.auto_create_pr.unwrap_or(false);
-    let skip_followup = req.skip_followup.unwrap_or(true);
 
     let source = sqlx::query_as::<_, IntakeSource>(&format!(
         "INSERT INTO intake_sources \
          (name, provider, config, api_token_encrypted, target_repo, target_base_branch, \
           label_filter, prompt_template, run_as_user, poll_interval_secs, \
-          max_concurrent_tasks, max_tasks_per_poll, auto_create_pr, skip_followup, created_by) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
+          max_concurrent_tasks, max_tasks_per_poll, auto_create_pr, created_by) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
          RETURNING {SOURCE_COLUMNS}"
     ))
     .bind(&req.name)
@@ -85,7 +84,6 @@ pub async fn create_source(
     .bind(max_concurrent_tasks)
     .bind(max_tasks_per_poll)
     .bind(auto_create_pr)
-    .bind(skip_followup)
     .bind(&admin.0.sub)
     .fetch_one(&state.db)
     .await?;
@@ -165,11 +163,6 @@ pub async fn update_source(
         sets.push(format!("auto_create_pr = ${param_idx}"));
         param_idx += 1;
     }
-    if req.skip_followup.is_some() {
-        sets.push(format!("skip_followup = ${param_idx}"));
-        param_idx += 1;
-    }
-
     if sets.is_empty() {
         return Err(AppError::BadRequest("No fields to update".into()));
     }
@@ -229,10 +222,6 @@ pub async fn update_source(
     if let Some(auto_create_pr) = req.auto_create_pr {
         query = query.bind(auto_create_pr);
     }
-    if let Some(skip_followup) = req.skip_followup {
-        query = query.bind(skip_followup);
-    }
-
     let source = query.fetch_optional(&state.db).await?;
 
     match source {

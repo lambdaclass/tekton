@@ -339,7 +339,6 @@ pub struct IntakeSource {
     pub max_concurrent_tasks: i32,
     pub max_tasks_per_poll: i32,
     pub auto_create_pr: bool,
-    pub skip_followup: bool,
     pub created_by: String,
     pub created_at: String,
     pub updated_at: String,
@@ -360,7 +359,6 @@ pub struct CreateIntakeSourceRequest {
     pub max_concurrent_tasks: Option<i32>,
     pub max_tasks_per_poll: Option<i32>,
     pub auto_create_pr: Option<bool>,
-    pub skip_followup: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -378,7 +376,6 @@ pub struct UpdateIntakeSourceRequest {
     pub max_concurrent_tasks: Option<i32>,
     pub max_tasks_per_poll: Option<i32>,
     pub auto_create_pr: Option<bool>,
-    pub skip_followup: Option<bool>,
 }
 
 // ── Intake Issues ──
