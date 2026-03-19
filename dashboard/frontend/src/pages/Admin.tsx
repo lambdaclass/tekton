@@ -40,7 +40,8 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
-import { Users, KeyRound, Shield, Building, Trash2, Plus, X, Settings, Zap, Eye, ScrollText, FlaskConical, Pencil } from 'lucide-react';
+import { Users, KeyRound, Shield, Building, Trash2, Plus, X, Settings, Zap, Eye, ScrollText, FlaskConical, Pencil, Info } from 'lucide-react';
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import { Navigate } from 'react-router-dom';
 
 const ROLES = ['admin', 'member', 'viewer'] as const;
@@ -1534,7 +1535,25 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="intake-prompt">Prompt Template (optional)</Label>
+                <div className="flex items-center gap-1.5">
+                  <Label htmlFor="intake-prompt">Prompt Template (optional)</Label>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Info className="h-4 w-4 text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs text-left">
+                      <p className="font-medium mb-1">Available placeholders:</p>
+                      <ul className="space-y-0.5">
+                        <li><code className="text-[10px]">{'{{number}}'}</code> — issue number/ID</li>
+                        <li><code className="text-[10px]">{'{{title}}'}</code> — issue title</li>
+                        <li><code className="text-[10px]">{'{{body}}'}</code> — issue body</li>
+                        <li><code className="text-[10px]">{'{{url}}'}</code> — issue URL</li>
+                        <li><code className="text-[10px]">{'{{labels}}'}</code> — comma-separated labels</li>
+                        <li><code className="text-[10px]">{'{{repo}}'}</code> — target repository (owner/repo)</li>
+                      </ul>
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
                 <Textarea
                   id="intake-prompt"
                   placeholder="Custom prompt template for created tasks..."
@@ -1686,7 +1705,25 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="edit-intake-prompt">Prompt Template (optional)</Label>
+                <div className="flex items-center gap-1.5">
+                  <Label htmlFor="edit-intake-prompt">Prompt Template (optional)</Label>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Info className="h-4 w-4 text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs text-left">
+                      <p className="font-medium mb-1">Available placeholders:</p>
+                      <ul className="space-y-0.5">
+                        <li><code className="text-[10px]">{'{{number}}'}</code> — issue number/ID</li>
+                        <li><code className="text-[10px]">{'{{title}}'}</code> — issue title</li>
+                        <li><code className="text-[10px]">{'{{body}}'}</code> — issue body</li>
+                        <li><code className="text-[10px]">{'{{url}}'}</code> — issue URL</li>
+                        <li><code className="text-[10px]">{'{{labels}}'}</code> — comma-separated labels</li>
+                        <li><code className="text-[10px]">{'{{repo}}'}</code> — target repository (owner/repo)</li>
+                      </ul>
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
                 <Textarea
                   id="edit-intake-prompt"
                   placeholder="Custom prompt template for created tasks..."
