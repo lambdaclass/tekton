@@ -1303,7 +1303,17 @@ function IntakeSourceDialog({
             </Select>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="intake-token">API Token</Label>
+            <div className="flex items-center gap-1.5">
+              <Label htmlFor="intake-token">API Token</Label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info className="h-4 w-4 text-muted-foreground cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent side="right" className="max-w-xs text-left">
+                  For GitHub, use a Personal Access Token (PAT) with <strong>Issues</strong> read/write access to the target repository.
+                </TooltipContent>
+              </Tooltip>
+            </div>
             <Input
               id="intake-token"
               type="password"
@@ -1403,7 +1413,7 @@ function IntakeSourceDialog({
           </div>
           <div className="space-y-2">
             <div className="flex items-center gap-1.5">
-              <Label htmlFor="intake-prompt">Prompt Template (optional)</Label>
+              <Label htmlFor="intake-prompt">Prompt Template (override)</Label>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Info className="h-4 w-4 text-muted-foreground cursor-help" />
