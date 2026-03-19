@@ -1358,7 +1358,7 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
             <Zap className="size-5" />
             Intake Sources
           </CardTitle>
-          <Button size="sm" onClick={() => setShowAdd(true)}>
+          <Button size="sm" onClick={() => { setNewSource({ ...INITIAL_INTAKE_FORM, run_as_user: me?.login ?? '' }); setShowAdd(true); }}>
             <Plus className="size-4 mr-1" />
             Add Source
           </Button>
@@ -1521,7 +1521,7 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
                 </div>
                 <Input
                   id="intake-user"
-                  placeholder={me?.login ?? 'Tekton user login'}
+                  placeholder="username"
                   value={newSource.run_as_user}
                   onChange={(e) => setNewSource((s) => ({ ...s, run_as_user: e.target.value }))}
                   required
@@ -1712,7 +1712,7 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
                 </div>
                 <Input
                   id="edit-intake-user"
-                  placeholder={me?.login ?? 'Tekton user login'}
+                  placeholder="username"
                   value={editForm.run_as_user}
                   onChange={(e) => setEditForm((s) => ({ ...s, run_as_user: e.target.value }))}
                   required
