@@ -12,7 +12,7 @@ PREVIEW_DIR="/var/lib/preview-deploys"
 CADDY_DIR="/etc/caddy/previews"
 FLAKE_DIR="/etc/nixos"
 SECRETS_FILE="/var/secrets/preview.env"
-SUBNET="10.100.0"
+SUBNET_PREFIX="10.100"
 CONFIG_CACHE_DIR="$PREVIEW_DIR/.config-cache"
 CLOSURE_CACHE_DIR="$PREVIEW_DIR/.closure-cache"
 
@@ -51,28 +51,55 @@ ensure_dirs() {
 }
 
 # -- IP allocation (shared with agents) --------------------------------------
+# Slots are recycled: we scan tracking files to find used slots, then pick
+# the lowest available one.  Uses a /16 subnet (10.100.0.0–10.100.255.255).
 
-next_slot() {
-    local slot_file="$AGENT_DIR/.next_slot"
-    if [[ -f "$slot_file" ]]; then
-        cat "$slot_file"
-    else
-        echo 1
-    fi
+MAX_SLOT=32512
+
+used_slots() {
+    local dir file slot
+    for dir in "$AGENT_DIR" "$PREVIEW_DIR"; do
+        [[ -d "$dir" ]] || continue
+        for file in "$dir"/*; do
+            [[ -f "$file" ]] || continue
+            local name
+            name=$(basename "$file")
+            [[ "$name" == .* ]] && continue
+            [[ "$name" == *.type ]] && continue
+            [[ "$name" == *.meta ]] && continue
+            [[ "$name" == *.sha ]] && continue
+            slot=$(awk '{print $1}' "$file")
+            [[ "$slot" =~ ^[0-9]+$ ]] && echo "$slot"
+        done
+    done
 }
 
-bump_slot() {
-    local slot_file="$AGENT_DIR/.next_slot"
-    local current
-    current=$(next_slot)
-    echo $(( current + 1 )) > "$slot_file"
+next_slot() {
+    local -A in_use
+    local s
+    while read -r s; do
+        in_use[$s]=1
+    done < <(used_slots)
+
+    local slot
+    for (( slot=1; slot<=MAX_SLOT; slot++ )); do
+        if [[ -z "${in_use[$slot]:-}" ]]; then
+            echo "$slot"
+            return
+        fi
+    done
+    fatal "No free IP slots available (all $MAX_SLOT slots in use)."
 }
 
 slot_to_ips() {
     local slot="$1"
-    local host_last=$(( slot * 2 ))
-    local local_last=$(( slot * 2 + 1 ))
-    echo "${SUBNET}.${host_last}" "${SUBNET}.${local_last}"
+    local host_flat=$(( slot * 2 ))
+    local local_flat=$(( slot * 2 + 1 ))
+    local host_third=$(( host_flat / 256 ))
+    local host_fourth=$(( host_flat % 256 ))
+    local local_third=$(( local_flat / 256 ))
+    local local_fourth=$(( local_flat % 256 ))
+    echo "${SUBNET_PREFIX}.${host_third}.${host_fourth}" "${SUBNET_PREFIX}.${local_third}.${local_fourth}"
 }
 
 # -- PostgreSQL helpers -------------------------------------------------------
@@ -593,8 +620,7 @@ cmd_create() {
         --host-address "$host_ip" \
         --local-address "$local_ip"
 
-    # Claim the IP slot immediately so no concurrent create can reuse it
-    bump_slot
+    # The slot is claimed by the tracking file written below (PREVIEW_DIR/$slug)
 
     # Write container environment files
     write_env_files "$slug" "$repo" "$branch" "$domain" "$host_ip" "$db_mode" "$db_pass" "$meta_file" "$github_token"
