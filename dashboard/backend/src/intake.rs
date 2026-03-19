@@ -162,6 +162,7 @@ pub async fn start_intake_daemon(config: Arc<Config>, db: PgPool, task_channels:
 /// Sync intake issue statuses based on their linked task statuses.
 /// - `task_created` → `review` when the task reaches `awaiting_followup` or `completed`
 /// - `task_created` → `failed` when the task fails
+/// - `review` → `task_created` when the task goes back to `running_claude` (user sent follow-up)
 /// - `review` → `done` when the user completes the task from the task UI
 async fn sync_intake_statuses(db: &PgPool) -> Result<(), AppError> {
     let moved_to_review = sqlx::query(
@@ -176,6 +177,23 @@ async fn sync_intake_statuses(db: &PgPool) -> Result<(), AppError> {
         tracing::info!(
             "Intake: moved {} issue(s) to review",
             moved_to_review.rows_affected()
+        );
+    }
+
+    // When a user sends a follow-up, the task goes back to running_claude;
+    // move the intake issue back to task_created (In Progress)
+    let moved_back = sqlx::query(
+        "UPDATE intake_issues SET status = 'task_created', updated_at = NOW() \
+         WHERE status = 'review' \
+         AND task_id IN (SELECT id FROM tasks WHERE status = 'running_claude')",
+    )
+    .execute(db)
+    .await?;
+
+    if moved_back.rows_affected() > 0 {
+        tracing::info!(
+            "Intake: moved {} issue(s) back to task_created (follow-up in progress)",
+            moved_back.rows_affected()
         );
     }
 
