@@ -464,7 +464,7 @@ function BoardColumn({ column, issues, onSelect }: BoardColumnProps) {
 
 export default function IntakeBoard() {
   const queryClient = useQueryClient();
-  const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMe });
+  const { data: me, isLoading: meLoading } = useQuery({ queryKey: ['me'], queryFn: getMe });
 
   const { data: issues, isLoading } = useQuery({
     queryKey: ['intake-issues-all'],
@@ -572,7 +572,11 @@ export default function IntakeBoard() {
     ).length;
   }, [issues]);
 
-  if (me && me.role !== 'admin') {
+  if (meLoading) {
+    return null;
+  }
+
+  if (me?.role !== 'admin') {
     return <Navigate to="/" replace />;
   }
 

@@ -45,6 +45,13 @@ export const TEST_IDS = {
       doneDeps: 'Upgrade dependencies to latest',
       failedCi: 'Fix flaky CI test',
     },
+    sync: {
+      taskSync1: 'task-sync-1',
+      taskSync2: 'task-sync-2',
+      issueSync1Title: 'Sync test issue 1',
+      issueSync2Title: 'Sync test issue 2',
+      issueSync3Title: 'Sync test issue 3',
+    },
   },
 } as const;
 

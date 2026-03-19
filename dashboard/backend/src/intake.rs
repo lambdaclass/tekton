@@ -164,7 +164,7 @@ pub async fn start_intake_daemon(config: Arc<Config>, db: PgPool, task_channels:
 /// - `task_created` → `failed` when the task fails
 /// - `review` → `task_created` when the task goes back to `running_claude` (user sent follow-up)
 /// - `review` → `done` when the user completes the task from the task UI
-async fn sync_intake_statuses(db: &PgPool) -> Result<(), AppError> {
+pub async fn sync_intake_statuses(db: &PgPool) -> Result<(), AppError> {
     let moved_to_review = sqlx::query(
         "UPDATE intake_issues SET status = 'review', updated_at = NOW() \
          WHERE status = 'task_created' \

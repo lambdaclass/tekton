@@ -467,6 +467,25 @@ VALUES
 -- Link tasks to intake issues
 -- ============================================================
 
+-- ============================================================
+-- Seed: Sync-test tasks and intake issues (dedicated for intake-sync.spec.ts)
+-- ============================================================
+
+INSERT INTO tasks (id, prompt, repo, base_branch, agent_name, status, created_by, name, created_at, updated_at)
+VALUES
+    ('task-sync-1', 'Sync test task 1', 'testorg/testrepo', 'main', 'claude', 'running_claude', 'testadmin', 'Sync task 1', NOW() - INTERVAL '1 hour', NOW() - INTERVAL '30 minutes'),
+    ('task-sync-2', 'Sync test task 2', 'testorg/testrepo', 'main', 'claude', 'running_claude', 'testadmin', 'Sync task 2', NOW() - INTERVAL '1 hour', NOW() - INTERVAL '30 minutes');
+
+INSERT INTO intake_issues (source_id, external_id, external_url, external_title, status, task_id, created_at, updated_at)
+VALUES
+    (1, 'SYNC-1', 'https://github.com/testorg/testrepo/issues/901', 'Sync test issue 1', 'task_created', 'task-sync-1', NOW() - INTERVAL '1 hour', NOW() - INTERVAL '30 minutes'),
+    (1, 'SYNC-2', 'https://github.com/testorg/testrepo/issues/902', 'Sync test issue 2', 'review',       'task-sync-2', NOW() - INTERVAL '1 hour', NOW() - INTERVAL '30 minutes'),
+    (1, 'SYNC-3', 'https://github.com/testorg/testrepo/issues/903', 'Sync test issue 3', 'backlog',      NULL,          NOW() - INTERVAL '1 hour', NOW() - INTERVAL '30 minutes');
+
+-- ============================================================
+-- Link tasks to intake issues
+-- ============================================================
+
 UPDATE tasks SET source_type = 'intake_github', intake_issue_id = 3 WHERE id = 'task-running-1';
 UPDATE tasks SET source_type = 'intake_github', intake_issue_id = 4 WHERE id = 'task-completed-1';
 UPDATE tasks SET source_type = 'intake_github', intake_issue_id = 5 WHERE id = 'task-completed-2';

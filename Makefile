@@ -104,6 +104,7 @@ e2e:
 	fi
 	@docker exec $(PG_CONTAINER) psql -U tekton -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = 'tekton_test'" | grep -q 1 \
 		|| docker exec $(PG_CONTAINER) psql -U tekton -d postgres -c "CREATE DATABASE tekton_test;"
+	@cd dashboard/frontend && npm run build
 	cd dashboard/frontend && DATABASE_URL="postgres://tekton:tekton@localhost:5432/tekton_test" npm run test:e2e
 
 # ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ test.describe('Intake Board', () => {
     await page.goto('/intake');
 
     await expect(page.getByRole('heading', { name: 'Intake Board' })).toBeVisible();
-    await expect(page.getByText('8 issues across all sources')).toBeVisible();
+    await expect(page.getByText('11 issues across all sources')).toBeVisible();
   });
 
   test('renders all 6 columns', async ({ adminPage: page }) => {
