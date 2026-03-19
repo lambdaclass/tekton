@@ -313,6 +313,16 @@ Both are uploaded with **30-day retention**:
 ### Running locally
 
 ```bash
+# Run everything in one command (build, test, report, threshold check)
+make e2e.coverage
+
+# Open the HTML report to see uncovered lines per file
+open dashboard/frontend/coverage/index.html
+```
+
+Or step by step:
+
+```bash
 cd dashboard/frontend
 
 # 1. Build with instrumentation

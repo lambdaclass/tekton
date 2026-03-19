@@ -1,4 +1,4 @@
-.PHONY: deps run run-backend run-frontend e2e stop down clean help
+.PHONY: deps run run-backend run-frontend e2e e2e.coverage stop down clean help
 
 ENV_FILE := dashboard/backend/.env
 PG_CONTAINER := tekton-postgres
@@ -9,7 +9,8 @@ help:
 	@echo "  make run     — start backend + frontend (Ctrl-C to stop both)"
 	@echo "  make stop    — kill running dev servers (keeps database running)"
 	@echo "  make down    — stop everything: dev servers + database container"
-	@echo "  make e2e     — run E2E tests (creates tekton_test DB if needed)"
+	@echo "  make e2e      — run E2E tests (creates tekton_test DB if needed)"
+	@echo "  make e2e.coverage — run E2E tests with coverage report and threshold check"
 	@echo "  make clean   — stop everything and delete database data"
 
 # ---------------------------------------------------------------------------
@@ -106,6 +107,22 @@ e2e:
 		|| docker exec $(PG_CONTAINER) psql -U tekton -d postgres -c "CREATE DATABASE tekton_test;"
 	@cd dashboard/frontend && npm run build
 	cd dashboard/frontend && DATABASE_URL="postgres://tekton:tekton@localhost:5432/tekton_test" npm run test:e2e
+
+# ---------------------------------------------------------------------------
+# e2e.coverage: run E2E tests with instrumented build, report, and threshold check
+# ---------------------------------------------------------------------------
+
+e2e.coverage:
+	@if ! docker ps --format '{{.Names}}' | grep -qw $(PG_CONTAINER); then \
+		echo "Starting PostgreSQL container..."; \
+		docker start $(PG_CONTAINER) 2>/dev/null || { echo "ERROR: PostgreSQL container not found. Run 'make deps' first."; exit 1; }; \
+	fi
+	@docker exec $(PG_CONTAINER) psql -U tekton -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = 'tekton_test'" | grep -q 1 \
+		|| docker exec $(PG_CONTAINER) psql -U tekton -d postgres -c "CREATE DATABASE tekton_test;"
+	@cd dashboard/frontend && npm run build:coverage
+	cd dashboard/frontend && DATABASE_URL="postgres://tekton:tekton@localhost:5432/tekton_test" npm run test:e2e
+	@cd dashboard/frontend && npx nyc report --reporter=text-summary
+	@cd dashboard/frontend && npx nyc check-coverage
 
 # ---------------------------------------------------------------------------
 # stop / down / clean
