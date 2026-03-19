@@ -1248,6 +1248,208 @@ const INITIAL_INTAKE_FORM: IntakeFormState = {
   prompt_template: '',
 };
 
+function IntakeSourceDialog({
+  mode,
+  open,
+  onOpenChange,
+  form,
+  setForm,
+  onSubmit,
+  mutation,
+}: {
+  mode: 'create' | 'edit';
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  form: IntakeFormState;
+  setForm: React.Dispatch<React.SetStateAction<IntakeFormState>>;
+  onSubmit: (e: React.FormEvent) => void;
+  mutation: { isPending: boolean; isError: boolean; error: Error | null };
+}) {
+  const isCreate = mode === 'create';
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{isCreate ? 'Add Intake Source' : 'Edit Intake Source'}</DialogTitle>
+          <DialogDescription>
+            {isCreate
+              ? 'Configure an external issue tracker to automatically poll and dispatch tasks.'
+              : 'Update the configuration for this intake source.'}
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="intake-name">Name</Label>
+            <Input
+              id="intake-name"
+              placeholder="My GitHub Issues"
+              value={form.name}
+              onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))}
+              required
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="intake-provider">Provider</Label>
+            <Select
+              value={form.provider}
+              onValueChange={(value) => setForm((s) => ({ ...s, provider: value }))}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="github">GitHub</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="intake-token">API Token</Label>
+            <Input
+              id="intake-token"
+              type="password"
+              placeholder={isCreate ? 'Token for the issue tracker' : 'Leave blank to keep current token'}
+              value={form.api_token}
+              onChange={(e) => setForm((s) => ({ ...s, api_token: e.target.value }))}
+              required={isCreate}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="intake-repo">Target Repo</Label>
+            <Input
+              id="intake-repo"
+              placeholder="owner/repo"
+              value={form.target_repo}
+              onChange={(e) => setForm((s) => ({ ...s, target_repo: e.target.value }))}
+              required
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="intake-branch">Base Branch</Label>
+            <Input
+              id="intake-branch"
+              placeholder="main"
+              value={form.target_base_branch}
+              onChange={(e) => setForm((s) => ({ ...s, target_base_branch: e.target.value }))}
+            />
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center gap-1.5">
+              <Label htmlFor="intake-labels">Label Filter (comma-separated)</Label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info className="h-4 w-4 text-muted-foreground cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent side="right" className="max-w-xs text-left">
+                  Only issues that have <strong>all</strong> of the specified labels will be picked up. Leave empty to match all issues.
+                </TooltipContent>
+              </Tooltip>
+            </div>
+            <Input
+              id="intake-labels"
+              placeholder="agent, auto-fix"
+              value={form.label_filter}
+              onChange={(e) => setForm((s) => ({ ...s, label_filter: e.target.value }))}
+            />
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center gap-1.5">
+              <Label htmlFor="intake-user">Run As User</Label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info className="h-4 w-4 text-muted-foreground cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent side="right" className="max-w-xs text-left">
+                  The Tekton user whose permissions and identity will be used when creating and running tasks from this intake source.
+                </TooltipContent>
+              </Tooltip>
+            </div>
+            <Input
+              id="intake-user"
+              placeholder="username"
+              value={form.run_as_user}
+              onChange={(e) => setForm((s) => ({ ...s, run_as_user: e.target.value }))}
+              required
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="intake-interval">Poll Interval (seconds)</Label>
+            <Input
+              id="intake-interval"
+              type="number"
+              min={30}
+              value={form.poll_interval_secs}
+              onChange={(e) => setForm((s) => ({ ...s, poll_interval_secs: Number(e.target.value) }))}
+            />
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center gap-1.5">
+              <Label htmlFor="intake-max-concurrent">Max Concurrent Tasks</Label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info className="h-4 w-4 text-muted-foreground cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent side="right" className="max-w-xs text-left">
+                  Maximum number of tasks from this source that can be running or in review at the same time. New pending issues will wait until a slot opens up.
+                </TooltipContent>
+              </Tooltip>
+            </div>
+            <Input
+              id="intake-max-concurrent"
+              type="number"
+              min={1}
+              value={form.max_concurrent_tasks}
+              onChange={(e) => setForm((s) => ({ ...s, max_concurrent_tasks: Number(e.target.value) }))}
+            />
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center gap-1.5">
+              <Label htmlFor="intake-prompt">Prompt Template (optional)</Label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info className="h-4 w-4 text-muted-foreground cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent side="right" className="max-w-xs text-left">
+                  <p className="font-medium mb-1">Available placeholders:</p>
+                  <ul className="space-y-0.5">
+                    <li><code className="text-[10px]">{'{{number}}'}</code> — issue number/ID</li>
+                    <li><code className="text-[10px]">{'{{title}}'}</code> — issue title</li>
+                    <li><code className="text-[10px]">{'{{body}}'}</code> — issue body</li>
+                    <li><code className="text-[10px]">{'{{url}}'}</code> — issue URL</li>
+                    <li><code className="text-[10px]">{'{{labels}}'}</code> — comma-separated labels</li>
+                    <li><code className="text-[10px]">{'{{repo}}'}</code> — target repository (owner/repo)</li>
+                  </ul>
+                </TooltipContent>
+              </Tooltip>
+            </div>
+            <Textarea
+              id="intake-prompt"
+              placeholder="Custom prompt template for created tasks..."
+              value={form.prompt_template}
+              onChange={(e) => setForm((s) => ({ ...s, prompt_template: e.target.value }))}
+              rows={3}
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={mutation.isPending}>
+              {mutation.isPending
+                ? (isCreate ? 'Creating...' : 'Saving...')
+                : (isCreate ? 'Create Source' : 'Save Changes')}
+            </Button>
+          </DialogFooter>
+          {mutation.isError && (
+            <p className="text-destructive text-sm">
+              {(mutation.error as Error).message}
+            </p>
+          )}
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof useQueryClient> }) {
   const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMe });
   const [showAdd, setShowAdd] = useState(false);
@@ -1435,182 +1637,15 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
         )}
 
         {/* Add Source Dialog */}
-        <Dialog open={showAdd} onOpenChange={setShowAdd}>
-          <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
-            <DialogHeader>
-              <DialogTitle>Add Intake Source</DialogTitle>
-              <DialogDescription>
-                Configure an external issue tracker to automatically poll and dispatch tasks.
-              </DialogDescription>
-            </DialogHeader>
-            <form onSubmit={handleCreate} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="intake-name">Name</Label>
-                <Input
-                  id="intake-name"
-                  placeholder="My GitHub Issues"
-                  value={newSource.name}
-                  onChange={(e) => setNewSource((s) => ({ ...s, name: e.target.value }))}
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="intake-provider">Provider</Label>
-                <Select
-                  value={newSource.provider}
-                  onValueChange={(value) => setNewSource((s) => ({ ...s, provider: value }))}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="github">GitHub</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="intake-token">API Token</Label>
-                <Input
-                  id="intake-token"
-                  type="password"
-                  placeholder="Token for the issue tracker"
-                  value={newSource.api_token}
-                  onChange={(e) => setNewSource((s) => ({ ...s, api_token: e.target.value }))}
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="intake-repo">Target Repo</Label>
-                <Input
-                  id="intake-repo"
-                  placeholder="owner/repo"
-                  value={newSource.target_repo}
-                  onChange={(e) => setNewSource((s) => ({ ...s, target_repo: e.target.value }))}
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="intake-branch">Base Branch</Label>
-                <Input
-                  id="intake-branch"
-                  placeholder="main"
-                  value={newSource.target_base_branch}
-                  onChange={(e) => setNewSource((s) => ({ ...s, target_base_branch: e.target.value }))}
-                />
-              </div>
-              <div className="space-y-2">
-                <div className="flex items-center gap-1.5">
-                  <Label htmlFor="intake-labels">Label Filter (comma-separated)</Label>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Info className="h-4 w-4 text-muted-foreground cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent side="right" className="max-w-xs text-left">
-                      Only issues that have <strong>all</strong> of the specified labels will be picked up. Leave empty to match all issues.
-                    </TooltipContent>
-                  </Tooltip>
-                </div>
-                <Input
-                  id="intake-labels"
-                  placeholder="agent, auto-fix"
-                  value={newSource.label_filter}
-                  onChange={(e) => setNewSource((s) => ({ ...s, label_filter: e.target.value }))}
-                />
-              </div>
-              <div className="space-y-2">
-                <div className="flex items-center gap-1.5">
-                  <Label htmlFor="intake-user">Run As User</Label>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Info className="h-4 w-4 text-muted-foreground cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent side="right" className="max-w-xs text-left">
-                      The Tekton user whose permissions and identity will be used when creating and running tasks from this intake source.
-                    </TooltipContent>
-                  </Tooltip>
-                </div>
-                <Input
-                  id="intake-user"
-                  placeholder="username"
-                  value={newSource.run_as_user}
-                  onChange={(e) => setNewSource((s) => ({ ...s, run_as_user: e.target.value }))}
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="intake-interval">Poll Interval (seconds)</Label>
-                <Input
-                  id="intake-interval"
-                  type="number"
-                  min={30}
-                  value={newSource.poll_interval_secs}
-                  onChange={(e) => setNewSource((s) => ({ ...s, poll_interval_secs: Number(e.target.value) }))}
-                />
-              </div>
-              <div className="space-y-2">
-                <div className="flex items-center gap-1.5">
-                  <Label htmlFor="intake-max-concurrent">Max Concurrent Tasks</Label>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Info className="h-4 w-4 text-muted-foreground cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent side="right" className="max-w-xs text-left">
-                      Maximum number of tasks from this source that can be running or in review at the same time. New pending issues will wait until a slot opens up.
-                    </TooltipContent>
-                  </Tooltip>
-                </div>
-                <Input
-                  id="intake-max-concurrent"
-                  type="number"
-                  min={1}
-                  value={newSource.max_concurrent_tasks}
-                  onChange={(e) => setNewSource((s) => ({ ...s, max_concurrent_tasks: Number(e.target.value) }))}
-                />
-              </div>
-              <div className="space-y-2">
-                <div className="flex items-center gap-1.5">
-                  <Label htmlFor="intake-prompt">Prompt Template (optional)</Label>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Info className="h-4 w-4 text-muted-foreground cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent side="right" className="max-w-xs text-left">
-                      <p className="font-medium mb-1">Available placeholders:</p>
-                      <ul className="space-y-0.5">
-                        <li><code className="text-[10px]">{'{{number}}'}</code> — issue number/ID</li>
-                        <li><code className="text-[10px]">{'{{title}}'}</code> — issue title</li>
-                        <li><code className="text-[10px]">{'{{body}}'}</code> — issue body</li>
-                        <li><code className="text-[10px]">{'{{url}}'}</code> — issue URL</li>
-                        <li><code className="text-[10px]">{'{{labels}}'}</code> — comma-separated labels</li>
-                        <li><code className="text-[10px]">{'{{repo}}'}</code> — target repository (owner/repo)</li>
-                      </ul>
-                    </TooltipContent>
-                  </Tooltip>
-                </div>
-                <Textarea
-                  id="intake-prompt"
-                  placeholder="Custom prompt template for created tasks..."
-                  value={newSource.prompt_template}
-                  onChange={(e) => setNewSource((s) => ({ ...s, prompt_template: e.target.value }))}
-                  rows={3}
-                />
-              </div>
-              <DialogFooter>
-                <Button type="button" variant="outline" onClick={() => setShowAdd(false)}>
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={createMutation.isPending}>
-                  {createMutation.isPending ? 'Creating...' : 'Create Source'}
-                </Button>
-              </DialogFooter>
-              {createMutation.isError && (
-                <p className="text-destructive text-sm">
-                  {(createMutation.error as Error).message}
-                </p>
-              )}
-            </form>
-          </DialogContent>
-        </Dialog>
+        <IntakeSourceDialog
+          mode="create"
+          open={showAdd}
+          onOpenChange={setShowAdd}
+          form={newSource}
+          setForm={setNewSource}
+          onSubmit={handleCreate}
+          mutation={createMutation}
+        />
 
         {/* Delete Confirmation Dialog */}
         <Dialog open={deleteId !== null} onOpenChange={(open) => { if (!open) setDeleteId(null); }}>
@@ -1637,181 +1672,15 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
         </Dialog>
 
         {/* Edit Source Dialog */}
-        <Dialog open={editSource !== null} onOpenChange={(open) => { if (!open) setEditSource(null); }}>
-          <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
-            <DialogHeader>
-              <DialogTitle>Edit Intake Source</DialogTitle>
-              <DialogDescription>
-                Update the configuration for this intake source.
-              </DialogDescription>
-            </DialogHeader>
-            <form onSubmit={handleUpdate} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="edit-intake-name">Name</Label>
-                <Input
-                  id="edit-intake-name"
-                  placeholder="My GitHub Issues"
-                  value={editForm.name}
-                  onChange={(e) => setEditForm((s) => ({ ...s, name: e.target.value }))}
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="edit-intake-provider">Provider</Label>
-                <Select
-                  value={editForm.provider}
-                  onValueChange={(value) => setEditForm((s) => ({ ...s, provider: value }))}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="github">GitHub</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="edit-intake-token">API Token</Label>
-                <Input
-                  id="edit-intake-token"
-                  type="password"
-                  placeholder="Leave blank to keep current token"
-                  value={editForm.api_token}
-                  onChange={(e) => setEditForm((s) => ({ ...s, api_token: e.target.value }))}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="edit-intake-repo">Target Repo</Label>
-                <Input
-                  id="edit-intake-repo"
-                  placeholder="owner/repo"
-                  value={editForm.target_repo}
-                  onChange={(e) => setEditForm((s) => ({ ...s, target_repo: e.target.value }))}
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="edit-intake-branch">Base Branch</Label>
-                <Input
-                  id="edit-intake-branch"
-                  placeholder="main"
-                  value={editForm.target_base_branch}
-                  onChange={(e) => setEditForm((s) => ({ ...s, target_base_branch: e.target.value }))}
-                />
-              </div>
-              <div className="space-y-2">
-                <div className="flex items-center gap-1.5">
-                  <Label htmlFor="edit-intake-labels">Label Filter (comma-separated)</Label>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Info className="h-4 w-4 text-muted-foreground cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent side="right" className="max-w-xs text-left">
-                      Only issues that have <strong>all</strong> of the specified labels will be picked up. Leave empty to match all issues.
-                    </TooltipContent>
-                  </Tooltip>
-                </div>
-                <Input
-                  id="edit-intake-labels"
-                  placeholder="agent, auto-fix"
-                  value={editForm.label_filter}
-                  onChange={(e) => setEditForm((s) => ({ ...s, label_filter: e.target.value }))}
-                />
-              </div>
-              <div className="space-y-2">
-                <div className="flex items-center gap-1.5">
-                  <Label htmlFor="edit-intake-user">Run As User</Label>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Info className="h-4 w-4 text-muted-foreground cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent side="right" className="max-w-xs text-left">
-                      The Tekton user whose permissions and identity will be used when creating and running tasks from this intake source.
-                    </TooltipContent>
-                  </Tooltip>
-                </div>
-                <Input
-                  id="edit-intake-user"
-                  placeholder="username"
-                  value={editForm.run_as_user}
-                  onChange={(e) => setEditForm((s) => ({ ...s, run_as_user: e.target.value }))}
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="edit-intake-interval">Poll Interval (seconds)</Label>
-                <Input
-                  id="edit-intake-interval"
-                  type="number"
-                  min={30}
-                  value={editForm.poll_interval_secs}
-                  onChange={(e) => setEditForm((s) => ({ ...s, poll_interval_secs: Number(e.target.value) }))}
-                />
-              </div>
-              <div className="space-y-2">
-                <div className="flex items-center gap-1.5">
-                  <Label htmlFor="edit-intake-max-concurrent">Max Concurrent Tasks</Label>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Info className="h-4 w-4 text-muted-foreground cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent side="right" className="max-w-xs text-left">
-                      Maximum number of tasks from this source that can be running or in review at the same time. New pending issues will wait until a slot opens up.
-                    </TooltipContent>
-                  </Tooltip>
-                </div>
-                <Input
-                  id="edit-intake-max-concurrent"
-                  type="number"
-                  min={1}
-                  value={editForm.max_concurrent_tasks}
-                  onChange={(e) => setEditForm((s) => ({ ...s, max_concurrent_tasks: Number(e.target.value) }))}
-                />
-              </div>
-              <div className="space-y-2">
-                <div className="flex items-center gap-1.5">
-                  <Label htmlFor="edit-intake-prompt">Prompt Template (optional)</Label>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Info className="h-4 w-4 text-muted-foreground cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent side="right" className="max-w-xs text-left">
-                      <p className="font-medium mb-1">Available placeholders:</p>
-                      <ul className="space-y-0.5">
-                        <li><code className="text-[10px]">{'{{number}}'}</code> — issue number/ID</li>
-                        <li><code className="text-[10px]">{'{{title}}'}</code> — issue title</li>
-                        <li><code className="text-[10px]">{'{{body}}'}</code> — issue body</li>
-                        <li><code className="text-[10px]">{'{{url}}'}</code> — issue URL</li>
-                        <li><code className="text-[10px]">{'{{labels}}'}</code> — comma-separated labels</li>
-                        <li><code className="text-[10px]">{'{{repo}}'}</code> — target repository (owner/repo)</li>
-                      </ul>
-                    </TooltipContent>
-                  </Tooltip>
-                </div>
-                <Textarea
-                  id="edit-intake-prompt"
-                  placeholder="Custom prompt template for created tasks..."
-                  value={editForm.prompt_template}
-                  onChange={(e) => setEditForm((s) => ({ ...s, prompt_template: e.target.value }))}
-                  rows={3}
-                />
-              </div>
-              <DialogFooter>
-                <Button type="button" variant="outline" onClick={() => setEditSource(null)}>
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={updateMutation.isPending}>
-                  {updateMutation.isPending ? 'Saving...' : 'Save Changes'}
-                </Button>
-              </DialogFooter>
-              {updateMutation.isError && (
-                <p className="text-destructive text-sm">
-                  {(updateMutation.error as Error).message}
-                </p>
-              )}
-            </form>
-          </DialogContent>
-        </Dialog>
+        <IntakeSourceDialog
+          mode="edit"
+          open={editSource !== null}
+          onOpenChange={(open) => { if (!open) setEditSource(null); }}
+          form={editForm}
+          setForm={setEditForm}
+          onSubmit={handleUpdate}
+          mutation={updateMutation}
+        />
 
         {/* Test Poll Dialog */}
         {testSourceId !== null && (
