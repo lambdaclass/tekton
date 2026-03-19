@@ -1525,7 +1525,17 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="intake-max-concurrent">Max Concurrent Tasks</Label>
+                <div className="flex items-center gap-1.5">
+                  <Label htmlFor="intake-max-concurrent">Max Concurrent Tasks</Label>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Info className="h-4 w-4 text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs text-left">
+                      Maximum number of tasks from this source that can be running or in review at the same time. New pending issues will wait until a slot opens up.
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
                 <Input
                   id="intake-max-concurrent"
                   type="number"
@@ -1695,7 +1705,17 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="edit-intake-max-concurrent">Max Concurrent Tasks</Label>
+                <div className="flex items-center gap-1.5">
+                  <Label htmlFor="edit-intake-max-concurrent">Max Concurrent Tasks</Label>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Info className="h-4 w-4 text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs text-left">
+                      Maximum number of tasks from this source that can be running or in review at the same time. New pending issues will wait until a slot opens up.
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
                 <Input
                   id="edit-intake-max-concurrent"
                   type="number"
