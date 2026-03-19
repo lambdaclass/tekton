@@ -1249,6 +1249,7 @@ const INITIAL_INTAKE_FORM: IntakeFormState = {
 };
 
 function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof useQueryClient> }) {
+  const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMe });
   const [showAdd, setShowAdd] = useState(false);
   const [editSource, setEditSource] = useState<IntakeSource | null>(null);
   const [editForm, setEditForm] = useState<IntakeFormState>({ ...INITIAL_INTAKE_FORM });
@@ -1507,10 +1508,20 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="intake-user">Run As User</Label>
+                <div className="flex items-center gap-1.5">
+                  <Label htmlFor="intake-user">Run As User</Label>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Info className="h-4 w-4 text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs text-left">
+                      The Tekton user whose permissions and identity will be used when creating and running tasks from this intake source.
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
                 <Input
                   id="intake-user"
-                  placeholder="Tekton user login"
+                  placeholder={me?.login ?? 'Tekton user login'}
                   value={newSource.run_as_user}
                   onChange={(e) => setNewSource((s) => ({ ...s, run_as_user: e.target.value }))}
                   required
@@ -1688,10 +1699,20 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="edit-intake-user">Run As User</Label>
+                <div className="flex items-center gap-1.5">
+                  <Label htmlFor="edit-intake-user">Run As User</Label>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Info className="h-4 w-4 text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs text-left">
+                      The Tekton user whose permissions and identity will be used when creating and running tasks from this intake source.
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
                 <Input
                   id="edit-intake-user"
-                  placeholder="Tekton user login"
+                  placeholder={me?.login ?? 'Tekton user login'}
                   value={editForm.run_as_user}
                   onChange={(e) => setEditForm((s) => ({ ...s, run_as_user: e.target.value }))}
                   required
