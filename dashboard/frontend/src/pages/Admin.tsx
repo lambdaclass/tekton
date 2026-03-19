@@ -1235,6 +1235,16 @@ interface IntakeFormState {
   prompt_template: string;
 }
 
+const DEFAULT_PROMPT_TEMPLATE = `Implement the following based on this issue:
+
+## {{title}}
+
+{{body}}
+
+Source: {{url}}
+
+Please implement the changes, write tests if appropriate, and ensure the code compiles.`;
+
 const INITIAL_INTAKE_FORM: IntakeFormState = {
   name: '',
   provider: 'github',
@@ -1245,7 +1255,7 @@ const INITIAL_INTAKE_FORM: IntakeFormState = {
   run_as_user: '',
   poll_interval_secs: 300,
   max_concurrent_tasks: 3,
-  prompt_template: '',
+  prompt_template: DEFAULT_PROMPT_TEMPLATE,
 };
 
 function IntakeSourceDialog({
@@ -1413,7 +1423,7 @@ function IntakeSourceDialog({
           </div>
           <div className="space-y-2">
             <div className="flex items-center gap-1.5">
-              <Label htmlFor="intake-prompt">Prompt Template (optional)</Label>
+              <Label htmlFor="intake-prompt">Prompt Template</Label>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Info className="h-4 w-4 text-muted-foreground cursor-help" />
@@ -1433,7 +1443,7 @@ function IntakeSourceDialog({
             </div>
             <Textarea
               id="intake-prompt"
-              placeholder={"Override the default template:\n\nImplement the following based on this issue:\n\n## {{title}}\n\n{{body}}\n\nSource: {{url}}\n\nPlease implement the changes, write tests if appropriate, and ensure the code compiles."}
+              placeholder=""
               value={form.prompt_template}
               onChange={(e) => setForm((s) => ({ ...s, prompt_template: e.target.value }))}
               rows={6}
@@ -1520,7 +1530,7 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
       run_as_user: s.run_as_user,
       poll_interval_secs: s.poll_interval_secs,
       max_concurrent_tasks: s.max_concurrent_tasks,
-      prompt_template: s.prompt_template ?? '',
+      prompt_template: s.prompt_template ?? DEFAULT_PROMPT_TEMPLATE,
     });
   };
 
@@ -1534,7 +1544,7 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
       target_repo: editForm.target_repo,
       target_base_branch: editForm.target_base_branch || 'main',
       label_filter: labels.length ? labels : [],
-      prompt_template: editForm.prompt_template || null,
+      prompt_template: (editForm.prompt_template && editForm.prompt_template !== DEFAULT_PROMPT_TEMPLATE) ? editForm.prompt_template : null,
       run_as_user: editForm.run_as_user,
       poll_interval_secs: editForm.poll_interval_secs,
       max_concurrent_tasks: editForm.max_concurrent_tasks,
@@ -1555,7 +1565,7 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
       target_repo: newSource.target_repo,
       target_base_branch: newSource.target_base_branch || 'main',
       label_filter: labels.length ? labels : undefined,
-      prompt_template: newSource.prompt_template || undefined,
+      prompt_template: (newSource.prompt_template && newSource.prompt_template !== DEFAULT_PROMPT_TEMPLATE) ? newSource.prompt_template : undefined,
       run_as_user: newSource.run_as_user,
       poll_interval_secs: newSource.poll_interval_secs,
       max_concurrent_tasks: newSource.max_concurrent_tasks,
