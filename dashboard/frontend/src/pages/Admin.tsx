@@ -1310,7 +1310,7 @@ function IntakeSourceDialog({
                   <Info className="h-4 w-4 text-muted-foreground cursor-help" />
                 </TooltipTrigger>
                 <TooltipContent side="right" className="max-w-xs text-left">
-                  For GitHub, use a Personal Access Token (PAT) with <strong>Issues</strong> read/write access to the target repository.
+                  For GitHub, use a Personal Access Token (PAT) with <strong>Issues</strong> read access to the target repository.
                 </TooltipContent>
               </Tooltip>
             </div>
@@ -1413,7 +1413,7 @@ function IntakeSourceDialog({
           </div>
           <div className="space-y-2">
             <div className="flex items-center gap-1.5">
-              <Label htmlFor="intake-prompt">Prompt Template (override)</Label>
+              <Label htmlFor="intake-prompt">Prompt Template (optional)</Label>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Info className="h-4 w-4 text-muted-foreground cursor-help" />
@@ -1433,10 +1433,10 @@ function IntakeSourceDialog({
             </div>
             <Textarea
               id="intake-prompt"
-              placeholder="Custom prompt template for created tasks..."
+              placeholder={"Override the default template:\n\nImplement the following based on this issue:\n\n## {{title}}\n\n{{body}}\n\nSource: {{url}}\n\nPlease implement the changes, write tests if appropriate, and ensure the code compiles."}
               value={form.prompt_template}
               onChange={(e) => setForm((s) => ({ ...s, prompt_template: e.target.value }))}
-              rows={3}
+              rows={6}
             />
           </div>
           <DialogFooter>
