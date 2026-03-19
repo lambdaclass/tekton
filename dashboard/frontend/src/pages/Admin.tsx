@@ -42,6 +42,7 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import { Users, KeyRound, Shield, Building, Trash2, Plus, X, Settings, Zap, Eye, ScrollText, FlaskConical, Pencil, Info } from 'lucide-react';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Navigate } from 'react-router-dom';
 
 const ROLES = ['admin', 'member', 'viewer'] as const;
@@ -1454,16 +1455,17 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
               </div>
               <div className="space-y-2">
                 <Label htmlFor="intake-provider">Provider</Label>
-                <select
-                  id="intake-provider"
+                <Select
                   value={newSource.provider}
-                  onChange={(e) => setNewSource((s) => ({ ...s, provider: e.target.value }))}
-                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  onValueChange={(value) => setNewSource((s) => ({ ...s, provider: value }))}
                 >
-                  <option value="github">GitHub</option>
-                  <option value="linear">Linear</option>
-                  <option value="jira">Jira</option>
-                </select>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="github">GitHub</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="intake-token">API Token</Label>
@@ -1635,16 +1637,17 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
               </div>
               <div className="space-y-2">
                 <Label htmlFor="edit-intake-provider">Provider</Label>
-                <select
-                  id="edit-intake-provider"
+                <Select
                   value={editForm.provider}
-                  onChange={(e) => setEditForm((s) => ({ ...s, provider: e.target.value }))}
-                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  onValueChange={(value) => setEditForm((s) => ({ ...s, provider: value }))}
                 >
-                  <option value="github">GitHub</option>
-                  <option value="linear">Linear</option>
-                  <option value="jira">Jira</option>
-                </select>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="github">GitHub</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="edit-intake-token">API Token</Label>
