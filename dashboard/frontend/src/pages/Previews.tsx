@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ExternalLink } from 'lucide-react';
-import { listPreviews, createPreview, destroyPreview } from '@/lib/api';
+import { listPreviews, createPreview, destroyPreview, ApiError } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -15,6 +15,27 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+
+const FRIENDLY_MESSAGES: Record<string, string> = {
+  repo_not_accessible:
+    'The repository could not be accessed. Please check that the name is correct (owner/repo) and that the deploy token has permission.',
+  slug_conflict:
+    'A preview with that slug already exists. Choose a different slug or destroy the existing preview first.',
+  invalid_slug:
+    'The slug contains invalid characters. Use only lowercase letters, numbers, and hyphens.',
+  branch_not_found:
+    'The branch was not found in the repository. Please check that the branch name is correct.',
+  slug_too_long:
+    'The slug is too long. It must be 11 characters or fewer.',
+};
+
+function friendlyCreateError(error: unknown): string {
+  if (error instanceof ApiError && error.errorCode) {
+    return FRIENDLY_MESSAGES[error.errorCode] ?? error.message;
+  }
+  if (error instanceof Error) return error.message;
+  return 'An unexpected error occurred.';
+}
 
 export default function Previews() {
   const queryClient = useQueryClient();
@@ -140,7 +161,7 @@ export default function Previews() {
               </Button>
               {createMutation.isError && (
                 <p className="mt-2 text-destructive text-sm">
-                  {(createMutation.error as Error).message}
+                  {friendlyCreateError(createMutation.error)}
                 </p>
               )}
             </form>

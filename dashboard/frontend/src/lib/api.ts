@@ -84,11 +84,13 @@ export interface ListTasksParams {
   per_page?: number;
 }
 
-class ApiError extends Error {
+export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  errorCode?: string;
+  constructor(status: number, message: string, errorCode?: string) {
     super(message);
     this.status = status;
+    this.errorCode = errorCode;
   }
 }
 
@@ -106,7 +108,7 @@ async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> {
       throw new ApiError(401, 'Not authenticated');
     }
     const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new ApiError(res.status, body.error || res.statusText);
+    throw new ApiError(res.status, body.error || res.statusText, body.error_code);
   }
   return res.json();
 }

@@ -53,7 +53,8 @@ pub async fn create_preview(
         req.slug.as_deref(),
         &github_token,
     )
-    .await?;
+    .await
+    .map_err(|e| classify_create_error(e, &req.repo, req.slug.as_deref()))?;
 
     // Audit: preview.created
     crate::audit::log_event(
@@ -119,4 +120,84 @@ pub async fn update_preview(
         "message": "Preview update triggered",
         "output": output.trim(),
     })))
+}
+
+/// Inspect the raw shell error from `create_preview` and return a user-friendly
+/// `AppError::UserError` when the failure matches a known pattern.
+fn classify_create_error(err: AppError, repo: &str, slug: Option<&str>) -> AppError {
+    let msg = match &err {
+        AppError::Internal(msg) => msg.as_str(),
+        _ => return err,
+    };
+
+    let lower = msg.to_lowercase();
+
+    // Repository not accessible
+    if lower.contains("repository") && lower.contains("not found")
+        || lower.contains("could not read from remote repository")
+        || lower.contains("fatal: remote error")
+        || lower.contains("authentication failed")
+        || lower.contains("could not resolve host")
+    {
+        tracing::warn!("Preview creation failed (repo_not_accessible): {msg}");
+        return AppError::UserError {
+            code: "repo_not_accessible",
+            message: format!(
+                "Could not access repository '{repo}'. Check that the name is correct and that the deploy token has access."
+            ),
+        };
+    }
+
+    // Slug / container conflict
+    if lower.contains("already exists")
+        || lower.contains("name conflict")
+        || lower.contains("is already in use")
+    {
+        let slug_display = slug.unwrap_or("(auto)");
+        tracing::warn!("Preview creation failed (slug_conflict): {msg}");
+        return AppError::UserError {
+            code: "slug_conflict",
+            message: format!(
+                "A preview with slug '{slug_display}' already exists. Choose a different slug or destroy the existing preview first."
+            ),
+        };
+    }
+
+    // Invalid slug characters
+    if lower.contains("invalid slug")
+        || lower.contains("invalid container name")
+        || lower.contains("invalid character")
+    {
+        tracing::warn!("Preview creation failed (invalid_slug): {msg}");
+        return AppError::UserError {
+            code: "invalid_slug",
+            message: "The slug contains invalid characters. Use only lowercase letters, numbers, and hyphens.".to_string(),
+        };
+    }
+
+    // Slug too long
+    if lower.contains("is too long") {
+        tracing::warn!("Preview creation failed (slug_too_long): {msg}");
+        return AppError::UserError {
+            code: "slug_too_long",
+            message: "The slug is too long. It must be 11 characters or fewer.".to_string(),
+        };
+    }
+
+    // Branch not found
+    if lower.contains("did not match any")
+        || (lower.contains("pathspec") && lower.contains("did not match"))
+        || lower.contains("remote branch") && lower.contains("not found")
+    {
+        tracing::warn!("Preview creation failed (branch_not_found): {msg}");
+        return AppError::UserError {
+            code: "branch_not_found",
+            message: format!(
+                "Could not find the specified branch in '{repo}'. Check that the branch name is correct."
+            ),
+        };
+    }
+
+    // Unrecognised — keep original Internal error
+    err
 }
