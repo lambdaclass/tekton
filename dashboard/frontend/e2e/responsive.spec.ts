@@ -97,7 +97,7 @@ test.describe('Responsive - Desktop viewport', () => {
 
     const sidebar = page.locator('[data-sidebar="sidebar"]').first();
     await expect(sidebar.getByRole('link', { name: 'Home' })).toBeVisible();
-    await expect(sidebar.getByRole('link', { name: 'Previews' })).toBeVisible();
+    await expect(sidebar.getByRole('link', { name: 'Previews', exact: true })).toBeVisible();
     await expect(sidebar.getByRole('link', { name: 'Tasks' })).toBeVisible();
     await expect(sidebar.getByRole('link', { name: 'Settings' })).toBeVisible();
   });
