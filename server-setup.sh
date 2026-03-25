@@ -463,6 +463,14 @@ success "Caddy webhook route written."
 # =============================================================================
 header "Step 6: NixOS Rebuild"
 
+# Remove any stale flake files from /etc/nixos/ — the container flake now lives
+# in /etc/nixos/tekton/. A leftover flake.nix here causes nixos-rebuild to try
+# flake-based evaluation and fail when the hostname doesn't match.
+if [[ -f /etc/nixos/flake.nix ]]; then
+    info "Removing stale flake.nix from /etc/nixos/ (moved to /etc/nixos/tekton/)..."
+    rm -f /etc/nixos/flake.nix /etc/nixos/flake.lock
+fi
+
 info "Running nixos-rebuild switch (this may take a while on first run)..."
 
 gen_before=$(readlink /nix/var/nix/profiles/system)
