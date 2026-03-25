@@ -32,8 +32,11 @@
   # Firewall: allow HTTP (redirects) and HTTPS
   networking.firewall.allowedTCPPorts = [ 80 443 ];
 
-  # Trust container veth interfaces (allows containers to reach host PostgreSQL, etc.)
-  networking.firewall.trustedInterfaces = [ "ve-+" ];
+  # Trust container veth interfaces and Tailscale
+  networking.firewall.trustedInterfaces = [ "ve-+" "tailscale0" ];
+
+  # Tailscale VPN
+  services.tailscale.enable = true;
 
   # SSH
   services.openssh = {

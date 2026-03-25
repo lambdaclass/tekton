@@ -384,8 +384,44 @@ else
 
 NIXEOF
 
-    # Append the SSH key and stateVersion
+    # Append users, SSH keys, and stateVersion
     cat >> "$TMPDIR/configuration.nix" << NIXEOF
+  # Admin user with sudo access
+  users.users.admin = {
+    isNormalUser = true;
+    createHome = true;
+    home = "/home/admin";
+    uid = 1000;
+    group = "users";
+    openssh.authorizedKeys.keys = [
+      "$SSH_KEY"
+    ];
+  };
+
+  users.users.app = {
+    isNormalUser = true;
+    createHome = true;
+    linger = true;
+    home = "/home/app";
+    uid = 1001;
+    group = "users";
+    openssh.authorizedKeys.keys = [
+      "$SSH_KEY"
+    ];
+  };
+
+  security.sudo.extraRules = [
+    {
+      users = [ "admin" ];
+      commands = [
+        {
+          command = "ALL";
+          options = [ "SETENV" "NOPASSWD" ];
+        }
+      ];
+    }
+  ];
+
   users.users.root.openssh.authorizedKeys.keys = [
     "$SSH_KEY"
   ];
