@@ -439,16 +439,16 @@ VALUES
 -- Seed: Intake issues (8 rows covering all 6 statuses)
 -- ============================================================
 
-INSERT INTO intake_issues (source_id, external_id, external_url, external_title, external_body, status, task_id, error_message, created_at, updated_at)
+INSERT INTO intake_issues (source_id, external_id, external_url, external_title, external_body, external_labels, status, task_id, error_message, created_at, updated_at)
 VALUES
-    (1, 'GH-101', 'https://github.com/testorg/testrepo/issues/101', 'Fix null pointer in auth module', 'Auth module throws NPE when token is expired.', 'backlog', NULL, NULL, NOW() - INTERVAL '2 days', NOW() - INTERVAL '2 days'),
-    (1, 'GH-102', 'https://github.com/testorg/testrepo/issues/102', 'Login page crashes on Safari', 'Safari 17 shows blank screen on login.', 'pending', NULL, NULL, NOW() - INTERVAL '1 day', NOW() - INTERVAL '1 day'),
-    (1, 'GH-103', 'https://github.com/testorg/testrepo/issues/103', 'Add rate limiting to API', 'Need rate limiting on public endpoints.', 'task_created', 'task-running-1', NULL, NOW() - INTERVAL '1 day', NOW() - INTERVAL '12 hours'),
-    (1, 'GH-104', 'https://github.com/testorg/testrepo/issues/104', 'Review security headers', 'Audit response headers for OWASP compliance.', 'review', 'task-completed-1', NULL, NOW() - INTERVAL '3 days', NOW() - INTERVAL '6 hours'),
-    (1, 'GH-105', 'https://github.com/testorg/testrepo/issues/105', 'Upgrade dependencies to latest', 'Bump all deps to latest patch versions.', 'done', 'task-completed-2', NULL, NOW() - INTERVAL '4 days', NOW() - INTERVAL '1 day'),
-    (1, 'GH-106', 'https://github.com/testorg/testrepo/issues/106', 'Fix flaky CI test', 'test_auth_flow fails intermittently.', 'failed', 'task-failed-1', 'Agent timed out after 300s', NOW() - INTERVAL '2 days', NOW() - INTERVAL '3 hours'),
-    (2, 'LIN-201', 'https://linear.app/testorg/issue/LIN-201', 'Add dark mode toggle', 'Users want dark mode support.', 'backlog', NULL, NULL, NOW() - INTERVAL '5 days', NOW() - INTERVAL '5 days'),
-    (2, 'LIN-202', 'https://linear.app/testorg/issue/LIN-202', 'Implement CSV export', 'Export table data as CSV.', 'pending', NULL, NULL, NOW() - INTERVAL '3 days', NOW() - INTERVAL '2 days');
+    (1, 'GH-101', 'https://github.com/testorg/testrepo/issues/101', 'Fix null pointer in auth module', 'Auth module throws NPE when token is expired.', '{bug,auth}', 'backlog', NULL, NULL, NOW() - INTERVAL '2 days', NOW() - INTERVAL '2 days'),
+    (1, 'GH-102', 'https://github.com/testorg/testrepo/issues/102', 'Login page crashes on Safari', 'Safari 17 shows blank screen on login.', '{bug,frontend}', 'pending', NULL, NULL, NOW() - INTERVAL '1 day', NOW() - INTERVAL '1 day'),
+    (1, 'GH-103', 'https://github.com/testorg/testrepo/issues/103', 'Add rate limiting to API', 'Need rate limiting on public endpoints.', '{enhancement}', 'task_created', 'task-running-1', NULL, NOW() - INTERVAL '1 day', NOW() - INTERVAL '12 hours'),
+    (1, 'GH-104', 'https://github.com/testorg/testrepo/issues/104', 'Review security headers', 'Audit response headers for OWASP compliance.', '{security,review}', 'review', 'task-completed-1', NULL, NOW() - INTERVAL '3 days', NOW() - INTERVAL '6 hours'),
+    (1, 'GH-105', 'https://github.com/testorg/testrepo/issues/105', 'Upgrade dependencies to latest', 'Bump all deps to latest patch versions.', '{dependencies}', 'done', 'task-completed-2', NULL, NOW() - INTERVAL '4 days', NOW() - INTERVAL '1 day'),
+    (1, 'GH-106', 'https://github.com/testorg/testrepo/issues/106', 'Fix flaky CI test', 'test_auth_flow fails intermittently.', '{bug,ci}', 'failed', 'task-failed-1', 'Agent timed out after 300s', NOW() - INTERVAL '2 days', NOW() - INTERVAL '3 hours'),
+    (2, 'LIN-201', 'https://linear.app/testorg/issue/LIN-201', 'Add dark mode toggle', 'Users want dark mode support.', '{feature,ux}', 'backlog', NULL, NULL, NOW() - INTERVAL '5 days', NOW() - INTERVAL '5 days'),
+    (2, 'LIN-202', 'https://linear.app/testorg/issue/LIN-202', 'Implement CSV export', 'Export table data as CSV.', '{feature}', 'pending', NULL, NULL, NOW() - INTERVAL '3 days', NOW() - INTERVAL '2 days');
 
 -- ============================================================
 -- Seed: Intake poll log

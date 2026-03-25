@@ -72,6 +72,101 @@ test.describe('Admin - Intake Sources section', () => {
     await expect(dialog.getByText('Rate limit exceeded, partial results')).toBeVisible();
   });
 
+  test('toggle source enabled/disabled', async ({ adminPage: page }) => {
+    await page.goto('/admin');
+
+    const section = page.locator('[class*="card"]').filter({ hasText: 'Intake Sources' });
+
+    // The GitHub Bugs source starts enabled (On) — click to toggle off
+    const githubRow = section.locator('tr').filter({ hasText: SOURCES.github.name });
+    const badge = githubRow.getByText('On', { exact: true });
+    await badge.click();
+
+    // Should now show Off
+    await expect(githubRow.getByText('Off', { exact: true })).toBeVisible({ timeout: 5000 });
+
+    // Toggle back on for test isolation
+    await githubRow.getByText('Off', { exact: true }).click();
+    await expect(githubRow.getByText('On', { exact: true })).toBeVisible({ timeout: 5000 });
+  });
+
+  test('Test Poll dialog opens and shows Run button', async ({ adminPage: page }) => {
+    await page.goto('/admin');
+
+    const section = page.locator('[class*="card"]').filter({ hasText: 'Intake Sources' });
+
+    // Click the beaker icon (Test Poll) for the first source
+    await section.getByTitle('Test Poll').first().click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole('heading', { name: 'Test Poll' })).toBeVisible();
+    await expect(dialog.getByText('Dry-run poll')).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Run Test Poll' })).toBeVisible();
+
+    // Close without running
+    await dialog.getByTestId('dialog-footer').getByRole('button', { name: 'Close' }).click();
+    await expect(dialog).not.toBeVisible();
+  });
+
+  test('View Issues dialog close button works', async ({ adminPage: page }) => {
+    await page.goto('/admin');
+
+    const section = page.locator('[class*="card"]').filter({ hasText: 'Intake Sources' });
+    await section.getByTitle('View Issues').first().click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+
+    await dialog.getByTestId('dialog-footer').getByRole('button', { name: 'Close' }).click();
+    await expect(dialog).not.toBeVisible();
+  });
+
+  test('View Logs dialog close button works', async ({ adminPage: page }) => {
+    await page.goto('/admin');
+
+    const section = page.locator('[class*="card"]').filter({ hasText: 'Intake Sources' });
+    await section.getByTitle('View Logs').first().click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+
+    await dialog.getByTestId('dialog-footer').getByRole('button', { name: 'Close' }).click();
+    await expect(dialog).not.toBeVisible();
+  });
+
+  test('View Issues dialog shows status badges and task IDs', async ({ adminPage: page }) => {
+    await page.goto('/admin');
+
+    const section = page.locator('[class*="card"]').filter({ hasText: 'Intake Sources' });
+    const githubRow = section.locator('tr').filter({ hasText: SOURCES.github.name });
+    await githubRow.getByTitle('View Issues').click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+
+    // Issues should show status badges
+    await expect(dialog.getByText('backlog').first()).toBeVisible();
+    // At least one issue should have a linked task ID
+    await expect(dialog.locator('td.font-mono', { hasText: 'task-' }).first()).toBeAttached();
+  });
+
+  test('View Logs dialog shows numeric columns', async ({ adminPage: page }) => {
+    await page.goto('/admin');
+
+    const section = page.locator('[class*="card"]').filter({ hasText: 'Intake Sources' });
+    await section.getByTitle('View Logs').first().click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+
+    // Should show Found/Created/Skipped/Duration column headers
+    await expect(dialog.getByRole('columnheader', { name: 'Found' })).toBeVisible();
+    await expect(dialog.getByRole('columnheader', { name: 'Created' })).toBeVisible();
+    await expect(dialog.getByRole('columnheader', { name: 'Skipped' })).toBeVisible();
+    await expect(dialog.getByRole('columnheader', { name: 'Duration' })).toBeVisible();
+  });
+
   test('non-admin is redirected away from admin page', async ({ memberPage: page }) => {
     await page.goto('/admin');
 
