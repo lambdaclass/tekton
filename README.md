@@ -272,6 +272,7 @@ If Tekton executes on these dimensions, it does not need to out-market incumbent
 - **[Deployment Guide](docs/deployment-guide.md)**: Setup, deployment, server reference, and troubleshooting
 - **[Preview Deployments](docs/preview-deployments.md)**: PR preview system, webhook setup, commands reference
 - **[Architecture](docs/architecture.md)**: System design, networking, key decisions
+- **[E2E Testing](docs/e2e-testing.md)**: Playwright test suite, fixtures, seed data, and CI pipeline (`make e2e`)
 
 ## Directory Structure
 

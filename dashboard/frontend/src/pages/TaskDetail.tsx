@@ -18,6 +18,7 @@ import {
   Image as ImageIcon,
   MessageSquare,
   CheckCircle,
+  Code,
 } from 'lucide-react';
 import LogViewer from '@/components/LogViewer';
 import TaskChat from '@/components/TaskChat';
@@ -212,6 +213,18 @@ export default function TaskDetail() {
               <Button size="sm" variant="outline">
                 <GitPullRequest className="size-3.5 mr-1" />
                 PR #{task.pr_number}
+              </Button>
+            </a>
+          )}
+          {task?.branch_name && (
+            <a
+              href={`https://github.dev/${task.repo}/tree/${task.branch_name}`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <Button size="sm" variant="outline">
+                <Code className="size-3.5 mr-1" />
+                VS Code
               </Button>
             </a>
           )}

@@ -1,5 +1,6 @@
 # Setup env file contains secrets
 setup.env
+dashboard/backend/.env
 
 # Playwright test artifacts
 playwright-report/
@@ -7,3 +8,7 @@ test-results/
 
 # Claude Code
 .claude/
+
+# Server stuff
+server-config/preview-webhook/dist
+server-config/preview-webhook/node_modules
