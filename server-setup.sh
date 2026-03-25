@@ -183,51 +183,30 @@ header "Step 2: Hardware Detection"
 
 info "Detecting hardware from running system..."
 
-# Server IP
-SERVER_IP=$(ip -4 addr show scope global | grep -oP 'inet \K[0-9.]+' | head -1) || true
-if [[ -z "$SERVER_IP" ]]; then
-    fatal "Could not detect server IP address."
-fi
-success "Server IP: $SERVER_IP"
-
-# Gateway
-GATEWAY=$(ip route | grep default | awk '{print $3}' | head -1) || true
-if [[ -z "$GATEWAY" ]]; then
-    fatal "Could not detect gateway."
-fi
-success "Gateway: $GATEWAY"
-
-# Interface
+# Interface (needed for NAT config in all modes)
 INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1) || true
 if [[ -z "$INTERFACE" ]]; then
     fatal "Could not detect network interface."
 fi
 success "Interface: $INTERFACE"
 
-# Prefix length
-PREFIX_LENGTH=$(ip -4 addr show dev "$INTERFACE" | grep 'inet ' | head -1 | awk '{print $2}' | cut -d/ -f2) || true
-if [[ -z "$PREFIX_LENGTH" ]]; then
-    warn "Could not detect prefix length, defaulting to 26"
-    PREFIX_LENGTH="26"
-fi
-success "Prefix length: /$PREFIX_LENGTH"
+# Detect if this is a Hetzner RAID server or an existing NixOS install.
+# If we find 2+ disks, we use the full configuration.nix (RAID template).
+# Otherwise, we layer tekton-services.nix into the existing config.
+FRESH_INSTALL=false
 
-# Disk devices — detect from mdstat (RAID members)
-info "Detecting disk devices..."
 DISK_DEVICE_0=""
 DISK_DEVICE_1=""
 
+info "Detecting disk layout..."
 if [[ -f /proc/mdstat ]]; then
-    # Extract disk devices from RAID arrays
     local_disks=$(grep -oP '[a-z]+(?=\[\d+\])' /proc/mdstat | sort -u) || true
     if [[ -n "$local_disks" ]]; then
         disk_array=()
         while IFS= read -r disk; do
-            # Strip partition number to get base device
             base=$(echo "$disk" | sed 's/[0-9]*$//')
             disk_array+=("/dev/$base")
         done <<< "$local_disks"
-        # Get unique base devices
         readarray -t unique_disks < <(printf '%s\n' "${disk_array[@]}" | sort -u)
         if [[ ${#unique_disks[@]} -ge 2 ]]; then
             DISK_DEVICE_0="${unique_disks[0]}"
@@ -237,50 +216,81 @@ if [[ -f /proc/mdstat ]]; then
 fi
 
 if [[ -z "$DISK_DEVICE_0" ]]; then
-    # Fallback: detect from lsblk
     readarray -t all_disks < <(lsblk -d -n -o NAME,TYPE | awk '$2=="disk" && $1!~/^loop/ {print "/dev/" $1}')
     if [[ ${#all_disks[@]} -ge 2 ]]; then
         DISK_DEVICE_0="${all_disks[0]}"
         DISK_DEVICE_1="${all_disks[1]}"
-    else
-        fatal "Could not detect at least 2 disk devices."
     fi
 fi
-success "Disk 0: $DISK_DEVICE_0"
-success "Disk 1: $DISK_DEVICE_1"
 
-# Initrd modules — detect NVMe vs SATA
-if [[ "$DISK_DEVICE_0" == /dev/nvme* ]]; then
-    INITRD_MODULES='"nvme"'
-    success "NVMe disks detected."
-else
-    INITRD_MODULES='"ahci" "sd_mod"'
-    success "SATA disks detected."
-fi
+if [[ -n "$DISK_DEVICE_0" ]]; then
+    FRESH_INSTALL=true
+    success "Disk 0: $DISK_DEVICE_0"
+    success "Disk 1: $DISK_DEVICE_1"
 
-# Network driver
-net_driver=""
-if [[ -L "/sys/class/net/$INTERFACE/device/driver" ]]; then
-    net_driver=$(basename "$(readlink -f "/sys/class/net/$INTERFACE/device/driver")") || true
-fi
-if [[ -n "$net_driver" ]]; then
-    INITRD_MODULES="$INITRD_MODULES \"$net_driver\""
-    success "Network driver: $net_driver"
+    # Server IP
+    SERVER_IP=$(ip -4 addr show scope global | grep -oP 'inet \K[0-9.]+' | head -1) || true
+    if [[ -z "$SERVER_IP" ]]; then
+        fatal "Could not detect server IP address."
+    fi
+    success "Server IP: $SERVER_IP"
+
+    # Gateway
+    GATEWAY=$(ip route | grep default | awk '{print $3}' | head -1) || true
+    if [[ -z "$GATEWAY" ]]; then
+        fatal "Could not detect gateway."
+    fi
+    success "Gateway: $GATEWAY"
+
+    # Prefix length
+    PREFIX_LENGTH=$(ip -4 addr show dev "$INTERFACE" | grep 'inet ' | head -1 | awk '{print $2}' | cut -d/ -f2) || true
+    if [[ -z "$PREFIX_LENGTH" ]]; then
+        warn "Could not detect prefix length, defaulting to 26"
+        PREFIX_LENGTH="26"
+    fi
+    success "Prefix length: /$PREFIX_LENGTH"
+
+    # Initrd modules — detect NVMe vs SATA
+    if [[ "$DISK_DEVICE_0" == /dev/nvme* ]]; then
+        INITRD_MODULES='"nvme"'
+        success "NVMe disks detected."
+    else
+        INITRD_MODULES='"ahci" "sd_mod"'
+        success "SATA disks detected."
+    fi
+
+    # Network driver
+    net_driver=""
+    if [[ -L "/sys/class/net/$INTERFACE/device/driver" ]]; then
+        net_driver=$(basename "$(readlink -f "/sys/class/net/$INTERFACE/device/driver")") || true
+    fi
+    if [[ -n "$net_driver" ]]; then
+        INITRD_MODULES="$INITRD_MODULES \"$net_driver\""
+        success "Network driver: $net_driver"
+    else
+        INITRD_MODULES="$INITRD_MODULES \"r8169\""
+        warn "Could not detect network driver, defaulting to r8169"
+    fi
 else
-    INITRD_MODULES="$INITRD_MODULES \"r8169\""
-    warn "Could not detect network driver, defaulting to r8169"
+    info "No RAID / multi-disk setup detected — will layer tekton services into existing NixOS config."
 fi
 
 # =============================================================================
 # Confirm
 # =============================================================================
 header "Summary"
-echo "  Server IP:      $SERVER_IP"
-echo "  Gateway:        $GATEWAY"
-echo "  Interface:      $INTERFACE"
-echo "  Prefix:         /$PREFIX_LENGTH"
-echo "  Disk 0:         $DISK_DEVICE_0"
-echo "  Disk 1:         $DISK_DEVICE_1"
+if $FRESH_INSTALL; then
+    echo "  Mode:           Fresh install (RAID 1, full configuration.nix)"
+    echo "  Server IP:      $SERVER_IP"
+    echo "  Gateway:        $GATEWAY"
+    echo "  Interface:      $INTERFACE"
+    echo "  Prefix:         /$PREFIX_LENGTH"
+    echo "  Disk 0:         $DISK_DEVICE_0"
+    echo "  Disk 1:         $DISK_DEVICE_1"
+else
+    echo "  Mode:           Existing NixOS (layering tekton-services.nix)"
+    echo "  Interface:      $INTERFACE"
+fi
 echo "  Domain:         $DOMAIN"
 echo "  GitHub Org:     $GITHUB_ORG"
 echo "  GitHub Client:  ${GITHUB_CLIENT_ID:0:20}..."
@@ -322,22 +332,55 @@ info "Preparing configuration files..."
 TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 
-# --- configuration.nix ---
-cp "$SERVER_CONFIG/configuration.nix" "$TMPDIR/configuration.nix"
-cfg="$TMPDIR/configuration.nix"
+if $FRESH_INSTALL; then
+    # --- Full configuration.nix (Hetzner RAID setup) ---
+    cp "$SERVER_CONFIG/configuration.nix" "$TMPDIR/configuration.nix"
+    cfg="$TMPDIR/configuration.nix"
 
-sed -i "s|YOUR.SERVER.IP.HERE|$SERVER_IP|g" "$cfg"
-sed -i "s|YOUR.GATEWAY.IP.HERE|$GATEWAY|g" "$cfg"
-sed -i "s|ssh-ed25519 AAAA\.\.\. your-key-here|$SSH_KEY|g" "$cfg"
-sed -i "s|prefixLength = [0-9]*;|prefixLength = $PREFIX_LENGTH;|g" "$cfg"
-sed -i "s|interfaces\.enp3s0|interfaces.$INTERFACE|g" "$cfg"
-sed -i "s|interface = \"enp3s0\"|interface = \"$INTERFACE\"|g" "$cfg"
-sed -i "s|externalInterface = \"enp3s0\"|externalInterface = \"$INTERFACE\"|g" "$cfg"
-sed -i "s|DISK_DEVICE_0|$DISK_DEVICE_0|g" "$cfg"
-sed -i "s|DISK_DEVICE_1|$DISK_DEVICE_1|g" "$cfg"
-sed -i "s|INITRD_KERNEL_MODULES|$INITRD_MODULES|g" "$cfg"
-sed -i "s|dashboard\.YOUR_DOMAIN|dashboard.$DOMAIN|g" "$cfg"
-success "configuration.nix prepared."
+    sed -i "s|YOUR.SERVER.IP.HERE|$SERVER_IP|g" "$cfg"
+    sed -i "s|YOUR.GATEWAY.IP.HERE|$GATEWAY|g" "$cfg"
+    sed -i "s|ssh-ed25519 AAAA\.\.\. your-key-here|$SSH_KEY|g" "$cfg"
+    sed -i "s|prefixLength = [0-9]*;|prefixLength = $PREFIX_LENGTH;|g" "$cfg"
+    sed -i "s|interfaces\.enp3s0|interfaces.$INTERFACE|g" "$cfg"
+    sed -i "s|interface = \"enp3s0\"|interface = \"$INTERFACE\"|g" "$cfg"
+    sed -i "s|externalInterface = \"enp3s0\"|externalInterface = \"$INTERFACE\"|g" "$cfg"
+    sed -i "s|DISK_DEVICE_0|$DISK_DEVICE_0|g" "$cfg"
+    sed -i "s|DISK_DEVICE_1|$DISK_DEVICE_1|g" "$cfg"
+    sed -i "s|INITRD_KERNEL_MODULES|$INITRD_MODULES|g" "$cfg"
+    sed -i "s|dashboard\.YOUR_DOMAIN|dashboard.$DOMAIN|g" "$cfg"
+    success "configuration.nix prepared."
+
+    info "Installing configuration to /etc/nixos/..."
+    cp "$TMPDIR/configuration.nix" /etc/nixos/configuration.nix
+else
+    # --- Existing NixOS: layer tekton-services.nix into current config ---
+    cp "$SERVER_CONFIG/tekton-services.nix" "$TMPDIR/tekton-services.nix"
+    svc="$TMPDIR/tekton-services.nix"
+
+    sed -i "s|EXTERNAL_INTERFACE|$INTERFACE|g" "$svc"
+    sed -i "s|dashboard\.YOUR_DOMAIN|dashboard.$DOMAIN|g" "$svc"
+    success "tekton-services.nix prepared."
+
+    info "Installing tekton-services.nix to /etc/nixos/..."
+    cp "$svc" /etc/nixos/tekton-services.nix
+
+    # Add import to existing configuration.nix if not already present
+    if ! grep -q 'tekton-services.nix' /etc/nixos/configuration.nix; then
+        info "Adding tekton-services.nix import to existing configuration.nix..."
+        # Insert import after the opening of the imports list, or add an imports block
+        if grep -q 'imports' /etc/nixos/configuration.nix; then
+            # Add to existing imports list — insert after the line containing "imports = ["
+            sed -i '/imports = \[/a\    ./tekton-services.nix' /etc/nixos/configuration.nix
+        else
+            # No imports block — add one after the first opening brace of the module body
+            sed -i '0,/^{/{/^{/a\  imports = [ ./tekton-services.nix ];
+}' /etc/nixos/configuration.nix
+        fi
+        success "Import added to configuration.nix."
+    else
+        success "tekton-services.nix already imported."
+    fi
+fi
 
 # --- agent-config.nix ---
 cp "$SERVER_CONFIG/agent-config.nix" "$TMPDIR/agent-config.nix"
@@ -347,12 +390,9 @@ sed -i "s|ssh-ed25519 AAAA\.\.\. your-key-here|$SSH_KEY|g" "$agent_cfg"
 sed -i "s|ssh-ed25519 AAAA\.\.\. root-key-here|$ROOT_PUBKEY|g" "$agent_cfg"
 success "agent-config.nix prepared."
 
-# Install all configs to /etc/nixos/
-info "Installing configuration to /etc/nixos/..."
-cp "$TMPDIR/configuration.nix" /etc/nixos/configuration.nix
+# Install shared configs to /etc/nixos/
+info "Installing shared configs to /etc/nixos/..."
 cp "$TMPDIR/agent-config.nix" /etc/nixos/agent-config.nix
-
-# Copy safe files directly (no placeholders)
 cp "$SERVER_CONFIG/preview.sh" /etc/nixos/preview.sh
 cp "$SERVER_CONFIG/agent.sh" /etc/nixos/agent.sh
 cp "$SERVER_CONFIG/flake.nix" /etc/nixos/flake.nix
