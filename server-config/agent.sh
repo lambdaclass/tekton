@@ -6,7 +6,7 @@
 AGENT_DIR="/var/lib/claude-agents"
 CREDS_DIR="/var/secrets/claude"
 FLAKE_DIR="/etc/nixos"
-SUBNET="10.100.0"
+SUBNET_PREFIX="10.100"
 SYSTEM_PATH_CACHE="$AGENT_DIR/.system-path"
 
 # -- Helpers ------------------------------------------------------------------
@@ -56,30 +56,78 @@ get_system_path() {
 
 # -- IP allocation ------------------------------------------------------------
 # Each container gets a pair: host-address .{N*2} / local-address .{N*2+1}
-# Counter stored in $AGENT_DIR/.next_slot, starts at 1
-# Uses flock for atomic read-and-increment to prevent concurrent creates
-# from being assigned the same slot.
+# Slots are recycled: we scan tracking files to find used slots, then pick
+# the lowest available one.  Uses a /16 subnet (10.100.0.0–10.100.255.255).
+# Uses flock for atomic claim to prevent concurrent creates from being
+# assigned the same slot.
+
+MAX_SLOT=32512
+SLOT_LOCK="$AGENT_DIR/.slot.lock"
+
+used_slots() {
+    # Collect slot numbers from agent tracking files ($AGENT_DIR/<name>)
+    # and preview tracking files ($PREVIEW_DIR/<slug>).  Format: "slot ..."
+    local dir file slot
+    for dir in "$AGENT_DIR" "/var/lib/preview-deploys"; do
+        [[ -d "$dir" ]] || continue
+        for file in "$dir"/*; do
+            [[ -f "$file" ]] || continue
+            local name
+            name=$(basename "$file")
+            [[ "$name" == .* ]] && continue
+            [[ "$name" == *.type ]] && continue
+            [[ "$name" == *.meta ]] && continue
+            [[ "$name" == *.sha ]] && continue
+            slot=$(awk '{print $1}' "$file")
+            [[ "$slot" =~ ^[0-9]+$ ]] && echo "$slot"
+        done
+    done
+}
+
+next_slot() {
+    local -A in_use
+    local s
+    while read -r s; do
+        in_use[$s]=1
+    done < <(used_slots)
+
+    local slot
+    for (( slot=1; slot<=MAX_SLOT; slot++ )); do
+        if [[ -z "${in_use[$slot]:-}" ]]; then
+            echo "$slot"
+            return
+        fi
+    done
+    fatal "No free IP slots available (all $MAX_SLOT slots in use)."
+}
 
 claim_slot() {
-    local slot_file="$AGENT_DIR/.next_slot"
-    local slot
+    local tracking_file="$1"
+    shift
+    local extra_fields="$*"
     (
         flock 9
-        if [[ -f "$slot_file" ]]; then
-            slot=$(<"$slot_file")
+        local slot
+        slot=$(next_slot)
+        read -r host_ip local_ip <<< "$(slot_to_ips "$slot")"
+        if [[ -n "$extra_fields" ]]; then
+            echo "${slot} ${host_ip} ${local_ip} ${extra_fields}" > "$tracking_file"
         else
-            slot=1
+            echo "${slot} ${host_ip} ${local_ip}" > "$tracking_file"
         fi
-        echo $(( slot + 1 )) > "$slot_file"
         echo "$slot"
-    ) 9>"$slot_file.lock"
+    ) 9>"$SLOT_LOCK"
 }
 
 slot_to_ips() {
     local slot="$1"
-    local host_last=$(( slot * 2 ))
-    local local_last=$(( slot * 2 + 1 ))
-    echo "${SUBNET}.${host_last}" "${SUBNET}.${local_last}"
+    local host_flat=$(( slot * 2 ))
+    local local_flat=$(( slot * 2 + 1 ))
+    local host_third=$(( host_flat / 256 ))
+    local host_fourth=$(( host_flat % 256 ))
+    local local_third=$(( local_flat / 256 ))
+    local local_fourth=$(( local_flat % 256 ))
+    echo "${SUBNET_PREFIX}.${host_third}.${host_fourth}" "${SUBNET_PREFIX}.${local_third}.${local_fourth}"
 }
 
 # -- Commands -----------------------------------------------------------------
@@ -114,9 +162,11 @@ cmd_create() {
     system_path=$(get_system_path)
 
     # Allocate IP (atomic to prevent concurrent creates getting the same slot)
+    # claim_slot writes the tracking file under flock so no other create can
+    # race for the same slot.
     local slot
-    slot=$(claim_slot)
-    read -r host_ip local_ip <<< "$(slot_to_ips "$slot")"
+    slot=$(claim_slot "$AGENT_DIR/$name")
+    read -r _slot host_ip local_ip < "$AGENT_DIR/$name"
 
     info "Creating agent '$name' (host=$host_ip, container=$local_ip)..."
 
@@ -131,9 +181,6 @@ cmd_create() {
     local creds_dest="${container_root}/mnt/claude-creds"
     mkdir -p "$creds_dest"
     cp -r "${CREDS_DIR}"/. "$creds_dest/"
-
-    # Track the agent
-    echo "${slot} ${host_ip} ${local_ip}" > "$AGENT_DIR/$name"
 
     # Start the container
     nixos-container start "$name"
