@@ -483,6 +483,7 @@ ALLOWED_REPOS=${ALLOWED_REPOS}
 PREVIEW_BIN=/run/current-system/sw/bin/preview
 AGENT_BIN=/run/current-system/sw/bin/agent
 STATIC_DIR=/opt/dashboard/static
+GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
 ENVEOF
 chmod 600 /var/secrets/dashboard.env
 success "dashboard.env written."
