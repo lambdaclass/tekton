@@ -401,15 +401,7 @@ pub(crate) async fn spawn_task_internal(
             base_branch: &base_branch,
             git_id: &git_id,
         };
-        let result = run_task_pipeline(
-            &ctx,
-            &prompt,
-            None,
-            None,
-            &created_by,
-            tx.clone(),
-        )
-        .await;
+        let result = run_task_pipeline(&ctx, &prompt, None, None, &created_by, tx.clone()).await;
 
         if let Err(e) = &result {
             let _ = update_task_status(&db, &task_id, "failed", Some(&e.to_string())).await;

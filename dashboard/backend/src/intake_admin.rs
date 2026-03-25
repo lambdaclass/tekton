@@ -522,8 +522,8 @@ pub async fn update_issue_status(
     }
 
     // When retrying (failed → backlog/pending), clear task_id and error_message
-    let clear_task = current_status == "failed"
-        && (req.status == "backlog" || req.status == "pending");
+    let clear_task =
+        current_status == "failed" && (req.status == "backlog" || req.status == "pending");
 
     let issue = if clear_task {
         sqlx::query_as::<_, IntakeIssue>(&format!(

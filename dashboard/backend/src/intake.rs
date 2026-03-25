@@ -257,8 +257,7 @@ async fn process_pending_issues(
         return Ok(());
     }
 
-    let mut global_remaining =
-        config.intake_max_global_concurrent as i64 - global_active.0;
+    let mut global_remaining = config.intake_max_global_concurrent as i64 - global_active.0;
 
     // Fetch pending issues FIFO, joined with source config
     let pending_issues: Vec<PendingIssueRow> = sqlx::query_as(
@@ -470,11 +469,7 @@ async fn poll_all_sources(config: &Arc<Config>, db: &PgPool) -> Result<(), AppEr
 
 /// Poll a single source: fetch external issues, deduplicate, insert new ones as `backlog`.
 /// No tasks are spawned here — that happens in `process_pending_issues()`.
-async fn poll_source(
-    config: &Config,
-    db: &PgPool,
-    source: &IntakeSource,
-) -> Result<(), AppError> {
+async fn poll_source(config: &Config, db: &PgPool, source: &IntakeSource) -> Result<(), AppError> {
     let poll_start = std::time::Instant::now();
 
     // Fetch the encrypted API token
