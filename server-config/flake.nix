@@ -11,15 +11,6 @@
       config.allowUnfree = true;
     };
   in {
-    # Host server configuration
-    nixosConfigurations.nixos-server = nixpkgs.lib.nixosSystem {
-      inherit system;
-      modules = [
-        { nixpkgs.pkgs = pkgs; }
-        ./configuration.nix
-      ];
-    };
-
     # Agent container configuration (built by `agent build`, used by `agent create`)
     nixosConfigurations.agent = nixpkgs.lib.nixosSystem {
       inherit system;

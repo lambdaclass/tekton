@@ -10,7 +10,7 @@
 AGENT_DIR="/var/lib/claude-agents"
 PREVIEW_DIR="/var/lib/preview-deploys"
 CADDY_DIR="/etc/caddy/previews"
-FLAKE_DIR="/etc/nixos"
+FLAKE_DIR="/etc/nixos/tekton"
 SECRETS_FILE="/var/secrets/preview.env"
 SUBNET_PREFIX="10.100"
 CONFIG_CACHE_DIR="$PREVIEW_DIR/.config-cache"

@@ -390,12 +390,17 @@ sed -i "s|ssh-ed25519 AAAA\.\.\. your-key-here|$SSH_KEY|g" "$agent_cfg"
 sed -i "s|ssh-ed25519 AAAA\.\.\. root-key-here|$ROOT_PUBKEY|g" "$agent_cfg"
 success "agent-config.nix prepared."
 
-# Install shared configs to /etc/nixos/
-info "Installing shared configs to /etc/nixos/..."
-cp "$TMPDIR/agent-config.nix" /etc/nixos/agent-config.nix
+# Install container flake + configs to /etc/nixos/tekton/ (separate from host config
+# so the flake doesn't interfere with nixos-rebuild)
+info "Installing container configs to /etc/nixos/tekton/..."
+mkdir -p /etc/nixos/tekton
+cp "$TMPDIR/agent-config.nix" /etc/nixos/tekton/agent-config.nix
+cp "$SERVER_CONFIG/flake.nix" /etc/nixos/tekton/flake.nix
+
+# preview.sh and agent.sh are read by writeShellApplication in the NixOS config,
+# they need to stay in /etc/nixos/ where the host config references them
 cp "$SERVER_CONFIG/preview.sh" /etc/nixos/preview.sh
 cp "$SERVER_CONFIG/agent.sh" /etc/nixos/agent.sh
-cp "$SERVER_CONFIG/flake.nix" /etc/nixos/flake.nix
 success "All NixOS configs installed."
 
 # =============================================================================

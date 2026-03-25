@@ -5,7 +5,7 @@
 
 AGENT_DIR="/var/lib/claude-agents"
 CREDS_DIR="/var/secrets/claude"
-FLAKE_DIR="/etc/nixos"
+FLAKE_DIR="/etc/nixos/tekton"
 SUBNET_PREFIX="10.100"
 SYSTEM_PATH_CACHE="$AGENT_DIR/.system-path"
 

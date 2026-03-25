@@ -136,15 +136,18 @@ deploy_webhook() {
 
 deploy_nix() {
     info "Deploying NixOS configs..."
-    # Copy everything EXCEPT configuration.nix and agent-config.nix (have host-specific placeholders)
-    # preview-config.nix and *-preview-config.nix are repo-side templates, not deployed to the server
+    # Copy safe files (no host-specific placeholders)
+    # agent.sh/preview.sh go to /etc/nixos/ (referenced by writeShellApplication in NixOS config)
+    # flake.nix goes to /etc/nixos/tekton/ (used by agent/preview build, separate from host config)
     $SSH "
         cd ${REMOTE_SRC}/server-config && \
-        for f in agent.sh preview.sh flake.nix; do
+        for f in agent.sh preview.sh; do
             if [ -f \"\$f\" ]; then
                 cp \"\$f\" /etc/nixos/\"\$f\"
             fi
         done && \
+        mkdir -p /etc/nixos/tekton && \
+        cp flake.nix /etc/nixos/tekton/flake.nix && \
         cd /etc/nixos && nixos-rebuild switch
     "
     success "NixOS configs deployed."
