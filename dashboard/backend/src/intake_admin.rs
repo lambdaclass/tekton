@@ -46,17 +46,16 @@ pub async fn create_source(
     Json(req): Json<CreateIntakeSourceRequest>,
 ) -> Result<Json<IntakeSource>, AppError> {
     // Validate that run_as_user exists and has a GitHub token
-    let _: String =
-        sqlx::query_scalar("SELECT github_token FROM users WHERE github_login = $1")
-            .bind(&req.run_as_user)
-            .fetch_one(&state.db)
-            .await
-            .map_err(|_| {
-                AppError::BadRequest(format!(
-                    "User '{}' not found or has no GitHub token",
-                    req.run_as_user
-                ))
-            })?;
+    let _: String = sqlx::query_scalar("SELECT github_token FROM users WHERE github_login = $1")
+        .bind(&req.run_as_user)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|_| {
+            AppError::BadRequest(format!(
+                "User '{}' not found or has no GitHub token",
+                req.run_as_user
+            ))
+        })?;
 
     let config = req.config.unwrap_or(serde_json::json!({}));
     let target_base_branch = req.target_base_branch.unwrap_or_else(|| "main".into());
