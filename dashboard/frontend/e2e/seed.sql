@@ -383,7 +383,7 @@ CREATE TABLE IF NOT EXISTS intake_sources (
     provider TEXT NOT NULL,
     enabled BOOLEAN NOT NULL DEFAULT true,
     config JSONB NOT NULL DEFAULT '{}',
-    api_token_encrypted TEXT NOT NULL,
+    api_token_encrypted TEXT,
     target_repo TEXT NOT NULL,
     target_base_branch TEXT NOT NULL DEFAULT 'main',
     label_filter TEXT[] NOT NULL DEFAULT '{}',
@@ -430,10 +430,10 @@ CREATE TABLE IF NOT EXISTS intake_poll_log (
 -- Seed: Intake sources
 -- ============================================================
 
-INSERT INTO intake_sources (name, provider, enabled, api_token_encrypted, target_repo, run_as_user, poll_interval_secs, created_by)
+INSERT INTO intake_sources (name, provider, enabled, target_repo, run_as_user, poll_interval_secs, created_by)
 VALUES
-    ('GitHub Bugs', 'github', true, 'encrypted:fake_gh_token', 'testorg/testrepo', 'testadmin', 120, 'testadmin'),
-    ('Linear Features', 'linear', false, 'encrypted:fake_linear_token', 'testorg/frontend', 'testmember', 300, 'testadmin');
+    ('GitHub Bugs', 'github', true, 'testorg/testrepo', 'testadmin', 120, 'testadmin'),
+    ('Linear Features', 'linear', false, 'testorg/frontend', 'testmember', 300, 'testadmin');
 
 -- ============================================================
 -- Seed: Intake issues (8 rows covering all 6 statuses)

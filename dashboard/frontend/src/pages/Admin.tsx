@@ -1225,7 +1225,6 @@ function OrgPoliciesSection({ queryClient }: { queryClient: ReturnType<typeof us
 interface IntakeFormState {
   name: string;
   provider: string;
-  api_token: string;
   target_repo: string;
   target_base_branch: string;
   label_filter: string;
@@ -1248,7 +1247,6 @@ Please implement the changes, write tests if appropriate, and ensure the code co
 const INITIAL_INTAKE_FORM: IntakeFormState = {
   name: '',
   provider: 'github',
-  api_token: '',
   target_repo: '',
   target_base_branch: 'main',
   label_filter: '',
@@ -1311,27 +1309,6 @@ function IntakeSourceDialog({
                 <SelectItem value="github">GitHub</SelectItem>
               </SelectContent>
             </Select>
-          </div>
-          <div className="space-y-2">
-            <div className="flex items-center gap-1.5">
-              <Label htmlFor="intake-token">API Token</Label>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Info className="h-4 w-4 text-muted-foreground cursor-help" />
-                </TooltipTrigger>
-                <TooltipContent side="right" className="max-w-xs text-left">
-                  For GitHub, use a Personal Access Token (PAT) with <strong>Issues</strong> read access to the target repository.
-                </TooltipContent>
-              </Tooltip>
-            </div>
-            <Input
-              id="intake-token"
-              type="password"
-              placeholder={isCreate ? 'Token for the issue tracker' : 'Leave blank to keep current token'}
-              value={form.api_token}
-              onChange={(e) => setForm((s) => ({ ...s, api_token: e.target.value }))}
-              required={isCreate}
-            />
           </div>
           <div className="space-y-2">
             <Label htmlFor="intake-repo">Target Repo</Label>
@@ -1523,7 +1500,6 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
     setEditForm({
       name: s.name,
       provider: s.provider,
-      api_token: '',
       target_repo: s.target_repo,
       target_base_branch: s.target_base_branch,
       label_filter: s.label_filter.join(', '),
@@ -1549,9 +1525,6 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
       poll_interval_secs: editForm.poll_interval_secs,
       max_concurrent_tasks: editForm.max_concurrent_tasks,
     };
-    if (editForm.api_token) {
-      data.api_token = editForm.api_token;
-    }
     updateMutation.mutate({ id: editSource.id, data });
   };
 
@@ -1561,7 +1534,6 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
     createMutation.mutate({
       name: newSource.name,
       provider: newSource.provider,
-      api_token: newSource.api_token,
       target_repo: newSource.target_repo,
       target_base_branch: newSource.target_base_branch || 'main',
       label_filter: labels.length ? labels : undefined,

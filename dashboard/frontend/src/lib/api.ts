@@ -454,7 +454,7 @@ export interface IntakePollLog {
 
 export const listIntakeSources = () => apiFetch<IntakeSource[]>('/api/admin/intake/sources');
 export const createIntakeSource = (data: {
-  name: string; provider: string; api_token: string; target_repo: string;
+  name: string; provider: string; target_repo: string;
   target_base_branch?: string; label_filter?: string[]; prompt_template?: string;
   run_as_user: string; poll_interval_secs?: number; max_concurrent_tasks?: number;
   max_tasks_per_poll?: number; auto_create_pr?: boolean;

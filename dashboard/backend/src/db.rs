@@ -297,7 +297,7 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
             provider TEXT NOT NULL,
             enabled BOOLEAN NOT NULL DEFAULT true,
             config JSONB NOT NULL DEFAULT '{}',
-            api_token_encrypted TEXT NOT NULL,
+            api_token_encrypted TEXT,
             target_repo TEXT NOT NULL,
             target_base_branch TEXT NOT NULL DEFAULT 'main',
             label_filter TEXT[] NOT NULL DEFAULT '{}',
@@ -337,6 +337,11 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     )
     .execute(pool)
     .await?;
+
+    // Make api_token_encrypted nullable for existing installs (token now comes from users table)
+    let _ = sqlx::query("ALTER TABLE intake_sources ALTER COLUMN api_token_encrypted DROP NOT NULL")
+        .execute(pool)
+        .await;
 
     // Add prompt column and migrate status defaults for existing installs
     for col_sql in &[

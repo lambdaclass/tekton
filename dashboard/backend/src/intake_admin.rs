@@ -7,7 +7,6 @@ use crate::models::{
     CreateIntakeSourceRequest, IntakeIssue, IntakeIssueWithDetails, IntakePollLog, IntakeSource,
     UpdateIntakeIssueStatusRequest, UpdateIntakeSourceRequest,
 };
-use crate::secrets;
 
 const SOURCE_COLUMNS: &str = "id, name, provider, enabled, config, target_repo, \
      target_base_branch, label_filter, prompt_template, run_as_user, \
@@ -46,14 +45,18 @@ pub async fn create_source(
     State(state): State<crate::AppState>,
     Json(req): Json<CreateIntakeSourceRequest>,
 ) -> Result<Json<IntakeSource>, AppError> {
-    if state.config.secrets_encryption_key.is_empty() {
-        return Err(AppError::BadRequest(
-            "SECRETS_ENCRYPTION_KEY is not configured".into(),
-        ));
-    }
-
-    let encrypted_token =
-        secrets::encrypt_secret(&state.config.secrets_encryption_key, &req.api_token)?;
+    // Validate that run_as_user exists and has a GitHub token
+    let _: String =
+        sqlx::query_scalar("SELECT github_token FROM users WHERE github_login = $1")
+            .bind(&req.run_as_user)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|_| {
+                AppError::BadRequest(format!(
+                    "User '{}' not found or has no GitHub token",
+                    req.run_as_user
+                ))
+            })?;
 
     let config = req.config.unwrap_or(serde_json::json!({}));
     let target_base_branch = req.target_base_branch.unwrap_or_else(|| "main".into());
@@ -65,16 +68,15 @@ pub async fn create_source(
 
     let source = sqlx::query_as::<_, IntakeSource>(&format!(
         "INSERT INTO intake_sources \
-         (name, provider, config, api_token_encrypted, target_repo, target_base_branch, \
+         (name, provider, config, target_repo, target_base_branch, \
           label_filter, prompt_template, run_as_user, poll_interval_secs, \
           max_concurrent_tasks, max_tasks_per_poll, auto_create_pr, created_by) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
          RETURNING {SOURCE_COLUMNS}"
     ))
     .bind(&req.name)
     .bind(&req.provider)
     .bind(&config)
-    .bind(&encrypted_token)
     .bind(&req.target_repo)
     .bind(&target_base_branch)
     .bind(&label_filter)
@@ -121,10 +123,6 @@ pub async fn update_source(
     }
     if req.config.is_some() {
         sets.push(format!("config = ${param_idx}"));
-        param_idx += 1;
-    }
-    if req.api_token.is_some() {
-        sets.push(format!("api_token_encrypted = ${param_idx}"));
         param_idx += 1;
     }
     if req.target_repo.is_some() {
@@ -185,15 +183,6 @@ pub async fn update_source(
     }
     if let Some(ref config) = req.config {
         query = query.bind(config);
-    }
-    if let Some(ref api_token) = req.api_token {
-        if state.config.secrets_encryption_key.is_empty() {
-            return Err(AppError::BadRequest(
-                "SECRETS_ENCRYPTION_KEY is not configured".into(),
-            ));
-        }
-        let encrypted = secrets::encrypt_secret(&state.config.secrets_encryption_key, api_token)?;
-        query = query.bind(encrypted);
     }
     if let Some(ref target_repo) = req.target_repo {
         query = query.bind(target_repo);
@@ -345,12 +334,6 @@ pub async fn test_poll_source(
     State(state): State<crate::AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
-    if state.config.secrets_encryption_key.is_empty() {
-        return Err(AppError::BadRequest(
-            "SECRETS_ENCRYPTION_KEY is not configured".into(),
-        ));
-    }
-
     // Load the source
     let source = sqlx::query_as::<_, IntakeSource>(&format!(
         "SELECT {SOURCE_COLUMNS} FROM intake_sources WHERE id = $1"
@@ -360,86 +343,33 @@ pub async fn test_poll_source(
     .await?
     .ok_or_else(|| AppError::NotFound("Intake source not found".into()))?;
 
-    // Decrypt the API token
-    let encrypted_token: String =
-        sqlx::query_scalar("SELECT api_token_encrypted FROM intake_sources WHERE id = $1")
-            .bind(id)
+    // Get the GitHub token from the run_as_user's account
+    let api_token: String =
+        sqlx::query_scalar("SELECT github_token FROM users WHERE github_login = $1")
+            .bind(&source.run_as_user)
             .fetch_one(&state.db)
-            .await?;
+            .await
+            .map_err(|_| {
+                AppError::BadRequest(format!(
+                    "User '{}' not found or has no GitHub token",
+                    source.run_as_user
+                ))
+            })?;
 
-    let api_token =
-        secrets::decrypt_secret(&state.config.secrets_encryption_key, &encrypted_token)?;
+    // Use the same fetch_github_issues as the real daemon to ensure consistent results
+    let issues = crate::intake::fetch_github_issues(&source, &api_token).await?;
 
-    // Fetch issues from GitHub
-    let owner_repo = source
-        .config
-        .get("owner")
-        .and_then(|v| v.as_str())
-        .zip(source.config.get("repo").and_then(|v| v.as_str()));
-
-    let (owner, repo) = match owner_repo {
-        Some((o, r)) => (o.to_string(), r.to_string()),
-        None => {
-            // Fall back to target_repo as "owner/repo"
-            let parts: Vec<&str> = source.target_repo.splitn(2, '/').collect();
-            if parts.len() != 2 {
-                return Err(AppError::BadRequest(
-                    "Cannot determine owner/repo from source config or target_repo".into(),
-                ));
-            }
-            (parts[0].to_string(), parts[1].to_string())
-        }
-    };
-
-    let mut url =
-        format!("https://api.github.com/repos/{owner}/{repo}/issues?state=open&per_page=20");
-
-    // Add label filter if configured
-    if !source.label_filter.is_empty() {
-        let labels = source.label_filter.join(",");
-        url.push_str(&format!("&labels={labels}"));
-    }
-
-    let client = reqwest::Client::new();
-    let response = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {api_token}"))
-        .header("Accept", "application/vnd.github.v3+json")
-        .header("User-Agent", "tekton-intake")
-        .send()
-        .await
-        .map_err(|e| AppError::Internal(format!("GitHub API request failed: {e}")))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_else(|_| "unknown".into());
-        return Err(AppError::Internal(format!(
-            "GitHub API returned {status}: {body}"
-        )));
-    }
-
-    let issues: Vec<serde_json::Value> = response
-        .json()
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to parse GitHub response: {e}")))?;
-
-    // Return simplified previews (only issues, not PRs)
     let previews: Vec<serde_json::Value> = issues
-        .into_iter()
-        .filter(|issue| issue.get("pull_request").is_none())
+        .iter()
+        .take(20)
         .map(|issue| {
             serde_json::json!({
-                "title": issue.get("title").and_then(|v| v.as_str()).unwrap_or(""),
-                "url": issue.get("html_url").and_then(|v| v.as_str()).unwrap_or(""),
-                "number": issue.get("number").and_then(|v| v.as_i64()).unwrap_or(0),
-                "labels": issue.get("labels")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter()
-                        .filter_map(|l| l.get("name").and_then(|n| n.as_str()))
-                        .collect::<Vec<_>>())
-                    .unwrap_or_default(),
-                "created_at": issue.get("created_at").and_then(|v| v.as_str()).unwrap_or(""),
-                "updated_at": issue.get("updated_at").and_then(|v| v.as_str()).unwrap_or(""),
+                "title": &issue.title,
+                "url": &issue.url,
+                "number": &issue.id,
+                "labels": &issue.labels,
+                "created_at": "",
+                "updated_at": issue.updated_at.as_deref().unwrap_or(""),
             })
         })
         .collect();

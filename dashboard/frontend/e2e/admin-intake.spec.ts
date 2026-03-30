@@ -189,7 +189,6 @@ test.describe.serial('Admin - Intake Sources CRUD', () => {
     await expect(dialog.getByText('Add Intake Source')).toBeVisible();
 
     await dialog.locator('#intake-name').fill(SOURCE_NAME);
-    await dialog.locator('#intake-token').fill('ghp_test_token_e2e');
     await dialog.locator('#intake-repo').fill('e2eorg/e2erepo');
     await dialog.locator('#intake-branch').fill('develop');
     await dialog.locator('#intake-labels').fill('bug, e2e-test');
