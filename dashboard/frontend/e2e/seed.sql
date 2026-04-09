@@ -365,3 +365,39 @@ VALUES
     ('testmember', 'testorg/testrepo'),
     ('testmember', 'testorg/frontend'),
     ('testviewer', 'testorg/testrepo');
+
+-- ============================================================
+-- Seed: Autoresearch runs + experiments
+-- ============================================================
+
+INSERT INTO autoresearch_runs
+    (id, name, repo, base_branch, branch_name, benchmark_command, metric_regex,
+     optimization_direction, target_files, max_experiments, status,
+     baseline_metric, best_metric, total_experiments, accepted_experiments,
+     total_cost_usd, created_by, created_at, updated_at)
+VALUES
+    ('ar-completed-1', 'Optimize sort perf', 'testorg/testrepo', 'main',
+     'autoresearch/ar-compl', 'python benchmark.py', 'Score: (\d+\.?\d*)',
+     'higher', 'src/sort.py', 10, 'completed',
+     42.5, 51.3, 5, 3, 2.50, 'testadmin',
+     NOW() - INTERVAL '1 day', NOW() - INTERVAL '6 hours'),
+    ('ar-running-1', 'Speed up parser', 'testorg/testrepo', 'main',
+     'autoresearch/ar-runni', 'make bench', 'time: (\d+\.?\d*)ms',
+     'lower', 'src/parser.rs', 20, 'running',
+     150.0, 132.5, 8, 2, 1.80, 'testadmin',
+     NOW() - INTERVAL '2 hours', NOW() - INTERVAL '5 minutes');
+
+INSERT INTO autoresearch_experiments
+    (run_id, experiment_number, status, diff, metric_value, accepted,
+     claude_response, duration_seconds, created_at)
+VALUES
+    ('ar-completed-1', 1, 'accepted', 'diff --git a/src/sort.py\n+optimized', 45.0, true,
+     'Switched to a more efficient comparison function', 120, NOW() - INTERVAL '22 hours'),
+    ('ar-completed-1', 2, 'rejected', 'diff --git a/src/sort.py\n+parallel', 41.2, false,
+     'Attempted parallel sorting but overhead was too high', 130, NOW() - INTERVAL '20 hours'),
+    ('ar-completed-1', 3, 'accepted', 'diff --git a/src/sort.py\n+cache', 48.7, true,
+     'Added memoization for repeated comparisons', 115, NOW() - INTERVAL '18 hours'),
+    ('ar-completed-1', 4, 'rejected', 'diff --git a/src/sort.py\n+introspective', 47.1, false,
+     'Tried introspective sort but marginal improvement', 125, NOW() - INTERVAL '16 hours'),
+    ('ar-completed-1', 5, 'accepted', 'diff --git a/src/sort.py\n+final', 51.3, true,
+     'Optimized inner loop with SIMD-friendly operations', 140, NOW() - INTERVAL '14 hours');

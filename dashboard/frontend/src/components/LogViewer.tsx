@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { connectTaskOutput, connectPreviewLogs } from '@/lib/api';
+import { connectTaskOutput, connectPreviewLogs, connectAutoresearchOutput } from '@/lib/api';
 import '@xterm/xterm/css/xterm.css';
 
 const ERROR_LINE_RE = /\b(error|exception|fatal|panic|traceback|critical)\b/i;
@@ -34,12 +34,14 @@ interface LogViewerProps {
   taskId?: string;
   /** For preview logs: creates its own WS via connectPreviewLogs */
   previewSlug?: string;
+  /** For autoresearch run logs */
+  autoresearchRunId?: string;
   /** For preview logs: external WS (no DB history) */
   ws?: WebSocket | null;
   onConnectionChange?: (connected: boolean) => void;
 }
 
-export default function LogViewer({ taskId, previewSlug, ws, onConnectionChange }: LogViewerProps) {
+export default function LogViewer({ taskId, previewSlug, autoresearchRunId, ws, onConnectionChange }: LogViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Mode 1: Self-managed WS for task logs with auto-reconnect
@@ -142,6 +144,55 @@ export default function LogViewer({ taskId, previewSlug, ws, onConnectionChange 
       term.dispose();
     };
   }, [previewSlug, taskId]);
+
+  // Mode: Self-managed WS for autoresearch run logs with auto-reconnect
+  useEffect(() => {
+    if (!containerRef.current || !autoresearchRunId || taskId || previewSlug) return;
+
+    const term = new Terminal(TERM_OPTIONS);
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(containerRef.current);
+    fit.fit();
+
+    let disposed = false;
+    let currentSocket: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function connect() {
+      if (disposed) return;
+
+      const socket = connectAutoresearchOutput(autoresearchRunId!);
+      currentSocket = socket;
+
+      socket.addEventListener('open', () => {
+        term.clear();
+        onConnectionChange?.(true);
+      });
+      socket.addEventListener('message', (ev) => {
+        writeLine(term, ev.data);
+      });
+      socket.addEventListener('close', () => {
+        onConnectionChange?.(false);
+        if (!disposed) {
+          reconnectTimer = setTimeout(connect, 3000);
+        }
+      });
+    }
+
+    connect();
+
+    const onResize = () => fit.fit();
+    window.addEventListener('resize', onResize);
+
+    return () => {
+      disposed = true;
+      window.removeEventListener('resize', onResize);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      currentSocket?.close();
+      term.dispose();
+    };
+  }, [autoresearchRunId, taskId, previewSlug]);
 
   // Mode 3: External WS for preview logs (legacy)
   const termRef = useRef<Terminal | null>(null);

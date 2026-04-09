@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ChevronLeft,
   FlaskConical,
+  GitPullRequest,
   Square,
   Check,
   X,
@@ -22,12 +23,14 @@ import {
   listAutoresearchExperiments,
   getAutoresearchStats,
   stopAutoresearchRun,
+  createAutoresearchPR,
 } from '@/lib/api';
 import type { AutoresearchExperiment } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import MetricChart from '@/components/MetricChart';
+import LogViewer from '@/components/LogViewer';
 import { timeAgo } from '@/lib/utils';
 
 function statusColor(status: string) {
@@ -77,6 +80,13 @@ export default function AutoresearchDetail() {
     },
   });
 
+  const prMutation = useMutation({
+    mutationFn: () => createAutoresearchPR(id!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['autoresearch-run', id] });
+    },
+  });
+
   if (!run) {
     return <p className="text-sm text-muted-foreground py-8 text-center">Loading...</p>;
   }
@@ -115,6 +125,25 @@ export default function AutoresearchDetail() {
               <Square className="size-3.5 mr-1" />
               {stopMutation.isPending ? 'Stopping...' : 'Stop'}
             </Button>
+          )}
+          {!running && run.accepted_experiments > 0 && !run.pr_url && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => prMutation.mutate()}
+              disabled={prMutation.isPending}
+            >
+              <GitPullRequest className="size-3.5 mr-1" />
+              {prMutation.isPending ? 'Creating...' : 'Create PR'}
+            </Button>
+          )}
+          {run.pr_url && (
+            <a href={run.pr_url} target="_blank" rel="noopener noreferrer">
+              <Button size="sm" variant="outline">
+                <GitPullRequest className="size-3.5 mr-1" />
+                PR #{run.pr_number}
+              </Button>
+            </a>
           )}
         </div>
       </div>
@@ -223,15 +252,8 @@ export default function AutoresearchDetail() {
         </TabsContent>
 
         {/* Logs tab */}
-        <TabsContent value="logs" className="flex-1 overflow-y-auto rounded-b-lg border border-t-0 border-border bg-card p-4">
-          <pre className="text-xs font-mono whitespace-pre-wrap text-muted-foreground">
-            {/* TODO: Connect to WebSocket for live streaming. For now, show experiment summaries. */}
-            {experiments?.map((exp) => {
-              const status = exp.accepted ? 'ACCEPTED' : 'REJECTED';
-              const metric = exp.metric_value != null ? exp.metric_value.toFixed(4) : 'N/A';
-              return `[EXP #${exp.experiment_number}] ${status} — metric: ${metric} — ${exp.duration_seconds ?? 0}s\n`;
-            }).join('') || 'No logs yet.'}
-          </pre>
+        <TabsContent value="logs" forceMount className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden data-[state=inactive]:hidden">
+          <LogViewer autoresearchRunId={id!} />
         </TabsContent>
 
         {/* Config tab */}

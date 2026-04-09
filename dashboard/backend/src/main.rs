@@ -167,6 +167,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/autoresearch/runs/{id}", get(autoresearch::get_run))
         .route("/autoresearch/runs/{id}/experiments", get(autoresearch::list_experiments))
         .route("/autoresearch/runs/{id}/stop", post(autoresearch::stop_run))
+        .route("/autoresearch/runs/{id}/create-pr", post(autoresearch::create_run_pr))
         .route("/autoresearch/runs/{id}/stats", get(autoresearch::get_run_stats))
         .route("/autoresearch/benchmark-servers", get(benchmark_servers::list_available_servers))
         // Repos
@@ -174,7 +175,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/repos/{owner}/{repo}/branches", get(tasks::list_branches))
         // WebSockets
         .route("/ws/logs/{slug}", get(ws::preview_logs_ws))
-        .route("/ws/tasks/{id}", get(ws::task_output_ws));
+        .route("/ws/tasks/{id}", get(ws::task_output_ws))
+        .route("/ws/autoresearch/{id}", get(ws::autoresearch_output_ws));
 
     // Conditionally add test-only auth endpoint when TEST_MODE=true
     let api = if std::env::var("TEST_MODE").as_deref() == Ok("true") {

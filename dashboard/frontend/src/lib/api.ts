@@ -540,3 +540,9 @@ export const stopAutoresearchRun = (id: string) =>
   apiFetch<{ status: string }>(`/api/autoresearch/runs/${id}/stop`, { method: 'POST' });
 export const getAutoresearchStats = (id: string) =>
   apiFetch<AutoresearchStats>(`/api/autoresearch/runs/${id}/stats`);
+export const createAutoresearchPR = (id: string) =>
+  apiFetch<AutoresearchRun>(`/api/autoresearch/runs/${id}/create-pr`, { method: 'POST' });
+export function connectAutoresearchOutput(id: string): WebSocket {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return new WebSocket(`${proto}//${location.host}/api/ws/autoresearch/${id}`);
+}

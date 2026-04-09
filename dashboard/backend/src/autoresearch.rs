@@ -370,6 +370,123 @@ pub async fn get_run_stats(
     })))
 }
 
+/// POST /api/autoresearch/runs/{id}/create-pr
+pub async fn create_run_pr(
+    user: MemberUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<AutoresearchRun>, AppError> {
+    let run = sqlx::query_as::<_, AutoresearchRun>(&format!("{RUN_QUERY} WHERE id = $1"))
+        .bind(&id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|_| AppError::NotFound("Run not found".into()))?;
+
+    if user.0.role != "admin" && run.created_by.as_deref() != Some(&user.0.sub) {
+        return Err(AppError::Forbidden("Not authorized".into()));
+    }
+
+    if run.pr_url.is_some() {
+        return Err(AppError::BadRequest("PR already exists for this run".into()));
+    }
+
+    let branch_name = run
+        .branch_name
+        .as_deref()
+        .ok_or_else(|| AppError::BadRequest("Run has no branch".into()))?;
+
+    let github_token: String =
+        sqlx::query_scalar("SELECT github_token FROM users WHERE github_login = $1")
+            .bind(&user.0.sub)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|_| AppError::Auth("User not found".into()))?;
+
+    // Build PR title and body
+    let title = format!(
+        "Autoresearch: {} optimizations for {}",
+        run.accepted_experiments, run.repo
+    );
+
+    let improvement = match (run.baseline_metric, run.best_metric) {
+        (Some(baseline), Some(best)) if baseline != 0.0 => {
+            let raw = ((best - baseline) / baseline.abs()) * 100.0;
+            if run.optimization_direction == "lower" { -raw } else { raw }
+        }
+        _ => 0.0,
+    };
+
+    let body = format!(
+        "## Autoresearch Results\n\n\
+         - **Baseline metric:** {}\n\
+         - **Best metric:** {}\n\
+         - **Improvement:** {:.1}%\n\
+         - **Experiments:** {} total, {} accepted\n\
+         - **Optimization direction:** {} is better\n\
+         - **Benchmark command:** `{}`\n\n\
+         Generated automatically by Tekton Autoresearch.",
+        run.baseline_metric.map(|v| format!("{v}")).unwrap_or("N/A".into()),
+        run.best_metric.map(|v| format!("{v}")).unwrap_or("N/A".into()),
+        improvement,
+        run.total_experiments,
+        run.accepted_experiments,
+        run.optimization_direction,
+        run.benchmark_command,
+    );
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("https://api.github.com/repos/{}/pulls", run.repo))
+        .header("Authorization", format!("token {github_token}"))
+        .header("User-Agent", "tekton-dashboard")
+        .header("Accept", "application/vnd.github+json")
+        .json(&serde_json::json!({
+            "title": title,
+            "body": body,
+            "head": branch_name,
+            "base": run.base_branch,
+        }))
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("GitHub API request failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!("GitHub API returned {status}: {text}")));
+    }
+
+    let pr_data: serde_json::Value = resp.json().await
+        .map_err(|e| AppError::Internal(format!("Failed to parse PR response: {e}")))?;
+
+    let pr_url = pr_data["html_url"].as_str().unwrap_or("").to_string();
+    let pr_number = pr_data["number"].as_i64().unwrap_or(0) as i32;
+
+    sqlx::query("UPDATE autoresearch_runs SET pr_url = $2, pr_number = $3, updated_at = NOW() WHERE id = $1")
+        .bind(&id)
+        .bind(&pr_url)
+        .bind(pr_number)
+        .execute(&state.db)
+        .await?;
+
+    crate::audit::log_event(
+        &state.db,
+        "autoresearch.pr_created",
+        &user.0.sub,
+        Some(&id),
+        serde_json::json!({ "pr_url": &pr_url, "pr_number": pr_number }),
+        None,
+    )
+    .await;
+
+    let updated = sqlx::query_as::<_, AutoresearchRun>(&format!("{RUN_QUERY} WHERE id = $1"))
+        .bind(&id)
+        .fetch_one(&state.db)
+        .await?;
+
+    Ok(Json(updated))
+}
+
 // ── Pipeline ──
 
 async fn update_run_status(db: &sqlx::PgPool, id: &str, status: &str) -> Result<(), AppError> {

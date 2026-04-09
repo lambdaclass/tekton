@@ -29,6 +29,10 @@ export const TEST_IDS = {
     main: "testorg/testrepo",
     frontend: "testorg/frontend",
   },
+  autoresearch: {
+    completed: "ar-completed-1",
+    running: "ar-running-1",
+  },
   org: "testorg",
 } as const;
 
