@@ -16,7 +16,13 @@ import {
   deleteOrgPolicy,
   listPresets,
   getMe,
+  listBenchmarkServers,
+  createBenchmarkServer,
+  deleteBenchmarkServer,
+  setupBenchmarkServer,
+  getBenchmarkServerSetupLog,
 } from '@/lib/api';
+import type { BenchmarkServer } from '@/lib/api';
 import type { PolicyPreset } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -31,7 +37,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
-import { Users, KeyRound, Shield, Building, Trash2, Plus, X, Settings } from 'lucide-react';
+import { Users, KeyRound, Shield, Building, Trash2, Plus, X, Settings, Server, Play, Loader2 } from 'lucide-react';
 import { Navigate } from 'react-router-dom';
 
 const ROLES = ['admin', 'member', 'viewer'] as const;
@@ -51,6 +57,7 @@ export default function Admin() {
       <SecretsSection queryClient={queryClient} />
       <PoliciesSection queryClient={queryClient} />
       <OrgPoliciesSection queryClient={queryClient} />
+      <BenchmarkServersSection queryClient={queryClient} />
     </div>
   );
 }
@@ -1203,6 +1210,208 @@ function OrgPoliciesSection({ queryClient }: { queryClient: ReturnType<typeof us
                 {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
               </Button>
             </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </CardContent>
+    </Card>
+  );
+}
+
+function BenchmarkServersSection({ queryClient }: { queryClient: ReturnType<typeof useQueryClient> }) {
+  const { data: servers, isLoading } = useQuery({
+    queryKey: ['admin-benchmark-servers'],
+    queryFn: listBenchmarkServers,
+    refetchInterval: 5000,
+  });
+
+  const [showAdd, setShowAdd] = useState(false);
+  const [name, setName] = useState('');
+  const [hostname, setHostname] = useState('');
+  const [sshUser, setSshUser] = useState('root');
+  const [sshKeyPath, setSshKeyPath] = useState('');
+  const [hardwareDescription, setHardwareDescription] = useState('');
+  const [setupLogServer, setSetupLogServer] = useState<BenchmarkServer | null>(null);
+  const [setupLog, setSetupLog] = useState<{ setup_log: string | null; error_message: string | null; status: string } | null>(null);
+
+  const createMutation = useMutation({
+    mutationFn: createBenchmarkServer,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-benchmark-servers'] });
+      setShowAdd(false);
+      setName('');
+      setHostname('');
+      setSshUser('root');
+      setSshKeyPath('');
+      setHardwareDescription('');
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: deleteBenchmarkServer,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['admin-benchmark-servers'] }),
+  });
+
+  const setupMutation = useMutation({
+    mutationFn: setupBenchmarkServer,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['admin-benchmark-servers'] }),
+  });
+
+  const handleCreate = (e: React.FormEvent) => {
+    e.preventDefault();
+    createMutation.mutate({
+      name,
+      hostname,
+      ssh_user: sshUser || undefined,
+      ssh_key_path: sshKeyPath || undefined,
+      hardware_description: hardwareDescription || undefined,
+    });
+  };
+
+  const viewSetupLog = async (server: BenchmarkServer) => {
+    setSetupLogServer(server);
+    const log = await getBenchmarkServerSetupLog(server.id);
+    setSetupLog(log);
+  };
+
+  const statusColor = (status: string) => {
+    switch (status) {
+      case 'ready': return 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/30';
+      case 'busy': return 'bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/30';
+      case 'provisioning': return 'bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/30';
+      case 'error': return 'bg-red-500/10 text-red-700 dark:text-red-400 border-red-500/30';
+      default: return 'bg-secondary text-muted-foreground';
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Server className="size-5" />
+          Benchmark Servers
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <p className="text-sm text-muted-foreground">Loading...</p>
+        ) : (
+          <>
+            {servers && servers.length > 0 && (
+              <div className="divide-y divide-border border rounded-md mb-4">
+                {servers.map((s) => (
+                  <div key={s.id} className="flex items-center justify-between px-4 py-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono text-sm font-medium">{s.name}</span>
+                        <Badge variant="outline" className={statusColor(s.status)}>{s.status}</Badge>
+                        <span className="text-xs text-muted-foreground">{s.hostname}</span>
+                      </div>
+                      {s.hardware_description && (
+                        <p className="text-xs text-muted-foreground mt-0.5">{s.hardware_description}</p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 ml-4">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setupMutation.mutate(s.id)}
+                        disabled={setupMutation.isPending || s.status === 'busy' || s.status === 'provisioning'}
+                      >
+                        {s.status === 'provisioning' ? (
+                          <><Loader2 className="size-3.5 mr-1 animate-spin" /> Setting up...</>
+                        ) : (
+                          <><Play className="size-3.5 mr-1" /> Setup</>
+                        )}
+                      </Button>
+                      {(s.setup_log || s.error_message) && (
+                        <Button variant="ghost" size="sm" onClick={() => viewSetupLog(s)}>
+                          Log
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => {
+                          if (confirm(`Delete benchmark server "${s.name}"?`)) {
+                            deleteMutation.mutate(s.id);
+                          }
+                        }}
+                        disabled={s.status === 'busy'}
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {!showAdd ? (
+              <Button variant="outline" size="sm" onClick={() => setShowAdd(true)}>
+                <Plus className="size-3.5 mr-1" /> Add Server
+              </Button>
+            ) : (
+              <form onSubmit={handleCreate} className="border rounded-md p-4 space-y-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="bs-name">Name</Label>
+                    <Input id="bs-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="gpu-server-1" required />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="bs-hostname">Hostname / IP</Label>
+                    <Input id="bs-hostname" value={hostname} onChange={(e) => setHostname(e.target.value)} placeholder="192.168.1.100" required />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="bs-ssh-user">SSH User</Label>
+                    <Input id="bs-ssh-user" value={sshUser} onChange={(e) => setSshUser(e.target.value)} placeholder="root" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="bs-ssh-key">SSH Key Path (on tekton server)</Label>
+                    <Input id="bs-ssh-key" value={sshKeyPath} onChange={(e) => setSshKeyPath(e.target.value)} placeholder="/root/.ssh/id_ed25519" />
+                  </div>
+                  <div className="space-y-1 md:col-span-2">
+                    <Label htmlFor="bs-hw">Hardware Description</Label>
+                    <Input id="bs-hw" value={hardwareDescription} onChange={(e) => setHardwareDescription(e.target.value)} placeholder="8x A100 80GB, 128GB RAM" />
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button type="submit" size="sm" disabled={createMutation.isPending}>
+                    {createMutation.isPending ? 'Adding...' : 'Add Server'}
+                  </Button>
+                  <Button type="button" variant="outline" size="sm" onClick={() => setShowAdd(false)}>
+                    Cancel
+                  </Button>
+                </div>
+                {createMutation.isError && (
+                  <p className="text-destructive text-sm">{(createMutation.error as Error).message}</p>
+                )}
+              </form>
+            )}
+          </>
+        )}
+
+        {/* Setup Log Dialog */}
+        <Dialog open={!!setupLogServer} onOpenChange={() => { setSetupLogServer(null); setSetupLog(null); }}>
+          <DialogContent className="max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+            <DialogHeader>
+              <DialogTitle>Setup Log: {setupLogServer?.name}</DialogTitle>
+              <DialogDescription>
+                Status: {setupLog?.status ?? setupLogServer?.status}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex-1 overflow-y-auto">
+              {setupLog?.error_message && (
+                <div className="mb-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2">
+                  <p className="text-sm text-destructive">{setupLog.error_message}</p>
+                </div>
+              )}
+              {setupLog?.setup_log ? (
+                <pre className="text-xs font-mono bg-secondary rounded-md p-3 whitespace-pre-wrap">{setupLog.setup_log}</pre>
+              ) : (
+                <p className="text-sm text-muted-foreground">No log available yet.</p>
+              )}
+            </div>
           </DialogContent>
         </Dialog>
       </CardContent>

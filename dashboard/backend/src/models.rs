@@ -309,6 +309,107 @@ pub struct AuditLogEntry {
     pub created_at: String,
 }
 
+// ── Benchmark Servers ──
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct BenchmarkServer {
+    pub id: i64,
+    pub name: String,
+    pub hostname: String,
+    pub ssh_user: String,
+    pub ssh_key_path: Option<String>,
+    pub hardware_description: Option<String>,
+    pub status: String,
+    pub setup_log: Option<String>,
+    pub error_message: Option<String>,
+    pub created_by: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateBenchmarkServerRequest {
+    pub name: String,
+    pub hostname: String,
+    pub ssh_user: Option<String>,
+    pub ssh_key_path: Option<String>,
+    pub hardware_description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateBenchmarkServerRequest {
+    pub name: Option<String>,
+    pub hostname: Option<String>,
+    pub ssh_user: Option<String>,
+    pub ssh_key_path: Option<String>,
+    pub hardware_description: Option<String>,
+}
+
+// ── Autoresearch ──
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct AutoresearchRun {
+    pub id: String,
+    pub name: Option<String>,
+    pub repo: String,
+    pub base_branch: String,
+    pub branch_name: Option<String>,
+    pub agent_name: Option<String>,
+    pub benchmark_server_id: Option<i64>,
+    pub benchmark_command: String,
+    pub metric_regex: String,
+    pub optimization_direction: String,
+    pub target_files: Option<String>,
+    pub frozen_files: Option<String>,
+    pub max_experiments: Option<i32>,
+    pub time_budget_minutes: Option<i32>,
+    pub status: String,
+    pub baseline_metric: Option<f64>,
+    pub best_metric: Option<f64>,
+    pub total_experiments: i32,
+    pub accepted_experiments: i32,
+    pub total_cost_usd: Option<f64>,
+    pub error_message: Option<String>,
+    pub created_by: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub pr_url: Option<String>,
+    pub pr_number: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateAutoresearchRunRequest {
+    pub repo: String,
+    pub base_branch: Option<String>,
+    pub benchmark_command: String,
+    pub metric_regex: String,
+    pub optimization_direction: Option<String>,
+    pub target_files: Option<String>,
+    pub frozen_files: Option<String>,
+    pub max_experiments: Option<i32>,
+    pub time_budget_minutes: Option<i32>,
+    pub benchmark_server_id: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct AutoresearchExperiment {
+    pub id: i64,
+    pub run_id: String,
+    pub experiment_number: i32,
+    pub status: String,
+    pub diff: Option<String>,
+    pub metric_value: Option<f64>,
+    pub metric_raw_output: Option<String>,
+    pub accepted: Option<bool>,
+    pub hypothesis: Option<String>,
+    pub claude_response: Option<String>,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cost_usd: Option<f64>,
+    pub duration_seconds: Option<i32>,
+    pub created_at: String,
+}
+
 // ── Paginated response ──
 
 #[derive(Debug, Serialize)]

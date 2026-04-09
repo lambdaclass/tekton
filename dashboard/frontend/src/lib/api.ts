@@ -426,3 +426,38 @@ export function connectTaskOutput(id: string): WebSocket {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   return new WebSocket(`${proto}//${location.host}/api/ws/tasks/${id}`);
 }
+
+// ── Benchmark Servers ──
+
+export interface BenchmarkServer {
+  id: number;
+  name: string;
+  hostname: string;
+  ssh_user: string;
+  ssh_key_path: string | null;
+  hardware_description: string | null;
+  status: string;
+  setup_log: string | null;
+  error_message: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// Admin
+export const listBenchmarkServers = () =>
+  apiFetch<BenchmarkServer[]>('/api/admin/benchmark-servers');
+export const createBenchmarkServer = (data: { name: string; hostname: string; ssh_user?: string; ssh_key_path?: string; hardware_description?: string }) =>
+  apiFetch<BenchmarkServer>('/api/admin/benchmark-servers', { method: 'POST', body: JSON.stringify(data) });
+export const updateBenchmarkServer = (id: number, data: { name?: string; hostname?: string; ssh_user?: string; ssh_key_path?: string; hardware_description?: string }) =>
+  apiFetch<BenchmarkServer>(`/api/admin/benchmark-servers/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+export const deleteBenchmarkServer = (id: number) =>
+  apiFetch<{ deleted: boolean }>(`/api/admin/benchmark-servers/${id}`, { method: 'DELETE' });
+export const setupBenchmarkServer = (id: number) =>
+  apiFetch<BenchmarkServer>(`/api/admin/benchmark-servers/${id}/setup`, { method: 'POST' });
+export const getBenchmarkServerSetupLog = (id: number) =>
+  apiFetch<{ setup_log: string | null; error_message: string | null; status: string }>(`/api/admin/benchmark-servers/${id}/setup-log`);
+
+// Non-admin: list available servers for autoresearch runs
+export const listAvailableBenchmarkServers = () =>
+  apiFetch<BenchmarkServer[]>('/api/autoresearch/benchmark-servers');

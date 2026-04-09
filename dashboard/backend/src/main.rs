@@ -1,5 +1,7 @@
 mod audit;
 mod auth;
+mod autoresearch;
+mod benchmark_servers;
 mod config;
 mod cost;
 mod db;
@@ -36,6 +38,8 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub db: PgPool,
     pub task_channels: TaskChannels,
+    pub autoresearch_channels: TaskChannels,
+    pub autoresearch_stop_flags: autoresearch::StopFlags,
 }
 
 #[tokio::main]
@@ -56,6 +60,8 @@ async fn main() -> anyhow::Result<()> {
         config: Arc::new(config),
         db,
         task_channels: tasks::new_task_channels(),
+        autoresearch_channels: tasks::new_task_channels(),
+        autoresearch_stop_flags: autoresearch::new_stop_flags(),
     };
 
     let api = Router::new()
@@ -129,6 +135,13 @@ async fn main() -> anyhow::Result<()> {
             "/admin/settings/ai",
             delete(settings::delete_global_ai_settings),
         )
+        // Admin: Benchmark Servers
+        .route("/admin/benchmark-servers", get(benchmark_servers::list_servers))
+        .route("/admin/benchmark-servers", post(benchmark_servers::create_server))
+        .route("/admin/benchmark-servers/{id}", put(benchmark_servers::update_server))
+        .route("/admin/benchmark-servers/{id}", delete(benchmark_servers::delete_server))
+        .route("/admin/benchmark-servers/{id}/setup", post(benchmark_servers::setup_server))
+        .route("/admin/benchmark-servers/{id}/setup-log", get(benchmark_servers::get_setup_log))
         // Admin: Audit Log
         .route("/admin/audit-log", get(audit::list_audit_log))
         // Settings
@@ -148,6 +161,14 @@ async fn main() -> anyhow::Result<()> {
             "/webhooks/repos/{owner}/{repo}/{hook_id}",
             delete(webhooks::delete_webhook),
         )
+        // Autoresearch
+        .route("/autoresearch/runs", get(autoresearch::list_runs))
+        .route("/autoresearch/runs", post(autoresearch::create_run_handler))
+        .route("/autoresearch/runs/{id}", get(autoresearch::get_run))
+        .route("/autoresearch/runs/{id}/experiments", get(autoresearch::list_experiments))
+        .route("/autoresearch/runs/{id}/stop", post(autoresearch::stop_run))
+        .route("/autoresearch/runs/{id}/stats", get(autoresearch::get_run_stats))
+        .route("/autoresearch/benchmark-servers", get(benchmark_servers::list_available_servers))
         // Repos
         .route("/repos", get(tasks::list_repos))
         .route("/repos/{owner}/{repo}/branches", get(tasks::list_branches))
@@ -185,6 +206,9 @@ async fn main() -> anyhow::Result<()> {
         state.task_channels.clone(),
     )
     .await;
+
+    // Recover interrupted autoresearch runs
+    autoresearch::recover_interrupted_runs(&state.db).await;
 
     let app = Router::new()
         .nest("/api", api)

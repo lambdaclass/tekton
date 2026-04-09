@@ -281,5 +281,94 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
+    // Create benchmark_servers table for autoresearch
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS benchmark_servers (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            hostname TEXT NOT NULL,
+            ssh_user TEXT NOT NULL DEFAULT 'root',
+            ssh_key_path TEXT,
+            hardware_description TEXT,
+            status TEXT NOT NULL DEFAULT 'unprovisioned',
+            setup_log TEXT,
+            error_message TEXT,
+            created_by TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Create autoresearch_runs table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS autoresearch_runs (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            repo TEXT NOT NULL,
+            base_branch TEXT NOT NULL DEFAULT 'main',
+            branch_name TEXT,
+            agent_name TEXT,
+            benchmark_server_id BIGINT REFERENCES benchmark_servers(id),
+            benchmark_command TEXT NOT NULL,
+            metric_regex TEXT NOT NULL,
+            optimization_direction TEXT NOT NULL DEFAULT 'lower',
+            target_files TEXT,
+            frozen_files TEXT,
+            max_experiments INTEGER,
+            time_budget_minutes INTEGER,
+            status TEXT NOT NULL DEFAULT 'pending',
+            baseline_metric DOUBLE PRECISION,
+            best_metric DOUBLE PRECISION,
+            total_experiments INTEGER NOT NULL DEFAULT 0,
+            accepted_experiments INTEGER NOT NULL DEFAULT 0,
+            total_cost_usd DOUBLE PRECISION DEFAULT 0,
+            error_message TEXT,
+            created_by TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            pr_url TEXT,
+            pr_number INTEGER
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Create autoresearch_experiments table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS autoresearch_experiments (
+            id BIGSERIAL PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES autoresearch_runs(id),
+            experiment_number INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'running',
+            diff TEXT,
+            metric_value DOUBLE PRECISION,
+            metric_raw_output TEXT,
+            accepted BOOLEAN,
+            hypothesis TEXT,
+            claude_response TEXT,
+            input_tokens BIGINT DEFAULT 0,
+            output_tokens BIGINT DEFAULT 0,
+            cost_usd DOUBLE PRECISION DEFAULT 0,
+            duration_seconds INTEGER,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Create autoresearch_logs table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS autoresearch_logs (
+            id BIGSERIAL PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            line TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }
