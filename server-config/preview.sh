@@ -19,10 +19,16 @@ CLOSURE_CACHE_DIR="$PREVIEW_DIR/.closure-cache"
 # -- Load secrets -------------------------------------------------------------
 load_secrets() {
     if [[ -f "$SECRETS_FILE" ]]; then
+        # Save any caller-provided GITHUB_TOKEN (e.g. user OAuth from the dashboard)
+        # so it isn't overwritten by the server-wide token in the secrets file.
+        local _caller_token="${GITHUB_TOKEN:-}"
         set -a
         # shellcheck source=/dev/null
         source "$SECRETS_FILE"
         set +a
+        if [[ -n "$_caller_token" ]]; then
+            export GITHUB_TOKEN="$_caller_token"
+        fi
     fi
 }
 
