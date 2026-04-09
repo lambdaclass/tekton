@@ -95,7 +95,7 @@ test.describe('Autoresearch', () => {
 
   test('member can see autoresearch page', async ({ memberPage }) => {
     await memberPage.goto('/autoresearch');
-    await expect(memberPage.getByText('Autoresearch')).toBeVisible();
+    await expect(memberPage.getByRole('button', { name: 'New Run' })).toBeVisible();
   });
 });
 
