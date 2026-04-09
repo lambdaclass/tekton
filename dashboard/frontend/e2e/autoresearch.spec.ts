@@ -48,7 +48,7 @@ test.describe('Autoresearch', () => {
     await expect(adminPage.getByText('51.3000').first()).toBeVisible(); // best
     await expect(adminPage.getByText('Improvement', { exact: true })).toBeVisible();
     await expect(adminPage.getByText('Rate', { exact: true })).toBeVisible();
-    await expect(adminPage.getByText('Cost', { exact: true })).toBeVisible();
+    await expect(adminPage.getByText('Cost', { exact: true }).first()).toBeVisible();
   });
 
   test('detail page shows experiment feed with accepted and rejected entries', async ({ adminPage }) => {
