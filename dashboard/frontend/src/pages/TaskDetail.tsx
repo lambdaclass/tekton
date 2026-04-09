@@ -334,21 +334,19 @@ export default function TaskDetail() {
 
         {/* Diff tab */}
         <TabsContent value="diff" className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden">
+          <div className="flex items-center justify-end px-4 py-2 border-b border-border bg-card/50">
+            <button
+              onClick={() => queryClient.invalidateQueries({ queryKey: ['task-diff', id] })}
+              className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <RotateCcw className="size-3.5" />
+              Refresh
+            </button>
+          </div>
           {diffData?.diff ? (
-            <>
-              <div className="flex items-center justify-end px-4 py-2 border-b border-border bg-card/50">
-                <button
-                  onClick={() => queryClient.invalidateQueries({ queryKey: ['task-diff', id] })}
-                  className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <RotateCcw className="size-3.5" />
-                  Refresh
-                </button>
-              </div>
-              <div className="flex-1 overflow-y-auto">
-                <DiffViewer diff={diffData.diff} />
-              </div>
-            </>
+            <div className="flex-1 overflow-y-auto">
+              <DiffViewer diff={diffData.diff} />
+            </div>
           ) : (
             <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
               <FileDiff className="size-8 mb-2 opacity-30" />
