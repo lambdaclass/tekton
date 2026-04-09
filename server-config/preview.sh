@@ -155,13 +155,21 @@ get_github_token() {
 
 get_commit_sha() {
     local repo="$1" branch="$2" token="$3"
-    local sha
-    sha=$(curl -sf \
+    # URL-encode the branch name so slashes (e.g. feature/foo) don't break the API path
+    local encoded_branch
+    encoded_branch=$(printf '%s' "$branch" | jq -sRr @uri)
+    local sha http_code body
+    body=$(curl -s -w '\n%{http_code}' \
         -H "Authorization: Bearer ${token}" \
         -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/${repo}/commits/${branch}" | jq -r '.sha')
+        "https://api.github.com/repos/${repo}/commits/${encoded_branch}")
+    http_code=$(echo "$body" | tail -1)
+    body=$(echo "$body" | sed '$d')
+    sha=$(echo "$body" | jq -r '.sha')
     if [[ -z "$sha" ]] || [[ "$sha" == "null" ]]; then
-        fatal "Could not get commit SHA for ${repo}@${branch}"
+        local api_msg
+        api_msg=$(echo "$body" | jq -r '.message // empty' 2>/dev/null)
+        fatal "Could not get commit SHA for ${repo}@${branch} (HTTP ${http_code}${api_msg:+: $api_msg})"
     fi
     echo "$sha"
 }
