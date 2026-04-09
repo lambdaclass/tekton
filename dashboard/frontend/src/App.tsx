@@ -10,6 +10,8 @@ import Settings from './pages/Settings';
 import Webhooks from './pages/Webhooks';
 import CostDashboard from './pages/CostDashboard';
 import AuditLog from './pages/AuditLog';
+import Autoresearch from './pages/Autoresearch';
+import AutoresearchDetail from './pages/AutoresearchDetail';
 
 export default function App() {
   return (
@@ -20,6 +22,8 @@ export default function App() {
         <Route path="/previews/:slug" element={<PreviewDetail />} />
         <Route path="/tasks" element={<Tasks />} />
         <Route path="/tasks/:id" element={<TaskDetail />} />
+        <Route path="/autoresearch" element={<Autoresearch />} />
+        <Route path="/autoresearch/:id" element={<AutoresearchDetail />} />
         <Route path="/admin" element={<Admin />} />
         <Route path="/cost" element={<CostDashboard />} />
         <Route path="/audit" element={<AuditLog />} />
