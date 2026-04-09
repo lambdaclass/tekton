@@ -7,20 +7,34 @@ test.describe('Autoresearch', () => {
     await expect(adminPage.getByText('Speed up parser')).toBeVisible();
   });
 
-  test('list page shows improvement percentage', async ({ adminPage }) => {
+  test('list page shows improvement percentage and experiment counts', async ({ adminPage }) => {
     await adminPage.goto('/autoresearch');
     await expect(adminPage.getByText('+20.7%')).toBeVisible();
-  });
-
-  test('list page shows experiment counts', async ({ adminPage }) => {
-    await adminPage.goto('/autoresearch');
     await expect(adminPage.getByText('5 experiments (3 accepted)')).toBeVisible();
+    await expect(adminPage.getByText('8 experiments (2 accepted)')).toBeVisible();
   });
 
-  test('new run form opens and closes', async ({ adminPage }) => {
+  test('list page shows status badges', async ({ adminPage }) => {
+    await adminPage.goto('/autoresearch');
+    await expect(adminPage.getByText('completed').first()).toBeVisible();
+    await expect(adminPage.getByText('running').first()).toBeVisible();
+  });
+
+  test('new run form opens, shows fields, and closes', async ({ adminPage }) => {
     await adminPage.goto('/autoresearch');
     await adminPage.getByRole('button', { name: 'New Run' }).click();
     await expect(adminPage.getByText('New Autoresearch Run')).toBeVisible();
+    // Check form fields exist
+    await expect(adminPage.getByLabel('Repository')).toBeVisible();
+    await expect(adminPage.getByLabel('Base Branch')).toBeVisible();
+    await expect(adminPage.getByLabel('Benchmark Command')).toBeVisible();
+    await expect(adminPage.getByLabel('Metric Regex (one capture group)')).toBeVisible();
+    await expect(adminPage.getByText('Lower is better')).toBeVisible();
+    await expect(adminPage.getByText('Higher is better')).toBeVisible();
+    await expect(adminPage.getByLabel('Max Experiments')).toBeVisible();
+    await expect(adminPage.getByLabel('Target Files')).toBeVisible();
+    await expect(adminPage.getByLabel('Frozen Files')).toBeVisible();
+    // Close it
     await adminPage.getByRole('button', { name: 'Cancel' }).first().click();
     await expect(adminPage.getByText('New Autoresearch Run')).toHaveCount(0);
   });
@@ -29,33 +43,74 @@ test.describe('Autoresearch', () => {
     await adminPage.goto(`/autoresearch/${TEST_IDS.autoresearch.completed}`);
     await expect(adminPage.getByText('Optimize sort perf')).toBeVisible();
     await expect(adminPage.getByText('completed')).toBeVisible();
+    // Stats bar values
     await expect(adminPage.getByText('42.5000').first()).toBeVisible(); // baseline
     await expect(adminPage.getByText('51.3000').first()).toBeVisible(); // best
+    await expect(adminPage.getByText('Improvement')).toBeVisible();
+    await expect(adminPage.getByText('Rate')).toBeVisible();
+    await expect(adminPage.getByText('Cost')).toBeVisible();
   });
 
-  test('detail page shows experiments tab', async ({ adminPage }) => {
+  test('detail page shows experiment feed with accepted and rejected entries', async ({ adminPage }) => {
     await adminPage.goto(`/autoresearch/${TEST_IDS.autoresearch.completed}`);
     await expect(adminPage.getByRole('tab', { name: 'Experiments' })).toBeVisible();
-    // Check experiment feed shows entries
     await expect(adminPage.getByText('Switched to a more efficient comparison')).toBeVisible();
+    await expect(adminPage.getByText('Attempted parallel sorting')).toBeVisible();
+    // Click on an experiment to expand its diff
+    await adminPage.getByText('#5').first().click();
+    await expect(adminPage.getByText('diff --git a/src/sort.py')).toBeVisible();
   });
 
-  test('detail page shows config tab', async ({ adminPage }) => {
+  test('detail page shows config tab with run parameters', async ({ adminPage }) => {
     await adminPage.goto(`/autoresearch/${TEST_IDS.autoresearch.completed}`);
     await adminPage.getByRole('tab', { name: 'Config' }).click();
     await expect(adminPage.getByText('python benchmark.py')).toBeVisible();
     await expect(adminPage.getByText('Higher is better')).toBeVisible();
+    await expect(adminPage.getByText('src/sort.py')).toBeVisible();
+    await expect(adminPage.getByText('testorg/testrepo')).toBeVisible();
   });
 
-  test('detail page shows logs tab', async ({ adminPage }) => {
+  test('detail page shows logs tab with xterm', async ({ adminPage }) => {
     await adminPage.goto(`/autoresearch/${TEST_IDS.autoresearch.completed}`);
     await adminPage.getByRole('tab', { name: 'Logs' }).click();
-    // LogViewer should render (it's an xterm container)
     await expect(adminPage.locator('.xterm').first()).toBeVisible();
+  });
+
+  test('detail page back button navigates to list', async ({ adminPage }) => {
+    await adminPage.goto(`/autoresearch/${TEST_IDS.autoresearch.completed}`);
+    await adminPage.getByRole('button', { name: 'Back' }).click();
+    await expect(adminPage).toHaveURL('/autoresearch');
+  });
+
+  test('running run shows stop button', async ({ adminPage }) => {
+    await adminPage.goto(`/autoresearch/${TEST_IDS.autoresearch.running}`);
+    await expect(adminPage.getByText('Speed up parser')).toBeVisible();
+    await expect(adminPage.getByText('running')).toBeVisible();
   });
 
   test('navigation includes Autoresearch link', async ({ adminPage }) => {
     await adminPage.goto('/');
     await expect(adminPage.getByRole('link', { name: 'Autoresearch' })).toBeVisible();
+  });
+
+  test('member can see autoresearch page', async ({ memberPage }) => {
+    await memberPage.goto('/autoresearch');
+    await expect(memberPage.getByText('Autoresearch')).toBeVisible();
+  });
+});
+
+test.describe('Admin: Benchmark Servers', () => {
+  test('benchmark servers section is visible in admin panel', async ({ adminPage }) => {
+    await adminPage.goto('/admin');
+    await expect(adminPage.getByText('Benchmark Servers')).toBeVisible();
+  });
+
+  test('add server form opens and closes', async ({ adminPage }) => {
+    await adminPage.goto('/admin');
+    await adminPage.getByRole('button', { name: 'Add Server' }).click();
+    await expect(adminPage.getByLabel('Hostname / IP')).toBeVisible();
+    await expect(adminPage.getByLabel('SSH User')).toBeVisible();
+    await expect(adminPage.getByLabel('Hardware Description')).toBeVisible();
+    await adminPage.getByRole('button', { name: 'Cancel' }).last().click();
   });
 });
