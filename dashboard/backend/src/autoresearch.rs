@@ -12,7 +12,6 @@ use crate::auth::{check_repo_permission, AuthUser, MemberUser};
 use crate::error::AppError;
 use crate::models::{AutoresearchExperiment, AutoresearchRun, CreateAutoresearchRunRequest};
 use crate::shell;
-use crate::tasks::TaskChannels;
 
 pub type StopFlags = Arc<DashMap<String, Arc<AtomicBool>>>;
 
