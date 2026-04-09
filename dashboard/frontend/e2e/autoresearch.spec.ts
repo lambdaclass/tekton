@@ -46,9 +46,9 @@ test.describe('Autoresearch', () => {
     // Stats bar values
     await expect(adminPage.getByText('42.5000').first()).toBeVisible(); // baseline
     await expect(adminPage.getByText('51.3000').first()).toBeVisible(); // best
-    await expect(adminPage.getByText('Improvement')).toBeVisible();
-    await expect(adminPage.getByText('Rate')).toBeVisible();
-    await expect(adminPage.getByText('Cost')).toBeVisible();
+    await expect(adminPage.getByText('Improvement', { exact: true })).toBeVisible();
+    await expect(adminPage.getByText('Rate', { exact: true })).toBeVisible();
+    await expect(adminPage.getByText('Cost', { exact: true })).toBeVisible();
   });
 
   test('detail page shows experiment feed with accepted and rejected entries', async ({ adminPage }) => {
@@ -57,8 +57,8 @@ test.describe('Autoresearch', () => {
     await expect(adminPage.getByText('Switched to a more efficient comparison')).toBeVisible();
     await expect(adminPage.getByText('Attempted parallel sorting')).toBeVisible();
     // Click on an experiment to expand its diff
-    await adminPage.getByText('#5').first().click();
-    await expect(adminPage.getByText('diff --git a/src/sort.py')).toBeVisible();
+    await adminPage.locator('button:has-text("Optimized inner loop")').click();
+    await expect(adminPage.getByText('diff --git a/src/sort.py').first()).toBeVisible();
   });
 
   test('detail page shows config tab with run parameters', async ({ adminPage }) => {
@@ -67,7 +67,7 @@ test.describe('Autoresearch', () => {
     await expect(adminPage.getByText('python benchmark.py')).toBeVisible();
     await expect(adminPage.getByText('Higher is better')).toBeVisible();
     await expect(adminPage.getByText('src/sort.py')).toBeVisible();
-    await expect(adminPage.getByText('testorg/testrepo')).toBeVisible();
+    await expect(adminPage.getByText('testorg/testrepo').first()).toBeVisible();
   });
 
   test('detail page shows logs tab with xterm', async ({ adminPage }) => {
