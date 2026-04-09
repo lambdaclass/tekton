@@ -2204,7 +2204,7 @@ pub async fn list_actions(
     check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
     let actions = sqlx::query_as::<_, TaskAction>(
         "SELECT id, task_id, action_type, tool_name, tool_input, summary, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at \
          FROM task_actions WHERE task_id = $1 ORDER BY id ASC",
     )
     .bind(&id)
