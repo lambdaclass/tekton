@@ -136,12 +136,30 @@ async fn main() -> anyhow::Result<()> {
             delete(settings::delete_global_ai_settings),
         )
         // Admin: Benchmark Servers
-        .route("/admin/benchmark-servers", get(benchmark_servers::list_servers))
-        .route("/admin/benchmark-servers", post(benchmark_servers::create_server))
-        .route("/admin/benchmark-servers/{id}", put(benchmark_servers::update_server))
-        .route("/admin/benchmark-servers/{id}", delete(benchmark_servers::delete_server))
-        .route("/admin/benchmark-servers/{id}/setup", post(benchmark_servers::setup_server))
-        .route("/admin/benchmark-servers/{id}/setup-log", get(benchmark_servers::get_setup_log))
+        .route(
+            "/admin/benchmark-servers",
+            get(benchmark_servers::list_servers),
+        )
+        .route(
+            "/admin/benchmark-servers",
+            post(benchmark_servers::create_server),
+        )
+        .route(
+            "/admin/benchmark-servers/{id}",
+            put(benchmark_servers::update_server),
+        )
+        .route(
+            "/admin/benchmark-servers/{id}",
+            delete(benchmark_servers::delete_server),
+        )
+        .route(
+            "/admin/benchmark-servers/{id}/setup",
+            post(benchmark_servers::setup_server),
+        )
+        .route(
+            "/admin/benchmark-servers/{id}/setup-log",
+            get(benchmark_servers::get_setup_log),
+        )
         // Admin: Audit Log
         .route("/admin/audit-log", get(audit::list_audit_log))
         // Settings
@@ -165,11 +183,23 @@ async fn main() -> anyhow::Result<()> {
         .route("/autoresearch/runs", get(autoresearch::list_runs))
         .route("/autoresearch/runs", post(autoresearch::create_run_handler))
         .route("/autoresearch/runs/{id}", get(autoresearch::get_run))
-        .route("/autoresearch/runs/{id}/experiments", get(autoresearch::list_experiments))
+        .route(
+            "/autoresearch/runs/{id}/experiments",
+            get(autoresearch::list_experiments),
+        )
         .route("/autoresearch/runs/{id}/stop", post(autoresearch::stop_run))
-        .route("/autoresearch/runs/{id}/create-pr", post(autoresearch::create_run_pr))
-        .route("/autoresearch/runs/{id}/stats", get(autoresearch::get_run_stats))
-        .route("/autoresearch/benchmark-servers", get(benchmark_servers::list_available_servers))
+        .route(
+            "/autoresearch/runs/{id}/create-pr",
+            post(autoresearch::create_run_pr),
+        )
+        .route(
+            "/autoresearch/runs/{id}/stats",
+            get(autoresearch::get_run_stats),
+        )
+        .route(
+            "/autoresearch/benchmark-servers",
+            get(benchmark_servers::list_available_servers),
+        )
         // Repos
         .route("/repos", get(tasks::list_repos))
         .route("/repos/{owner}/{repo}/branches", get(tasks::list_branches))

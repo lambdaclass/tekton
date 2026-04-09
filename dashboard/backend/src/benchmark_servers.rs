@@ -16,11 +16,9 @@ pub async fn list_servers(
     _admin: AdminUser,
     State(state): State<crate::AppState>,
 ) -> Result<Json<Vec<BenchmarkServer>>, AppError> {
-    let servers = sqlx::query_as::<_, BenchmarkServer>(
-        &format!("{SERVER_QUERY} ORDER BY name"),
-    )
-    .fetch_all(&state.db)
-    .await?;
+    let servers = sqlx::query_as::<_, BenchmarkServer>(&format!("{SERVER_QUERY} ORDER BY name"))
+        .fetch_all(&state.db)
+        .await?;
     Ok(Json(servers))
 }
 
@@ -57,12 +55,10 @@ pub async fn create_server(
         }
     })?;
 
-    let server = sqlx::query_as::<_, BenchmarkServer>(
-        &format!("{SERVER_QUERY} WHERE name = $1"),
-    )
-    .bind(&name)
-    .fetch_one(&state.db)
-    .await?;
+    let server = sqlx::query_as::<_, BenchmarkServer>(&format!("{SERVER_QUERY} WHERE name = $1"))
+        .bind(&name)
+        .fetch_one(&state.db)
+        .await?;
 
     crate::audit::log_event(
         &state.db,
@@ -120,7 +116,10 @@ pub async fn update_server(
     }
 
     sets.push("updated_at = NOW()".to_string());
-    let sql = format!("UPDATE benchmark_servers SET {} WHERE id = $1", sets.join(", "));
+    let sql = format!(
+        "UPDATE benchmark_servers SET {} WHERE id = $1",
+        sets.join(", ")
+    );
 
     let mut query = sqlx::query(&sql).bind(id);
     for v in &values {
@@ -132,12 +131,10 @@ pub async fn update_server(
         return Err(AppError::NotFound("Server not found".into()));
     }
 
-    let server = sqlx::query_as::<_, BenchmarkServer>(
-        &format!("{SERVER_QUERY} WHERE id = $1"),
-    )
-    .bind(id)
-    .fetch_one(&state.db)
-    .await?;
+    let server = sqlx::query_as::<_, BenchmarkServer>(&format!("{SERVER_QUERY} WHERE id = $1"))
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
 
     crate::audit::log_event(
         &state.db,
@@ -195,13 +192,11 @@ pub async fn setup_server(
     State(state): State<crate::AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<BenchmarkServer>, AppError> {
-    let server = sqlx::query_as::<_, BenchmarkServer>(
-        &format!("{SERVER_QUERY} WHERE id = $1"),
-    )
-    .bind(id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|_| AppError::NotFound("Server not found".into()))?;
+    let server = sqlx::query_as::<_, BenchmarkServer>(&format!("{SERVER_QUERY} WHERE id = $1"))
+        .bind(id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|_| AppError::NotFound("Server not found".into()))?;
 
     if server.status == "busy" {
         return Err(AppError::BadRequest(
@@ -258,12 +253,10 @@ pub async fn setup_server(
     .await;
 
     // Return the server with updated status
-    let updated = sqlx::query_as::<_, BenchmarkServer>(
-        &format!("{SERVER_QUERY} WHERE id = $1"),
-    )
-    .bind(id)
-    .fetch_one(&state.db)
-    .await?;
+    let updated = sqlx::query_as::<_, BenchmarkServer>(&format!("{SERVER_QUERY} WHERE id = $1"))
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
 
     Ok(Json(updated))
 }
@@ -329,10 +322,7 @@ echo ""
 echo "=== Setup complete ==="
 "#;
 
-    let mut args = vec![
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "ConnectTimeout=10",
-    ];
+    let mut args = vec!["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10"];
     if let Some(key) = ssh_key_path {
         args.extend_from_slice(&["-i", key]);
     }
@@ -369,9 +359,9 @@ pub async fn list_available_servers(
     _user: crate::auth::AuthUser,
     State(state): State<crate::AppState>,
 ) -> Result<Json<Vec<BenchmarkServer>>, AppError> {
-    let servers = sqlx::query_as::<_, BenchmarkServer>(
-        &format!("{SERVER_QUERY} WHERE status = 'ready' ORDER BY name"),
-    )
+    let servers = sqlx::query_as::<_, BenchmarkServer>(&format!(
+        "{SERVER_QUERY} WHERE status = 'ready' ORDER BY name"
+    ))
     .fetch_all(&state.db)
     .await?;
     Ok(Json(servers))

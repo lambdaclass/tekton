@@ -31,7 +31,7 @@ import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import MetricChart from '@/components/MetricChart';
 import LogViewer from '@/components/LogViewer';
-import { timeAgo } from '@/lib/utils';
+
 
 function statusColor(status: string) {
   switch (status) {
@@ -221,7 +221,6 @@ export default function AutoresearchDetail() {
                 experiments={experiments ?? []}
                 baseline={run.baseline_metric}
                 best={run.best_metric}
-                direction={run.optimization_direction}
               />
             </div>
 

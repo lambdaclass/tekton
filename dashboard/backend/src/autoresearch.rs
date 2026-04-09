@@ -118,11 +118,10 @@ pub async fn create_run_handler(
     .execute(&state.db)
     .await?;
 
-    let run =
-        sqlx::query_as::<_, AutoresearchRun>(&format!("{RUN_QUERY} WHERE id = $1"))
-            .bind(&id)
-            .fetch_one(&state.db)
-            .await?;
+    let run = sqlx::query_as::<_, AutoresearchRun>(&format!("{RUN_QUERY} WHERE id = $1"))
+        .bind(&id)
+        .fetch_one(&state.db)
+        .await?;
 
     crate::audit::log_event(
         &state.db,
@@ -171,14 +170,13 @@ pub async fn create_run_handler(
             .await;
             // Pipeline cleanup is handled inside run_autoresearch_pipeline on success/stop,
             // but on error the agent might still be running. Try to clean up.
-            let agent_name: Option<String> = sqlx::query_scalar(
-                "SELECT agent_name FROM autoresearch_runs WHERE id = $1",
-            )
-            .bind(&run_id)
-            .fetch_one(&db)
-            .await
-            .ok()
-            .flatten();
+            let agent_name: Option<String> =
+                sqlx::query_scalar("SELECT agent_name FROM autoresearch_runs WHERE id = $1")
+                    .bind(&run_id)
+                    .fetch_one(&db)
+                    .await
+                    .ok()
+                    .flatten();
             if let Some(name) = agent_name {
                 let _ = shell::destroy_agent(&config, &name).await;
             }
@@ -387,7 +385,9 @@ pub async fn create_run_pr(
     }
 
     if run.pr_url.is_some() {
-        return Err(AppError::BadRequest("PR already exists for this run".into()));
+        return Err(AppError::BadRequest(
+            "PR already exists for this run".into(),
+        ));
     }
 
     let branch_name = run
@@ -411,7 +411,11 @@ pub async fn create_run_pr(
     let improvement = match (run.baseline_metric, run.best_metric) {
         (Some(baseline), Some(best)) if baseline != 0.0 => {
             let raw = ((best - baseline) / baseline.abs()) * 100.0;
-            if run.optimization_direction == "lower" { -raw } else { raw }
+            if run.optimization_direction == "lower" {
+                -raw
+            } else {
+                raw
+            }
         }
         _ => 0.0,
     };
@@ -425,8 +429,12 @@ pub async fn create_run_pr(
          - **Optimization direction:** {} is better\n\
          - **Benchmark command:** `{}`\n\n\
          Generated automatically by Tekton Autoresearch.",
-        run.baseline_metric.map(|v| format!("{v}")).unwrap_or("N/A".into()),
-        run.best_metric.map(|v| format!("{v}")).unwrap_or("N/A".into()),
+        run.baseline_metric
+            .map(|v| format!("{v}"))
+            .unwrap_or("N/A".into()),
+        run.best_metric
+            .map(|v| format!("{v}"))
+            .unwrap_or("N/A".into()),
         improvement,
         run.total_experiments,
         run.accepted_experiments,
@@ -453,10 +461,14 @@ pub async fn create_run_pr(
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        return Err(AppError::Internal(format!("GitHub API returned {status}: {text}")));
+        return Err(AppError::Internal(format!(
+            "GitHub API returned {status}: {text}"
+        )));
     }
 
-    let pr_data: serde_json::Value = resp.json().await
+    let pr_data: serde_json::Value = resp
+        .json()
+        .await
         .map_err(|e| AppError::Internal(format!("Failed to parse PR response: {e}")))?;
 
     let pr_url = pr_data["html_url"].as_str().unwrap_or("").to_string();
@@ -525,10 +537,7 @@ async fn run_autoresearch_pipeline(
         .fetch_one(db)
         .await?;
 
-    let branch_name = run
-        .branch_name
-        .as_deref()
-        .unwrap_or("autoresearch/unknown");
+    let branch_name = run.branch_name.as_deref().unwrap_or("autoresearch/unknown");
     let agent_name = format!("ar-{}", &run_id[..8]);
 
     // Phase 1: Setup
@@ -536,13 +545,11 @@ async fn run_autoresearch_pipeline(
     log_and_persist(db, &tx, run_id, "[SETUP] Creating agent container...").await;
 
     shell::create_agent(config, &agent_name).await?;
-    sqlx::query(
-        "UPDATE autoresearch_runs SET agent_name = $2, updated_at = NOW() WHERE id = $1",
-    )
-    .bind(run_id)
-    .bind(&agent_name)
-    .execute(db)
-    .await?;
+    sqlx::query("UPDATE autoresearch_runs SET agent_name = $2, updated_at = NOW() WHERE id = $1")
+        .bind(run_id)
+        .bind(&agent_name)
+        .execute(db)
+        .await?;
 
     // Helper closure for cleanup (called on success and error paths)
     async fn cleanup(
@@ -828,8 +835,12 @@ async fn run_autoresearch_pipeline(
         .execute(db)
         .await;
 
-        let benchmark_output =
-            run_benchmark(&agent_name, &run.benchmark_command, benchmark_server.as_ref()).await;
+        let benchmark_output = run_benchmark(
+            &agent_name,
+            &run.benchmark_command,
+            benchmark_server.as_ref(),
+        )
+        .await;
 
         let (metric_value, raw_output, benchmark_ok) = match benchmark_output {
             Ok(output) => match extract_metric(&output, &run.metric_regex) {
@@ -875,9 +886,7 @@ async fn run_autoresearch_pipeline(
                 db,
                 &tx,
                 run_id,
-                &format!(
-                    "[EXP {experiment_number}] ACCEPTED: {val} (improved from {best_metric})"
-                ),
+                &format!("[EXP {experiment_number}] ACCEPTED: {val} (improved from {best_metric})"),
             )
             .await;
             best_metric = val;
@@ -916,9 +925,7 @@ async fn run_autoresearch_pipeline(
                 db,
                 &tx,
                 run_id,
-                &format!(
-                    "[EXP {experiment_number}] REJECTED: {val_str} (best: {best_metric})"
-                ),
+                &format!("[EXP {experiment_number}] REJECTED: {val_str} (best: {best_metric})"),
             )
             .await;
 
@@ -1007,9 +1014,7 @@ async fn run_benchmark(
             ssh_args.extend_from_slice(&["-i".to_string(), key.clone()]);
         }
         ssh_args.push(format!("{}@{}", s.ssh_user, s.hostname));
-        ssh_args.push(format!(
-            "cd /opt/autoresearch/repo && {benchmark_command}"
-        ));
+        ssh_args.push(format!("cd /opt/autoresearch/repo && {benchmark_command}"));
 
         let output = tokio::process::Command::new("ssh")
             .args(&ssh_args)
@@ -1095,11 +1100,10 @@ fn extract_metric(output: &str, regex_str: &str) -> Result<f64, AppError> {
         .ok_or_else(|| AppError::Internal("Metric regex must have one capture group".into()))?
         .as_str();
 
-    value_str.trim().parse::<f64>().map_err(|e| {
-        AppError::Internal(format!(
-            "Could not parse metric value '{value_str}': {e}"
-        ))
-    })
+    value_str
+        .trim()
+        .parse::<f64>()
+        .map_err(|e| AppError::Internal(format!("Could not parse metric value '{value_str}': {e}")))
 }
 
 fn build_experiment_prompt(

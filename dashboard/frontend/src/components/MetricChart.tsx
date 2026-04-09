@@ -4,10 +4,9 @@ interface MetricChartProps {
   experiments: AutoresearchExperiment[];
   baseline: number | null;
   best: number | null;
-  direction: string;
 }
 
-export default function MetricChart({ experiments, baseline, best, direction }: MetricChartProps) {
+export default function MetricChart({ experiments, baseline, best }: MetricChartProps) {
   const dataPoints = experiments.filter((e) => e.metric_value != null);
   if (dataPoints.length === 0) {
     return (
