@@ -33,9 +33,8 @@ test.describe('Task Detail', () => {
     await expect(adminPage.getByText('$1.50').first()).toBeVisible();
   });
 
-  test('shows prompt text in Info tab', async ({ adminPage }) => {
+  test('shows prompt text in left column', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.completed}`);
-    await adminPage.getByRole('tab', { name: 'Info' }).click();
     await expect(adminPage.getByText('Implement user settings page', { exact: true })).toBeVisible();
   });
 
@@ -110,9 +109,8 @@ test.describe('Task Detail', () => {
     await expect(adminPage.getByText(TEST_IDS.tasks.completed.slice(0, 8))).toBeVisible();
   });
 
-  test('pending task shows prompt text in Info tab', async ({ adminPage }) => {
+  test('pending task shows prompt text in left column', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.pending}`);
-    await adminPage.getByRole('tab', { name: 'Info' }).click();
     await expect(adminPage.getByText('Add dark mode support')).toBeVisible();
   });
 
