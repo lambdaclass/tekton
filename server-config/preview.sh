@@ -137,6 +137,13 @@ drop_db() {
 # -- GitHub helpers -----------------------------------------------------------
 
 get_github_token() {
+    # Prefer an explicit GITHUB_TOKEN (e.g. the logged-in user's OAuth token
+    # passed by the dashboard) over the server-wide webhook token.
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        info "Using token from environment (user OAuth)" >&2
+        echo "$GITHUB_TOKEN"
+        return
+    fi
     local webhook_port="${WEBHOOK_PORT:-3100}"
     local token_response
     if token_response=$(curl -sf "http://127.0.0.1:${webhook_port}/internal/token" 2>/dev/null); then
@@ -144,10 +151,6 @@ get_github_token() {
         auth_mode=$(echo "$token_response" | jq -r '.mode')
         info "Using token from webhook (auth mode: $auth_mode)" >&2
         echo "$token_response" | jq -r '.token'
-        return
-    fi
-    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        echo "$GITHUB_TOKEN"
         return
     fi
     fatal "No GitHub token available. Check $SECRETS_FILE or ensure the webhook is running."
