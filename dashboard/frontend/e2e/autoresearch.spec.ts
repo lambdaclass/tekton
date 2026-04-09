@@ -29,8 +29,8 @@ test.describe('Autoresearch', () => {
     await adminPage.goto(`/autoresearch/${TEST_IDS.autoresearch.completed}`);
     await expect(adminPage.getByText('Optimize sort perf')).toBeVisible();
     await expect(adminPage.getByText('completed')).toBeVisible();
-    await expect(adminPage.getByText('42.5000')).toBeVisible(); // baseline
-    await expect(adminPage.getByText('51.3000')).toBeVisible(); // best
+    await expect(adminPage.getByText('42.5000').first()).toBeVisible(); // baseline
+    await expect(adminPage.getByText('51.3000').first()).toBeVisible(); // best
   });
 
   test('detail page shows experiments tab', async ({ adminPage }) => {
@@ -51,7 +51,7 @@ test.describe('Autoresearch', () => {
     await adminPage.goto(`/autoresearch/${TEST_IDS.autoresearch.completed}`);
     await adminPage.getByRole('tab', { name: 'Logs' }).click();
     // LogViewer should render (it's an xterm container)
-    await expect(adminPage.locator('.xterm')).toBeVisible();
+    await expect(adminPage.locator('.xterm').first()).toBeVisible();
   });
 
   test('navigation includes Autoresearch link', async ({ adminPage }) => {
