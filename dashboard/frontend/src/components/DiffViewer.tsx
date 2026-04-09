@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { html, parse } from 'diff2html';
+import { ColorSchemeType } from 'diff2html/lib/types';
 import 'diff2html/bundles/css/diff2html.min.css';
 
 export default function DiffViewer({ diff }: { diff: string }) {
@@ -10,7 +11,7 @@ export default function DiffViewer({ diff }: { diff: string }) {
       outputFormat: 'line-by-line',
       drawFileList: true,
       matching: 'lines',
-      colorScheme: 'auto',
+      colorScheme: ColorSchemeType.AUTO,
     });
   }, [diff]);
 
