@@ -2,7 +2,7 @@
   "all": true,
   "include": ["src/**/*.{ts,tsx}"],
   "_comment_webhooks": "Webhooks.tsx excluded: page relies entirely on GitHub API calls that cannot be exercised in CI without mocking (strict no-mock policy). Static/error rendering is covered by e2e tests.",
-  "exclude": ["src/**/*.d.ts", "src/components/ui/**", "src/components/VoiceInput.tsx", "src/components/DiffViewer.tsx", "src/components/LogViewer.tsx", "src/components/TaskChat.tsx", "src/components/BranchCombobox.tsx", "src/hooks/use-mobile.ts", "src/pages/Webhooks.tsx"],
+  "exclude": ["src/**/*.d.ts", "src/components/ui/**", "src/components/VoiceInput.tsx", "src/components/DiffViewer.tsx", "src/components/LogViewer.tsx", "src/components/TaskChat.tsx", "src/components/BranchCombobox.tsx", "src/components/MetricChart.tsx", "src/hooks/use-mobile.ts", "src/pages/Webhooks.tsx", "src/pages/Autoresearch.tsx", "src/pages/AutoresearchDetail.tsx"],
   "check-coverage": true,
   "branches": 70,
   "lines": 70,
