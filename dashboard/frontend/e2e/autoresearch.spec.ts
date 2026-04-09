@@ -105,12 +105,18 @@ test.describe('Admin: Benchmark Servers', () => {
     await expect(adminPage.getByText('Benchmark Servers')).toBeVisible();
   });
 
-  test('add server form opens and closes', async ({ adminPage }) => {
+  test('add server form opens, fills fields, and closes', async ({ adminPage }) => {
     await adminPage.goto('/admin');
     await adminPage.getByRole('button', { name: 'Add Server' }).click();
-    await expect(adminPage.getByLabel('Hostname / IP')).toBeVisible();
-    await expect(adminPage.getByLabel('SSH User')).toBeVisible();
-    await expect(adminPage.getByLabel('Hardware Description')).toBeVisible();
+    // Fill out the form to exercise state setters
+    await adminPage.getByLabel('Name').last().fill('test-gpu');
+    await adminPage.getByLabel('Hostname / IP').fill('10.0.0.1');
+    await adminPage.getByLabel('SSH User').fill('ubuntu');
+    await adminPage.getByLabel('SSH Key Path').fill('/root/.ssh/id_ed25519');
+    await adminPage.getByLabel('Hardware Description').fill('4x A100');
+    // Cancel instead of submitting
     await adminPage.getByRole('button', { name: 'Cancel' }).last().click();
+    // Form should be gone
+    await expect(adminPage.getByLabel('Hostname / IP')).toHaveCount(0);
   });
 });
