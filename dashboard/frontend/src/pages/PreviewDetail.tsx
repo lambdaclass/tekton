@@ -1,8 +1,10 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { ChevronLeft, ExternalLink } from 'lucide-react';
 import LogViewer from '@/components/LogViewer';
-import { getConfig } from '@/lib/api';
+import { getConfig, listPreviews } from '@/lib/api';
+import type { ExtraUrl } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -19,6 +21,13 @@ export default function PreviewDetail() {
     }).catch(() => {});
   }, []);
 
+  const { data: previews } = useQuery({
+    queryKey: ['previews'],
+    queryFn: listPreviews,
+  });
+
+  const extraUrls: ExtraUrl[] = previews?.find((p) => p.slug === slug)?.extra_urls ?? [];
+
   const handleConnectionChange = useCallback((c: boolean) => setConnected(c), []);
 
   const previewUrl = slug && previewDomain ? `https://${slug}.${previewDomain}` : '';
@@ -34,12 +43,22 @@ export default function PreviewDetail() {
         <Badge variant={connected ? 'default' : 'outline'}>
           {connected ? 'Live' : 'Disconnected'}
         </Badge>
-        <Button size="sm" className="ml-auto" asChild>
-          <a href={previewUrl} target="_blank" rel="noopener noreferrer">
-            Open Preview
-            <ExternalLink className="ml-1 size-3" />
-          </a>
-        </Button>
+        <div className="flex items-center gap-2 ml-auto">
+          <Button size="sm" asChild>
+            <a href={previewUrl} target="_blank" rel="noopener noreferrer">
+              Open Preview
+              <ExternalLink className="ml-1 size-3" />
+            </a>
+          </Button>
+          {extraUrls.map((eu) => (
+            <Button key={eu.label} variant="outline" size="sm" asChild>
+              <a href={eu.url} target="_blank" rel="noopener noreferrer">
+                {eu.label}
+                <ExternalLink className="ml-1 size-3" />
+              </a>
+            </Button>
+          ))}
+        </div>
       </div>
 
       <Card>

@@ -53,11 +53,18 @@ pub struct GitHubUserInfo {
 // ── Previews ──
 
 #[derive(Debug, Serialize, Clone)]
+pub struct ExtraUrl {
+    pub label: String,
+    pub url: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
 pub struct Preview {
     pub slug: String,
     pub repo: String,
     pub branch: String,
     pub url: String,
+    pub extra_urls: Vec<ExtraUrl>,
 }
 
 #[derive(Debug, Deserialize)]
