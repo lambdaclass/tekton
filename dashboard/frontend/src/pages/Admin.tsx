@@ -16,8 +16,12 @@ import {
   deleteOrgPolicy,
   listPresets,
   getMe,
+  listTasks,
+  adminDeleteTask,
+  listOrphanedPreviews,
+  destroyPreview,
 } from '@/lib/api';
-import type { PolicyPreset } from '@/lib/api';
+import type { PolicyPreset, Task } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -31,8 +35,10 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
-import { Users, KeyRound, Shield, Building, Trash2, Plus, X, Settings } from 'lucide-react';
+import { Users, KeyRound, Shield, Building, Trash2, Plus, X, Settings, AlertTriangle } from 'lucide-react';
 import { Navigate } from 'react-router-dom';
+import { statusVariant } from '@/lib/status';
+import { timeAgo } from '@/lib/utils';
 
 const ROLES = ['admin', 'member', 'viewer'] as const;
 
@@ -51,6 +57,7 @@ export default function Admin() {
       <SecretsSection queryClient={queryClient} />
       <PoliciesSection queryClient={queryClient} />
       <OrgPoliciesSection queryClient={queryClient} />
+      <CleanupSection queryClient={queryClient} />
     </div>
   );
 }
@@ -1207,5 +1214,236 @@ function OrgPoliciesSection({ queryClient }: { queryClient: ReturnType<typeof us
         </Dialog>
       </CardContent>
     </Card>
+  );
+}
+
+// ── Cleanup Section ──
+
+function CleanupSection({ queryClient }: { queryClient: ReturnType<typeof useQueryClient> }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <AlertTriangle className="size-5" />
+          Cleanup
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400">
+          <strong>Danger Zone</strong> — Deleting tasks and previews is permanent and cannot be undone. Running tasks will be force-stopped.
+        </div>
+        <TaskCleanupTable queryClient={queryClient} />
+        <OrphanedPreviewsTable queryClient={queryClient} />
+      </CardContent>
+    </Card>
+  );
+}
+
+function TaskCleanupTable({ queryClient }: { queryClient: ReturnType<typeof useQueryClient> }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['admin-tasks'],
+    queryFn: () => listTasks({ per_page: 200 }),
+  });
+
+  const [deleteTask, setDeleteTask] = useState<Task | null>(null);
+  const [deleteBranch, setDeleteBranch] = useState(false);
+
+  const deleteMutation = useMutation({
+    mutationFn: (opts: { id: string; deleteBranch: boolean }) =>
+      adminDeleteTask(opts.id, opts.deleteBranch),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      setDeleteTask(null);
+      setDeleteBranch(false);
+    },
+  });
+
+  const tasks = data?.tasks ?? [];
+
+  return (
+    <div>
+      <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">Tasks</h3>
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground">Loading...</p>
+      ) : tasks.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No tasks found.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
+                <th className="pb-2 pr-4 font-medium">Name / Prompt</th>
+                <th className="pb-2 pr-4 font-medium">Repo</th>
+                <th className="pb-2 pr-4 font-medium">Status</th>
+                <th className="pb-2 pr-4 font-medium">Created By</th>
+                <th className="pb-2 pr-4 font-medium">Created</th>
+                <th className="pb-2 font-medium" />
+              </tr>
+            </thead>
+            <tbody>
+              {tasks.map((task) => {
+                const sv = statusVariant(task.status);
+                return (
+                  <tr key={task.id} className="border-b border-border/50 hover:bg-secondary/40 transition-colors duration-100">
+                    <td className="py-2 pr-4 max-w-[300px] truncate">
+                      {task.name || task.prompt.slice(0, 60)}
+                    </td>
+                    <td className="py-2 pr-4 font-mono text-xs">{task.repo}</td>
+                    <td className="py-2 pr-4">
+                      <Badge variant={sv.variant} className={sv.className}>
+                        {task.status}
+                      </Badge>
+                    </td>
+                    <td className="py-2 pr-4">{task.created_by ?? '—'}</td>
+                    <td className="py-2 pr-4 text-muted-foreground">{timeAgo(task.created_at)}</td>
+                    <td className="py-2">
+                      <Button variant="ghost" size="sm" onClick={() => setDeleteTask(task)}>
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Delete Task Confirmation Dialog */}
+      <Dialog open={deleteTask !== null} onOpenChange={(open) => { if (!open) { setDeleteTask(null); setDeleteBranch(false); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Task</DialogTitle>
+            <DialogDescription>
+              This will permanently destroy the task, its agent container, preview, and all associated data (logs, messages, actions). This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          {deleteTask && (
+            <div className="space-y-3 text-sm">
+              <p><strong>Task:</strong> {deleteTask.name || deleteTask.prompt.slice(0, 80)}</p>
+              {deleteTask.agent_name && <p><strong>Agent:</strong> {deleteTask.agent_name} (will be destroyed)</p>}
+              {deleteTask.preview_slug && <p><strong>Preview:</strong> {deleteTask.preview_slug} (will be destroyed)</p>}
+              {deleteTask.branch_name && <p><strong>Branch:</strong> {deleteTask.branch_name}</p>}
+              {deleteTask.branch_name && (
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={deleteBranch}
+                    onChange={(e) => setDeleteBranch(e.target.checked)}
+                    className="rounded border-border"
+                  />
+                  <span>Also delete remote git branch</span>
+                </label>
+              )}
+            </div>
+          )}
+          {deleteMutation.isError && (
+            <p className="text-sm text-destructive">{(deleteMutation.error as Error).message}</p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setDeleteTask(null); setDeleteBranch(false); }}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => deleteTask && deleteMutation.mutate({ id: deleteTask.id, deleteBranch })}
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending ? 'Deleting...' : 'Delete permanently'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function OrphanedPreviewsTable({ queryClient }: { queryClient: ReturnType<typeof useQueryClient> }) {
+  const { data: previews, isLoading } = useQuery({
+    queryKey: ['admin-orphaned-previews'],
+    queryFn: listOrphanedPreviews,
+  });
+
+  const [deleteSlug, setDeleteSlug] = useState<string | null>(null);
+
+  const deleteMutation = useMutation({
+    mutationFn: (slug: string) => destroyPreview(slug),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-orphaned-previews'] });
+      queryClient.invalidateQueries({ queryKey: ['previews'] });
+      setDeleteSlug(null);
+    },
+  });
+
+  return (
+    <div>
+      <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">Orphaned Previews</h3>
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground">Loading...</p>
+      ) : !previews || previews.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No orphaned previews found.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
+                <th className="pb-2 pr-4 font-medium">Slug</th>
+                <th className="pb-2 pr-4 font-medium">Repo</th>
+                <th className="pb-2 pr-4 font-medium">Branch</th>
+                <th className="pb-2 pr-4 font-medium">URL</th>
+                <th className="pb-2 font-medium" />
+              </tr>
+            </thead>
+            <tbody>
+              {previews.map((p) => (
+                <tr key={p.slug} className="border-b border-border/50 hover:bg-secondary/40 transition-colors duration-100">
+                  <td className="py-2 pr-4 font-mono text-xs">{p.slug}</td>
+                  <td className="py-2 pr-4 font-mono text-xs">{p.repo}</td>
+                  <td className="py-2 pr-4">{p.branch}</td>
+                  <td className="py-2 pr-4">
+                    <a href={p.url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline dark:text-blue-400">
+                      {p.url}
+                    </a>
+                  </td>
+                  <td className="py-2">
+                    <Button variant="ghost" size="sm" onClick={() => setDeleteSlug(p.slug)}>
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Delete Orphaned Preview Confirmation Dialog */}
+      <Dialog open={deleteSlug !== null} onOpenChange={(open) => { if (!open) setDeleteSlug(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Orphaned Preview</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to destroy the preview &ldquo;{deleteSlug}&rdquo;? This will remove the container and cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          {deleteMutation.isError && (
+            <p className="text-sm text-destructive">{(deleteMutation.error as Error).message}</p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteSlug(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => deleteSlug && deleteMutation.mutate(deleteSlug)}
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending ? 'Destroying...' : 'Destroy preview'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }

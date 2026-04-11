@@ -1,7 +1,7 @@
 use axum::extract::{Path, State};
 use axum::Json;
 
-use crate::auth::{self, AuthUser, MemberUser};
+use crate::auth::{self, AdminUser, AuthUser, MemberUser};
 use crate::error::AppError;
 use crate::models::{CreatePreviewRequest, Preview};
 use crate::shell;
@@ -120,6 +120,25 @@ pub async fn update_preview(
         "message": "Preview update triggered",
         "output": output.trim(),
     })))
+}
+
+/// List previews that exist as containers but have no corresponding task in the DB.
+pub async fn list_orphaned_previews(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<Preview>>, AppError> {
+    let live = shell::list_previews(&state.config).await?;
+    let db_slugs: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT preview_slug FROM tasks WHERE preview_slug IS NOT NULL",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let orphaned = live
+        .into_iter()
+        .filter(|p| !db_slugs.contains(&p.slug))
+        .collect();
+    Ok(Json(orphaned))
 }
 
 /// Inspect the raw shell error from `create_preview` and return a user-friendly

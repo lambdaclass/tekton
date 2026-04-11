@@ -129,6 +129,12 @@ async fn main() -> anyhow::Result<()> {
             "/admin/settings/ai",
             delete(settings::delete_global_ai_settings),
         )
+        // Admin: Cleanup
+        .route("/admin/tasks/{id}", delete(tasks::admin_delete_task))
+        .route(
+            "/admin/cleanup/orphaned-previews",
+            get(previews::list_orphaned_previews),
+        )
         // Admin: Audit Log
         .route("/admin/audit-log", get(audit::list_audit_log))
         // Settings
