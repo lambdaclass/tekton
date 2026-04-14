@@ -3227,7 +3227,7 @@ pub async fn create_pr(
         .collect::<String>();
 
     // Build PR body: gather context and ask Claude to write the description
-    let body = generate_pr_body(
+    let mut body = generate_pr_body(
         &state.db,
         &state.config.secrets_encryption_key,
         &git_id.token,
@@ -3239,6 +3239,11 @@ pub async fn create_pr(
         tracing::warn!("Failed to generate PR body via Claude: {e}, using fallback");
         format!("## Task\n\n{}", task.prompt)
     });
+
+    // Append preview URL if one exists for this task
+    if let Some(ref url) = task.preview_url {
+        body.push_str(&format!("\n\n---\n\n🔗 **Preview:** {url}"));
+    }
 
     // Create PR via GitHub API
     let client = reqwest::Client::new();
