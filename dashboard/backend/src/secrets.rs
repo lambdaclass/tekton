@@ -79,7 +79,7 @@ pub async fn list_secrets(
     let secrets = if let Some(ref repo) = params.repo {
         sqlx::query_as::<_, SecretEntry>(
             "SELECT id, repo, name, created_by, \
-             TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at \
+             TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at \
              FROM secrets WHERE repo = $1 ORDER BY repo, name",
         )
         .bind(repo)
@@ -88,7 +88,7 @@ pub async fn list_secrets(
     } else {
         sqlx::query_as::<_, SecretEntry>(
             "SELECT id, repo, name, created_by, \
-             TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at \
+             TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at \
              FROM secrets ORDER BY repo, name",
         )
         .fetch_all(&state.db)
@@ -128,7 +128,7 @@ pub async fn create_secret(
 
     let entry = sqlx::query_as::<_, SecretEntry>(
         "SELECT id, repo, name, created_by, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at \
          FROM secrets WHERE repo = $1 AND name = $2",
     )
     .bind(&req.repo)
