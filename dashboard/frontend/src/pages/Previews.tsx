@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
+import { Loader2 } from 'lucide-react';
 import { listPreviews, createPreview, destroyPreview, ApiError } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -156,6 +157,7 @@ export default function Previews() {
                 </div>
               </div>
               <Button type="submit" disabled={createMutation.isPending}>
+                {createMutation.isPending && <Loader2 className="size-4 animate-spin mr-2" />}
                 {createMutation.isPending ? 'Creating...' : 'Create'}
               </Button>
               {createMutation.isError && (

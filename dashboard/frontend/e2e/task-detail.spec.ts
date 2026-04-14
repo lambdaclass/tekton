@@ -149,4 +149,13 @@ test.describe('Task Detail', () => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.awaiting}`);
     await expect(adminPage.getByRole('tab', { name: 'Preview' })).toBeVisible();
   });
+
+  test('preview tab refresh button works', async ({ adminPage }) => {
+    await adminPage.goto(`/tasks/${TEST_IDS.tasks.awaiting}`);
+    await adminPage.getByRole('tab', { name: 'Preview' }).click();
+    const refreshBtn = adminPage.getByRole('button', { name: 'Refresh' });
+    await expect(refreshBtn).toBeVisible();
+    await refreshBtn.click();
+    await expect(refreshBtn).toBeVisible();
+  });
 });
