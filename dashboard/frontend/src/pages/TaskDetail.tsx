@@ -55,6 +55,7 @@ export default function TaskDetail() {
   const navigate = useNavigate();
   const [connected, setConnected] = useState(false);
   const [showActivity, setShowActivity] = useState(false);
+  const [previewKey, setPreviewKey] = useState(0);
 
   const { data: task } = useQuery({
     queryKey: ['task', id],
@@ -319,9 +320,20 @@ export default function TaskDetail() {
             </TabsContent>
 
             {/* Diff tab */}
-            <TabsContent value="diff" className="flex-1 overflow-y-auto rounded-b-lg border border-t-0 border-border bg-card">
+            <TabsContent value="diff" className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden">
+              <div className="flex items-center justify-end px-4 py-2 border-b border-border bg-card/50">
+                <button
+                  onClick={() => queryClient.invalidateQueries({ queryKey: ['task-diff', id] })}
+                  className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <RotateCcw className="size-3.5" />
+                  Refresh
+                </button>
+              </div>
               {diffData?.diff ? (
-                <DiffViewer diff={diffData.diff} />
+                <div className="flex-1 overflow-y-auto">
+                  <DiffViewer diff={diffData.diff} />
+                </div>
               ) : (
                 <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
                   <FileDiff className="size-8 mb-2 opacity-30" />
@@ -332,22 +344,32 @@ export default function TaskDetail() {
               )}
             </TabsContent>
 
-            {/* Preview tab — embedded iframe of the deployed preview */}
+            {/* Preview tab — forceMount keeps iframe alive across tab switches to preserve navigation state */}
             {task?.preview_url && (
-              <TabsContent value="preview" className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden">
+              <TabsContent value="preview" forceMount className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden data-[state=inactive]:hidden">
                 <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-card/50">
                   <span className="text-sm text-muted-foreground truncate">{task.preview_url}</span>
-                  <a
-                    href={task.preview_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 text-sm text-blue-600 dark:text-blue-400 hover:underline shrink-0 ml-3"
-                  >
-                    <ExternalLink className="size-3.5" />
-                    Open in new tab
-                  </a>
+                  <div className="flex items-center gap-3 shrink-0 ml-3">
+                    <button
+                      onClick={() => setPreviewKey(k => k + 1)}
+                      className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <RotateCcw className="size-3.5" />
+                      Refresh
+                    </button>
+                    <a
+                      href={task.preview_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-sm text-blue-600 dark:text-blue-400 hover:underline"
+                    >
+                      <ExternalLink className="size-3.5" />
+                      Open in new tab
+                    </a>
+                  </div>
                 </div>
                 <iframe
+                  key={previewKey}
                   src={task.preview_url}
                   className="flex-1 w-full border-0"
                   title="Preview"
