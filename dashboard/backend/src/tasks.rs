@@ -230,8 +230,8 @@ pub async fn list_tasks(
     let data_sql = format!(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks {where_clause} ORDER BY created_at DESC LIMIT ${bind_idx} OFFSET ${next_idx}",
@@ -262,8 +262,8 @@ pub async fn get_task(
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
@@ -291,8 +291,8 @@ pub async fn get_subtasks(
     let subtasks = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE parent_task_id = $1 ORDER BY created_at ASC"
@@ -386,8 +386,8 @@ pub async fn create_task(
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
@@ -1410,7 +1410,7 @@ async fn follow_up_loop(
         // Filter out claude's own messages so we only process user messages
         let new_messages: Vec<TaskMessage> = sqlx::query_as::<_, TaskMessage>(
             "SELECT id, task_id, sender, content, \
-             TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, image_url \
+             TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, image_url \
              FROM task_messages \
              WHERE task_id = $1 AND id > $2 AND sender NOT IN ('claude', 'system') \
              ORDER BY id ASC",
@@ -2094,7 +2094,7 @@ pub async fn list_messages(
         let limit = params.limit.unwrap_or(100);
         sqlx::query_as::<_, TaskMessage>(
             "SELECT id, task_id, sender, content, \
-             TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, image_url \
+             TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, image_url \
              FROM task_messages WHERE task_id = $1 AND id < $2 \
              ORDER BY created_at ASC LIMIT $3",
         )
@@ -2106,7 +2106,7 @@ pub async fn list_messages(
     } else if let Some(limit) = params.limit {
         sqlx::query_as::<_, TaskMessage>(
             "SELECT id, task_id, sender, content, \
-             TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, image_url \
+             TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, image_url \
              FROM task_messages WHERE task_id = $1 \
              ORDER BY created_at ASC LIMIT $2",
         )
@@ -2117,7 +2117,7 @@ pub async fn list_messages(
     } else {
         sqlx::query_as::<_, TaskMessage>(
             "SELECT id, task_id, sender, content, \
-             TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, image_url \
+             TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, image_url \
              FROM task_messages WHERE task_id = $1 \
              ORDER BY created_at ASC",
         )
@@ -2173,7 +2173,7 @@ pub async fn send_message(
 
     let message = sqlx::query_as::<_, TaskMessage>(
         "SELECT id, task_id, sender, content, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, image_url \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, image_url \
          FROM task_messages WHERE task_id = $1 ORDER BY id DESC LIMIT 1",
     )
     .bind(&id)
@@ -2204,7 +2204,7 @@ pub async fn list_actions(
     check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
     let actions = sqlx::query_as::<_, TaskAction>(
         "SELECT id, task_id, action_type, tool_name, tool_input, summary, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at \
          FROM task_actions WHERE task_id = $1 ORDER BY id ASC",
     )
     .bind(&id)
@@ -2335,8 +2335,8 @@ pub async fn reopen_task(
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
@@ -2430,8 +2430,8 @@ pub async fn reopen_task(
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
@@ -2452,8 +2452,8 @@ pub async fn get_task_diff(
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1",
@@ -2496,8 +2496,8 @@ pub async fn update_task_name(
     let _ = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
@@ -2527,8 +2527,8 @@ pub async fn update_task_name(
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
@@ -2807,8 +2807,8 @@ pub async fn recover_interrupted_tasks(
     let tasks = match sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE status NOT IN ('completed', 'failed')",
@@ -3062,7 +3062,7 @@ async fn generate_pr_body(
     // 1. Fetch conversation messages
     let messages = sqlx::query_as::<_, TaskMessage>(
         "SELECT id, task_id, sender, content, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, image_url \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, image_url \
          FROM task_messages WHERE task_id = $1 ORDER BY id",
     )
     .bind(&task.id)
@@ -3193,8 +3193,8 @@ pub async fn create_pr(
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
@@ -3299,8 +3299,8 @@ pub async fn create_pr(
     let updated_task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
@@ -3343,8 +3343,8 @@ pub async fn link_pr(
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
          FROM tasks WHERE id = $1"
@@ -3364,7 +3364,7 @@ pub async fn get_task_logs(
 ) -> Result<Json<Vec<TaskLog>>, AppError> {
     check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
     let logs = sqlx::query_as::<_, TaskLog>(
-        "SELECT id, task_id, TO_CHAR(timestamp, 'YYYY-MM-DD HH24:MI:SS') as timestamp, line \
+        "SELECT id, task_id, TO_CHAR(timestamp, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as timestamp, line \
          FROM task_logs WHERE task_id = $1 ORDER BY id ASC",
     )
     .bind(&id)
