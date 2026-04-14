@@ -158,8 +158,8 @@ pub async fn list_budgets(
     let budgets = sqlx::query_as::<_, Budget>(
         "SELECT id, scope, scope_type, monthly_limit_usd, alert_threshold_pct, \
          created_by, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at \
          FROM budgets ORDER BY scope_type, scope",
     )
     .fetch_all(&state.db)
@@ -201,8 +201,8 @@ pub async fn create_budget(
     let budget = sqlx::query_as::<_, Budget>(
         "SELECT id, scope, scope_type, monthly_limit_usd, alert_threshold_pct, \
          created_by, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at \
          FROM budgets WHERE scope = $1 AND scope_type = $2",
     )
     .bind(&req.scope)
@@ -254,8 +254,8 @@ pub async fn update_budget(
         "UPDATE budgets SET {} WHERE id = $1 \
          RETURNING id, scope, scope_type, monthly_limit_usd, alert_threshold_pct, \
          created_by, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at",
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at",
         sets.join(", ")
     );
 
@@ -379,8 +379,8 @@ async fn load_budget(
     let budget = sqlx::query_as::<_, Budget>(
         "SELECT id, scope, scope_type, monthly_limit_usd, alert_threshold_pct, \
          created_by, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at \
          FROM budgets WHERE scope = $1 AND scope_type = $2",
     )
     .bind(scope)

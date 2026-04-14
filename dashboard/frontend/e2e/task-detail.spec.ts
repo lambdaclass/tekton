@@ -62,9 +62,10 @@ test.describe('Task Detail', () => {
     await expect(adminPage.getByText('Container Logs')).toBeVisible();
   });
 
-  test('shows Diff tab for task with branch', async ({ adminPage }) => {
+  test('shows Diff tab with refresh button', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.completed}`);
-    await expect(adminPage.getByRole('tab', { name: 'Diff' })).toBeVisible();
+    await adminPage.getByRole('tab', { name: 'Diff' }).click();
+    await expect(adminPage.getByRole('button', { name: 'Refresh' })).toBeVisible();
   });
 
   test('shows error message for failed task', async ({ adminPage }) => {
