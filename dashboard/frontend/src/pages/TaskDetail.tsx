@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -56,6 +56,8 @@ export default function TaskDetail() {
   const [connected, setConnected] = useState(false);
   const [showActivity, setShowActivity] = useState(false);
   const [previewKey, setPreviewKey] = useState(0);
+  const [chatWidth, setChatWidth] = useState(480);
+  const resizing = useRef(false);
 
   const { data: task } = useQuery({
     queryKey: ['task', id],
@@ -132,6 +134,25 @@ export default function TaskDetail() {
 
   const policyViolations = actions?.filter((a) => a.action_type === 'policy_violation') ?? [];
   const imageUrls = task ? parseImageUrls(task.image_url) : [];
+
+  const startResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    resizing.current = true;
+    const startX = e.clientX;
+    const startWidth = chatWidth;
+    const onMove = (ev: MouseEvent) => {
+      if (!resizing.current) return;
+      const newWidth = Math.min(Math.max(startWidth + ev.clientX - startX, 300), 800);
+      setChatWidth(newWidth);
+    };
+    const onUp = () => {
+      resizing.current = false;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [chatWidth]);
 
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)]">
@@ -260,7 +281,7 @@ export default function TaskDetail() {
       {/* ===== Two-column layout ===== */}
       <div className="flex flex-1 min-h-0 pt-3 gap-3">
         {/* Left column: conversation (always visible when active) or prompt summary */}
-        <div className="flex flex-col min-h-0 w-[420px] shrink-0 rounded-lg border border-border bg-card overflow-hidden">
+        <div className="flex flex-col min-h-0 shrink-0 rounded-lg border border-border bg-card overflow-hidden" style={{ width: chatWidth }}>
           <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-card/50 shrink-0">
             <MessageSquare className="size-3.5 text-muted-foreground" />
             <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Conversation</span>
@@ -284,6 +305,12 @@ export default function TaskDetail() {
             </div>
           )}
         </div>
+
+        {/* Resize handle */}
+        <div
+          onMouseDown={startResize}
+          className="w-1.5 shrink-0 cursor-col-resize hover:bg-primary/20 active:bg-primary/30 rounded-full transition-colors"
+        />
 
         {/* Right column: tabbed panel (logs, diff, preview, info) + optional activity sidebar */}
         <div className="flex flex-1 min-h-0 min-w-0">
