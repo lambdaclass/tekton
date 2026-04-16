@@ -1018,7 +1018,7 @@ async fn run_benchmark(
             ssh_args.extend_from_slice(&["-i".to_string(), key.clone()]);
         }
         ssh_args.push(format!("{}@{}", s.ssh_user, s.hostname));
-        ssh_args.push(format!("cd /opt/autoresearch/repo && {benchmark_command}"));
+        ssh_args.push(format!("cd autoresearch/repo && {benchmark_command}"));
 
         let output = tokio::process::Command::new("ssh")
             .args(&ssh_args)
@@ -1043,7 +1043,7 @@ async fn sync_to_benchmark_server(
     server: &crate::models::BenchmarkServer,
 ) -> Result<(), AppError> {
     let rsync_dest = format!(
-        "{}@{}:/opt/autoresearch/repo/",
+        "{}@{}:autoresearch/repo/",
         server.ssh_user, server.hostname
     );
     let ssh_opts = if let Some(ref key) = server.ssh_key_path {

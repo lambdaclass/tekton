@@ -315,8 +315,8 @@ for cmd in git rsync; do
 done
 
 # Create workspace directory for autoresearch runs
-mkdir -p /opt/autoresearch
-echo "[OK] /opt/autoresearch workspace ready"
+mkdir -p ~/autoresearch
+echo "[OK] ~/autoresearch workspace ready"
 
 echo ""
 echo "=== Setup complete ==="
