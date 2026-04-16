@@ -641,43 +641,98 @@ async fn run_autoresearch_pipeline(
     )
     .await?;
 
-    // Ask Claude to analyze the baseline output and extract the metric
-    let baseline_analysis = analyze_benchmark_output(
-        &agent_name,
-        &baseline_output,
-        &run,
-        None, // no previous metric for baseline
-    )
-    .await?;
-
-    let baseline_metric = baseline_analysis.metric_value;
-
-    sqlx::query(
-        "UPDATE autoresearch_runs SET baseline_metric = $2, best_metric = $2, updated_at = NOW() WHERE id = $1",
-    )
-    .bind(run_id)
-    .bind(baseline_metric)
-    .execute(db)
-    .await?;
-
     log_and_persist(
         db,
         &tx,
         run_id,
-        &format!(
-            "[BASELINE] Baseline metric: {baseline_metric} ({})",
-            baseline_analysis.metric_description
-        ),
+        "[BASELINE] Benchmark complete. Starting Claude conversation...",
     )
     .await;
 
-    // Phase 3: Experiment loop
+    // Phase 3: Start Claude conversation with the baseline output and objective
+    // Claude will analyze the baseline, then make optimizations in a loop
     update_run_status(db, run_id, "running").await?;
     let start_time = Instant::now();
     let mut experiment_number = 0i32;
-    let mut best_metric = baseline_metric;
-    let metric_description = baseline_analysis.metric_description;
+    let mut best_metric: Option<f64> = None;
 
+    let objective = run.objective.as_deref().unwrap_or("improve performance");
+    let target_desc = run.target_files.as_deref().unwrap_or("any relevant files");
+    let frozen_desc = run
+        .frozen_files
+        .as_deref()
+        .map(|f| format!("\nFROZEN FILES (do NOT modify these): {f}"))
+        .unwrap_or_default();
+
+    // Initial prompt with baseline output
+    let initial_prompt = format!(
+        "You are an optimization agent. Your objective: {objective}\n\
+         \n\
+         The benchmark command is: {}\n\
+         Target files to modify: {target_desc}{frozen_desc}\n\
+         \n\
+         Here is the BASELINE benchmark output:\n\
+         ```\n\
+         {}\n\
+         ```\n\
+         \n\
+         First, analyze this output and identify the key metric to track.\n\
+         Then respond with exactly these lines at the END of your response:\n\
+         METRIC: <the numeric value of the key metric>\n\
+         DESCRIPTION: <what the metric is, e.g. \"execution time in ns\">\n\
+         \n\
+         After that, make your first optimization — a single focused change to improve this metric.",
+        run.benchmark_command,
+        &baseline_output[..baseline_output.len().min(8000)],
+    );
+
+    let escaped = initial_prompt.replace('\'', "'\\''");
+    let claude_result = shell::agent_exec_capture(
+        &agent_name,
+        &format!(
+            "cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text -p '{escaped}'"
+        ),
+    ).await;
+
+    let claude_response = match claude_result {
+        Ok(output) => output,
+        Err(e) => {
+            cleanup(config, db, &agent_name, server_id_for_cleanup).await;
+            return Err(AppError::Internal(format!(
+                "Initial Claude call failed: {e}"
+            )));
+        }
+    };
+
+    // Parse baseline metric from Claude's response
+    let (baseline_metric, metric_description) = parse_metric_response(&claude_response);
+    if let Some(bm) = baseline_metric {
+        best_metric = Some(bm);
+        sqlx::query(
+            "UPDATE autoresearch_runs SET baseline_metric = $2, best_metric = $2, updated_at = NOW() WHERE id = $1",
+        )
+        .bind(run_id)
+        .bind(bm)
+        .execute(db)
+        .await?;
+        log_and_persist(
+            db,
+            &tx,
+            run_id,
+            &format!("[BASELINE] Metric: {bm} ({metric_description})"),
+        )
+        .await;
+    } else {
+        log_and_persist(
+            db,
+            &tx,
+            run_id,
+            "[BASELINE] Claude could not extract a metric. Continuing anyway.",
+        )
+        .await;
+    }
+
+    // Now enter the experiment loop
     loop {
         // Check stop conditions
         if stop_flag.load(Ordering::Relaxed) {
@@ -716,7 +771,6 @@ async fn run_autoresearch_pipeline(
 
         experiment_number += 1;
         let exp_start = Instant::now();
-
         log_and_persist(
             db,
             &tx,
@@ -725,7 +779,6 @@ async fn run_autoresearch_pipeline(
         )
         .await;
 
-        // Insert experiment row
         let exp_id: i64 = sqlx::query_scalar(
             "INSERT INTO autoresearch_experiments (run_id, experiment_number) VALUES ($1, $2) RETURNING id",
         )
@@ -734,64 +787,7 @@ async fn run_autoresearch_pipeline(
         .fetch_one(db)
         .await?;
 
-        // Build prompt
-        let recent_experiments = get_recent_experiments(db, run_id, 5).await?;
-        let prompt = build_experiment_prompt(
-            &run,
-            best_metric,
-            baseline_metric,
-            &metric_description,
-            experiment_number,
-            &recent_experiments,
-        );
-
-        // Run Claude
-        log_and_persist(
-            db,
-            &tx,
-            run_id,
-            &format!("[EXP {experiment_number}] Asking Claude for optimization..."),
-        )
-        .await;
-
-        // Escape single quotes in the prompt for shell
-        let escaped_prompt = prompt.replace('\'', "'\\''");
-        let claude_result = shell::agent_exec_capture(
-            &agent_name,
-            &format!(
-                "cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text -p '{escaped_prompt}'"
-            ),
-        )
-        .await;
-
-        let claude_response = match claude_result {
-            Ok(output) => output,
-            Err(e) => {
-                log_and_persist(
-                    db,
-                    &tx,
-                    run_id,
-                    &format!("[EXP {experiment_number}] Claude error: {e}"),
-                )
-                .await;
-                let _ = sqlx::query(
-                    "UPDATE autoresearch_experiments SET status = 'error', claude_response = $2 WHERE id = $1",
-                )
-                .bind(exp_id)
-                .bind(format!("{e}"))
-                .execute(db)
-                .await;
-                let _ = sqlx::query(
-                    "UPDATE autoresearch_runs SET total_experiments = total_experiments + 1, updated_at = NOW() WHERE id = $1",
-                )
-                .bind(run_id)
-                .execute(db)
-                .await;
-                continue;
-            }
-        };
-
-        // Check if Claude made any changes
+        // Check if Claude made any changes (from the previous prompt — either initial or continue)
         let diff = shell::agent_exec_capture(&agent_name, "cd /home/agent/repo && git diff")
             .await
             .unwrap_or_default();
@@ -806,7 +802,7 @@ async fn run_autoresearch_pipeline(
             .await;
             let _ = sqlx::query(
                 "UPDATE autoresearch_experiments SET status = 'rejected', accepted = false, \
-                 claude_response = $2, diff = '', metric_raw_output = 'No changes' WHERE id = $1",
+                 claude_response = $2, diff = '' WHERE id = $1",
             )
             .bind(exp_id)
             .bind(&claude_response)
@@ -818,6 +814,14 @@ async fn run_autoresearch_pipeline(
             .bind(run_id)
             .execute(db)
             .await;
+
+            // Ask Claude to try again
+            let retry_prompt = "You didn't make any code changes. Please make a concrete code change to optimize the metric.";
+            let escaped = retry_prompt.replace('\'', "'\\''");
+            let _ = shell::agent_exec_capture(
+                &agent_name,
+                &format!("cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text --continue -p '{escaped}'"),
+            ).await;
             continue;
         }
 
@@ -830,6 +834,13 @@ async fn run_autoresearch_pipeline(
 
         // Sync to benchmark server if needed
         if let Some(ref server) = benchmark_server {
+            log_and_persist(
+                db,
+                &tx,
+                run_id,
+                &format!("[EXP {experiment_number}] Syncing to benchmark server..."),
+            )
+            .await;
             sync_to_benchmark_server(&agent_name, server).await?;
         }
 
@@ -848,54 +859,97 @@ async fn run_autoresearch_pipeline(
         .execute(db)
         .await;
 
-        let benchmark_output = run_benchmark(
+        let benchmark_result = run_benchmark(
             &agent_name,
             &run.benchmark_command,
             benchmark_server.as_ref(),
         )
         .await;
 
-        let (metric_value, raw_output, is_better) = match benchmark_output {
-            Ok(output) => {
-                match analyze_benchmark_output(&agent_name, &output, &run, Some(best_metric)).await
-                {
-                    Ok(analysis) => (Some(analysis.metric_value), output, analysis.is_improvement),
-                    Err(e) => {
-                        log_and_persist(
-                            db,
-                            &tx,
-                            run_id,
-                            &format!("[EXP {experiment_number}] Metric analysis failed: {e}"),
-                        )
-                        .await;
-                        (None, output, false)
-                    }
-                }
-            }
+        let raw_output = match &benchmark_result {
+            Ok(output) => output.clone(),
+            Err(e) => format!("Benchmark failed: {e}"),
+        };
+
+        // Send benchmark output to Claude and ask for analysis + next optimization
+        let best_str = best_metric
+            .map(|v| format!("{v}"))
+            .unwrap_or("unknown".into());
+        let continue_prompt = format!(
+            "Here is the benchmark output after your last change:\n\
+             ```\n\
+             {}\n\
+             ```\n\
+             \n\
+             Previous best metric: {best_str}\n\
+             \n\
+             Respond with exactly these lines at the END of your response:\n\
+             METRIC: <the numeric value of the key metric from this run>\n\
+             IMPROVED: <true or false — is this better than the previous best?>\n\
+             \n\
+             Then make another optimization — a single focused change to further improve the metric.",
+            &raw_output[..raw_output.len().min(8000)],
+        );
+
+        let escaped = continue_prompt.replace('\'', "'\\''");
+        let claude_result = shell::agent_exec_capture(
+            &agent_name,
+            &format!("cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text --continue -p '{escaped}'"),
+        ).await;
+
+        let claude_response = match claude_result {
+            Ok(output) => output,
             Err(e) => {
                 log_and_persist(
                     db,
                     &tx,
                     run_id,
-                    &format!("[EXP {experiment_number}] Benchmark failed: {e}"),
+                    &format!("[EXP {experiment_number}] Claude error: {e}"),
                 )
                 .await;
-                (None, format!("{e}"), false)
+                let _ = sqlx::query(
+                    "UPDATE autoresearch_experiments SET status = 'error', claude_response = $2, diff = $3 WHERE id = $1",
+                )
+                .bind(exp_id)
+                .bind(format!("{e}"))
+                .bind(&diff)
+                .execute(db)
+                .await;
+                let _ = sqlx::query(
+                    "UPDATE autoresearch_runs SET total_experiments = total_experiments + 1, updated_at = NOW() WHERE id = $1",
+                )
+                .bind(run_id)
+                .execute(db)
+                .await;
+                // Revert on error
+                let _ = shell::agent_exec_capture(
+                    &agent_name,
+                    "cd /home/agent/repo && git reset --hard HEAD~1",
+                )
+                .await;
+                continue;
             }
         };
+
+        // Parse Claude's response for metric and improvement judgment
+        let (metric_value, _) = parse_metric_response(&claude_response);
+        let is_better = parse_improved_response(&claude_response);
 
         let duration = exp_start.elapsed().as_secs() as i32;
 
         if is_better {
-            let val = metric_value.unwrap();
+            let val = metric_value.unwrap_or(0.0);
             log_and_persist(
                 db,
                 &tx,
                 run_id,
-                &format!("[EXP {experiment_number}] ACCEPTED: {val} (improved from {best_metric})"),
+                &format!(
+                    "[EXP {experiment_number}] ACCEPTED: {val} (best was {})",
+                    best_str
+                ),
             )
             .await;
-            best_metric = val;
+            best_metric = Some(val);
 
             let _ = push_branch(&agent_name, branch_name).await;
 
@@ -924,14 +978,12 @@ async fn run_autoresearch_pipeline(
             .execute(db)
             .await;
         } else {
-            let val_str = metric_value
-                .map(|v| format!("{v}"))
-                .unwrap_or_else(|| "N/A".into());
+            let val_str = metric_value.map(|v| format!("{v}")).unwrap_or("N/A".into());
             log_and_persist(
                 db,
                 &tx,
                 run_id,
-                &format!("[EXP {experiment_number}] REJECTED: {val_str} (best: {best_metric})"),
+                &format!("[EXP {experiment_number}] REJECTED: {val_str} (best: {best_str})"),
             )
             .await;
 
@@ -962,6 +1014,14 @@ async fn run_autoresearch_pipeline(
             .bind(run_id)
             .execute(db)
             .await;
+
+            // Tell Claude the change was reverted
+            let revert_prompt = "Your change did not improve the metric and has been reverted. Try a different approach.";
+            let escaped = revert_prompt.replace('\'', "'\\''");
+            let _ = shell::agent_exec_capture(
+                &agent_name,
+                &format!("cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text --continue -p '{escaped}'"),
+            ).await;
         }
     }
 
@@ -969,8 +1029,10 @@ async fn run_autoresearch_pipeline(
     let _ = push_branch(&agent_name, branch_name).await;
     update_run_status(db, run_id, "completed").await?;
 
-    let improvement = if baseline_metric != 0.0 {
-        ((best_metric - baseline_metric) / baseline_metric.abs()) * 100.0
+    let bl = baseline_metric.unwrap_or(0.0);
+    let bst = best_metric.unwrap_or(0.0);
+    let improvement = if bl != 0.0 {
+        ((bst - bl) / bl.abs()) * 100.0
     } else {
         0.0
     };
@@ -978,9 +1040,7 @@ async fn run_autoresearch_pipeline(
         db,
         &tx,
         run_id,
-        &format!(
-            "[DONE] Completed. Best: {best_metric} (baseline: {baseline_metric}, change: {improvement:.1}%)"
-        ),
+        &format!("[DONE] Completed. Best: {bst} (baseline: {bl}, change: {improvement:.1}%)"),
     )
     .await;
 
@@ -991,8 +1051,8 @@ async fn run_autoresearch_pipeline(
         Some(run_id),
         serde_json::json!({
             "total_experiments": experiment_number,
-            "baseline_metric": baseline_metric,
-            "best_metric": best_metric,
+            "baseline_metric": bl,
+            "best_metric": bst,
         }),
         None,
     )
@@ -1020,7 +1080,9 @@ async fn run_benchmark(
             ssh_args.extend_from_slice(&["-i".to_string(), key.clone()]);
         }
         ssh_args.push(format!("{}@{}", s.ssh_user, s.hostname));
-        ssh_args.push(format!("cd autoresearch/repo && {benchmark_command}"));
+        ssh_args.push(format!(
+            "source ~/.bashrc 2>/dev/null; source ~/.profile 2>/dev/null; source ~/.cargo/env 2>/dev/null; cd autoresearch/repo && {benchmark_command}"
+        ));
 
         let output = tokio::process::Command::new("ssh")
             .args(&ssh_args)
@@ -1156,59 +1218,12 @@ async fn push_branch(agent_name: &str, branch_name: &str) -> Result<(), AppError
     Ok(())
 }
 
-struct BenchmarkAnalysis {
-    metric_value: f64,
-    metric_description: String,
-    is_improvement: bool,
-}
-
-/// Ask Claude to analyze benchmark output and extract the metric.
-async fn analyze_benchmark_output(
-    agent_name: &str,
-    benchmark_output: &str,
-    run: &AutoresearchRun,
-    previous_best: Option<f64>,
-) -> Result<BenchmarkAnalysis, AppError> {
-    let objective = run.objective.as_deref().unwrap_or("improve performance");
-    let prev_context = match previous_best {
-        Some(val) => format!("The previous best metric value was {val}."),
-        None => {
-            "This is the baseline run — there is no previous value to compare against.".to_string()
-        }
-    };
-
-    let truncated = &benchmark_output[..benchmark_output.len().min(4000)];
-    let prompt = format!(
-        "You are analyzing benchmark output for an optimization task.\n\
-         \n\
-         OBJECTIVE: {objective}\n\
-         Benchmark command: {}\n\
-         {prev_context}\n\
-         \n\
-         BENCHMARK OUTPUT:\n\
-         {truncated}\n\
-         \n\
-         Respond with EXACTLY three lines, nothing else:\n\
-         METRIC: <a single number representing the key metric>\n\
-         DESCRIPTION: <brief description of what the metric is, e.g. \"execution time in ms\" or \"throughput in ops/sec\">\n\
-         IMPROVED: <true or false — did the metric improve compared to the previous best? If this is the baseline, say true>",
-        run.benchmark_command,
-    );
-
-    let escaped_prompt = prompt.replace('\'', "'\\''");
-    let output = shell::agent_exec_capture(
-        agent_name,
-        &format!(
-            "claude --dangerously-skip-permissions --output-format text -p '{escaped_prompt}'"
-        ),
-    )
-    .await?;
-
+/// Parse METRIC: and DESCRIPTION: lines from Claude's response.
+fn parse_metric_response(response: &str) -> (Option<f64>, String) {
     let mut metric_value = None;
-    let mut metric_description = String::new();
-    let mut is_improvement = false;
+    let mut description = String::new();
 
-    for line in output.lines() {
+    for line in response.lines() {
         let line = line.trim();
         if let Some(val) = line.strip_prefix("METRIC:") {
             let val = val.trim();
@@ -1218,26 +1233,26 @@ async fn analyze_benchmark_output(
                 .collect();
             metric_value = num_str.parse::<f64>().ok();
         } else if let Some(desc) = line.strip_prefix("DESCRIPTION:") {
-            metric_description = desc.trim().to_string();
-        } else if let Some(imp) = line.strip_prefix("IMPROVED:") {
-            is_improvement = imp.trim().eq_ignore_ascii_case("true");
+            description = desc.trim().to_string();
         }
     }
 
-    let metric_value = metric_value.ok_or_else(|| {
-        AppError::Internal(format!(
-            "Claude did not return a valid METRIC value. Response:\n{}",
-            &output[..output.len().min(500)]
-        ))
-    })?;
-
-    Ok(BenchmarkAnalysis {
-        metric_value,
-        metric_description,
-        is_improvement,
-    })
+    (metric_value, description)
 }
 
+/// Parse IMPROVED: line from Claude's response.
+fn parse_improved_response(response: &str) -> bool {
+    for line in response.lines() {
+        let line = line.trim();
+        if let Some(imp) = line.strip_prefix("IMPROVED:") {
+            return imp.trim().eq_ignore_ascii_case("true");
+        }
+    }
+    false
+}
+
+// Keep build_experiment_prompt for potential future use but it's not called in the current flow
+#[allow(dead_code)]
 fn build_experiment_prompt(
     run: &AutoresearchRun,
     best_metric: f64,
