@@ -621,6 +621,8 @@ async fn run_autoresearch_pipeline(
             ),
         )
         .await;
+        // Create the destination directory on the benchmark server
+        ensure_remote_dir(&server, "autoresearch/repo").await?;
         sync_to_benchmark_server(&agent_name, &server).await?;
 
         Some(server)
@@ -1038,44 +1040,110 @@ async fn run_benchmark(
     }
 }
 
+/// Create a directory on the benchmark server via SSH from the host.
+async fn ensure_remote_dir(
+    server: &crate::models::BenchmarkServer,
+    dir: &str,
+) -> Result<(), AppError> {
+    let mut args = vec![
+        "-o".to_string(),
+        "StrictHostKeyChecking=no".to_string(),
+        "-o".to_string(),
+        "UserKnownHostsFile=/dev/null".to_string(),
+    ];
+    if let Some(ref key) = server.ssh_key_path {
+        args.extend(["-i".to_string(), key.clone()]);
+    }
+    args.push(format!("{}@{}", server.ssh_user, server.hostname));
+    args.push(format!("mkdir -p {dir}"));
+
+    let output = tokio::process::Command::new("ssh")
+        .args(&args)
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("SSH mkdir failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::Internal(format!(
+            "mkdir on benchmark server failed: {stderr}"
+        )));
+    }
+    Ok(())
+}
+
+/// Sync repo from agent container to benchmark server.
+/// Runs on the host: pulls from agent via SSH, pushes to benchmark server via SSH.
+/// The host holds both keys — no private keys are copied into the agent container.
 async fn sync_to_benchmark_server(
     agent_name: &str,
     server: &crate::models::BenchmarkServer,
 ) -> Result<(), AppError> {
-    let rsync_dest = format!(
-        "{}@{}:autoresearch/repo/",
-        server.ssh_user, server.hostname
-    );
-    let ssh_opts = if let Some(ref key) = server.ssh_key_path {
-        format!("ssh -o StrictHostKeyChecking=no -i {key}")
-    } else {
-        "ssh -o StrictHostKeyChecking=no".to_string()
-    };
+    let agent_ip = shell::agent_ip_public(agent_name)?;
+    let agent_src = format!("agent@{agent_ip}:/home/agent/repo/");
+    let dest = format!("{}@{}:autoresearch/repo/", server.ssh_user, server.hostname);
 
-    let agent_repo_path = format!("/var/lib/machines/{agent_name}/home/agent/repo/");
+    // Build SSH options for the benchmark server side
+    let mut server_ssh = vec![
+        "-o".to_string(),
+        "StrictHostKeyChecking=no".to_string(),
+        "-o".to_string(),
+        "UserKnownHostsFile=/dev/null".to_string(),
+    ];
+    if let Some(ref key) = server.ssh_key_path {
+        server_ssh.extend(["-i".to_string(), key.clone()]);
+    }
 
-    let output = tokio::process::Command::new("rsync")
+    // Step 1: rsync from agent container to a temp dir on the host
+    let tmp_dir = format!("/tmp/autoresearch-sync-{agent_name}");
+    let pull_output = tokio::process::Command::new("rsync")
         .args([
             "-az",
             "--delete",
             "--exclude",
             ".git",
             "-e",
-            &ssh_opts,
-            &agent_repo_path,
-            &rsync_dest,
+            "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+            &agent_src,
+            &format!("{tmp_dir}/"),
         ])
         .output()
         .await
-        .map_err(|e| AppError::Internal(format!("rsync failed: {e}")))?;
+        .map_err(|e| AppError::Internal(format!("rsync from agent failed: {e}")))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !pull_output.status.success() {
+        let stderr = String::from_utf8_lossy(&pull_output.stderr);
+        return Err(AppError::Internal(format!(
+            "rsync from agent failed: {stderr}"
+        )));
+    }
+
+    // Step 2: rsync from host temp dir to benchmark server
+    let server_ssh_str = server_ssh.join(" ");
+    let push_output = tokio::process::Command::new("rsync")
+        .args([
+            "-az",
+            "--delete",
+            "-e",
+            &format!("ssh {server_ssh_str}"),
+            &format!("{tmp_dir}/"),
+            &dest,
+        ])
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("rsync to benchmark server failed: {e}")))?;
+
+    if !push_output.status.success() {
+        let stderr = String::from_utf8_lossy(&push_output.stderr);
+        // Clean up temp dir
+        let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
         return Err(AppError::Internal(format!(
             "rsync to benchmark server failed: {stderr}"
         )));
     }
 
+    // Clean up temp dir
+    let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
     Ok(())
 }
 
