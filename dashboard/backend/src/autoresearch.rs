@@ -665,7 +665,11 @@ async fn run_autoresearch_pipeline(
     .await;
 
     // Phase 3: Start Claude conversation with the baseline output and objective
-    // Claude will analyze the baseline, then make optimizations in a loop
+    // Build Claude auth env (API key / OAuth token)
+    let created_by = run.created_by.as_deref().unwrap_or("system");
+    let (auth_env, model_flag) =
+        crate::tasks::build_claude_auth_env(db, &config.secrets_encryption_key, created_by).await?;
+
     update_run_status(db, run_id, "running").await?;
     let start_time = Instant::now();
     let mut experiment_number = 0i32;
@@ -712,7 +716,7 @@ async fn run_autoresearch_pipeline(
     let claude_result = shell::agent_exec_capture(
         &agent_name,
         &format!(
-            "cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text -p '{escaped}'"
+            "{auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text {model_flag} -p '{escaped}'"
         ),
     ).await;
 
@@ -858,7 +862,7 @@ async fn run_autoresearch_pipeline(
             let escaped = retry_prompt.replace('\'', "'\\''");
             let _ = shell::agent_exec_capture(
                 &agent_name,
-                &format!("cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text --continue -p '{escaped}'"),
+                &format!("{auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text {model_flag} --continue -p '{escaped}'"),
             ).await;
             continue;
         }
@@ -964,7 +968,7 @@ async fn run_autoresearch_pipeline(
         log_and_persist(db, &tx, run_id, &format!("[EXP {experiment_number}] Sending benchmark output to Claude for analysis + next optimization...")).await;
         let claude_result = shell::agent_exec_capture(
             &agent_name,
-            &format!("cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text --continue -p '{escaped}'"),
+            &format!("{auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text {model_flag} --continue -p '{escaped}'"),
         ).await;
 
         let claude_response = match claude_result {
@@ -1104,7 +1108,7 @@ async fn run_autoresearch_pipeline(
             let escaped = revert_prompt.replace('\'', "'\\''");
             let _ = shell::agent_exec_capture(
                 &agent_name,
-                &format!("cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text --continue -p '{escaped}'"),
+                &format!("{auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text {model_flag} --continue -p '{escaped}'"),
             ).await;
         }
     }

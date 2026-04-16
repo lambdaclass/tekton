@@ -838,7 +838,7 @@ async fn run_task_pipeline(
 /// Returns (env_export_string, model_flag) where model_flag is always `""`.
 /// Model selection uses ANTHROPIC_MODEL env var rather than --model flag to
 /// avoid the Claude CLI's client-side validation against Anthropic-only names.
-async fn build_claude_auth_env(
+pub async fn build_claude_auth_env(
     db: &PgPool,
     encryption_key: &str,
     created_by: &str,
