@@ -27,10 +27,8 @@ test.describe('Autoresearch', () => {
     // Check form fields exist
     await expect(adminPage.getByLabel('Repository')).toBeVisible();
     await expect(adminPage.getByLabel('Base Branch')).toBeVisible();
+    await expect(adminPage.getByLabel('Objective')).toBeVisible();
     await expect(adminPage.getByLabel('Benchmark Command')).toBeVisible();
-    await expect(adminPage.getByLabel('Metric Regex (one capture group)')).toBeVisible();
-    await expect(adminPage.getByText('Lower is better')).toBeVisible();
-    await expect(adminPage.getByText('Higher is better')).toBeVisible();
     await expect(adminPage.getByLabel('Max Experiments')).toBeVisible();
     await expect(adminPage.getByLabel('Target Files')).toBeVisible();
     await expect(adminPage.getByLabel('Frozen Files')).toBeVisible();
@@ -65,7 +63,7 @@ test.describe('Autoresearch', () => {
     await adminPage.goto(`/autoresearch/${TEST_IDS.autoresearch.completed}`);
     await adminPage.getByRole('tab', { name: 'Config' }).click();
     await expect(adminPage.getByText('python benchmark.py')).toBeVisible();
-    await expect(adminPage.getByText('Higher is better')).toBeVisible();
+    await expect(adminPage.getByText('Optimize sort algorithm performance')).toBeVisible();
     await expect(adminPage.getByText('src/sort.py')).toBeVisible();
     await expect(adminPage.getByText('testorg/testrepo').first()).toBeVisible();
   });

@@ -121,8 +121,7 @@ function CreateRunForm({
   const [repo, setRepo] = useState('');
   const [baseBranch, setBaseBranch] = useState('main');
   const [benchmarkCommand, setBenchmarkCommand] = useState('');
-  const [metricRegex, setMetricRegex] = useState('');
-  const [direction, setDirection] = useState<'lower' | 'higher'>('lower');
+  const [objective, setObjective] = useState('');
   const [targetFiles, setTargetFiles] = useState('');
   const [frozenFiles, setFrozenFiles] = useState('');
   const [maxExperiments, setMaxExperiments] = useState('10');
@@ -153,8 +152,7 @@ function CreateRunForm({
       repo,
       base_branch: baseBranch || undefined,
       benchmark_command: benchmarkCommand,
-      metric_regex: metricRegex,
-      optimization_direction: direction,
+      objective,
       target_files: targetFiles || undefined,
       frozen_files: frozenFiles || undefined,
       max_experiments: maxExperiments ? parseInt(maxExperiments) : undefined,
@@ -198,6 +196,17 @@ function CreateRunForm({
             </div>
           </div>
 
+          <div className="space-y-2">
+            <Label htmlFor="ar-objective">Objective</Label>
+            <Input
+              id="ar-objective"
+              value={objective}
+              onChange={(e) => setObjective(e.target.value)}
+              placeholder="Optimize EVM execution to improve benchmark performance"
+              required
+            />
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="ar-benchmark">Benchmark Command</Label>
@@ -205,35 +214,11 @@ function CreateRunForm({
                 id="ar-benchmark"
                 value={benchmarkCommand}
                 onChange={(e) => setBenchmarkCommand(e.target.value)}
-                placeholder="python benchmark.py"
+                placeholder="make bench-rlp"
                 required
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="ar-regex">Metric Regex (one capture group)</Label>
-              <Input
-                id="ar-regex"
-                value={metricRegex}
-                onChange={(e) => setMetricRegex(e.target.value)}
-                placeholder="Score: (\d+\.?\d*)"
-                required
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="space-y-2">
-              <Label>Optimization Direction</Label>
-              <div className="flex gap-4 pt-1">
-                <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-                  <input type="radio" checked={direction === 'lower'} onChange={() => setDirection('lower')} />
-                  Lower is better
-                </label>
-                <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-                  <input type="radio" checked={direction === 'higher'} onChange={() => setDirection('higher')} />
-                  Higher is better
-                </label>
-              </div>
             </div>
             <div className="space-y-2">
               <Label htmlFor="ar-max-exp">Max Experiments</Label>

@@ -181,8 +181,9 @@ CREATE TABLE IF NOT EXISTS autoresearch_runs (
     agent_name TEXT,
     benchmark_server_id BIGINT REFERENCES benchmark_servers(id),
     benchmark_command TEXT NOT NULL,
-    metric_regex TEXT NOT NULL,
-    optimization_direction TEXT NOT NULL DEFAULT 'lower',
+    objective TEXT,
+    metric_regex TEXT,
+    optimization_direction TEXT,
     target_files TEXT,
     frozen_files TEXT,
     max_experiments INTEGER,
@@ -440,19 +441,19 @@ VALUES
 -- ============================================================
 
 INSERT INTO autoresearch_runs
-    (id, name, repo, base_branch, branch_name, benchmark_command, metric_regex,
-     optimization_direction, target_files, max_experiments, status,
+    (id, name, repo, base_branch, branch_name, benchmark_command, objective,
+     target_files, max_experiments, status,
      baseline_metric, best_metric, total_experiments, accepted_experiments,
      total_cost_usd, created_by, created_at, updated_at)
 VALUES
     ('ar-completed-1', 'Optimize sort perf', 'testorg/testrepo', 'main',
-     'autoresearch/ar-compl', 'python benchmark.py', 'Score: (\d+\.?\d*)',
-     'higher', 'src/sort.py', 10, 'completed',
+     'autoresearch/ar-compl', 'python benchmark.py', 'Optimize sort algorithm performance',
+     'src/sort.py', 10, 'completed',
      42.5, 51.3, 5, 3, 2.50, 'testadmin',
      NOW() - INTERVAL '1 day', NOW() - INTERVAL '6 hours'),
     ('ar-running-1', 'Speed up parser', 'testorg/testrepo', 'main',
-     'autoresearch/ar-runni', 'make bench', 'time: (\d+\.?\d*)ms',
-     'lower', 'src/parser.rs', 20, 'running',
+     'autoresearch/ar-runni', 'make bench', 'Improve parser throughput',
+     'src/parser.rs', 20, 'running',
      150.0, 132.5, 8, 2, 1.80, 'testadmin',
      NOW() - INTERVAL '2 hours', NOW() - INTERVAL '5 minutes');
 

@@ -20,7 +20,7 @@ pub fn new_stop_flags() -> StopFlags {
 }
 
 const RUN_QUERY: &str = "SELECT id, name, repo, base_branch, branch_name, agent_name, \
-     benchmark_server_id, benchmark_command, metric_regex, optimization_direction, \
+     benchmark_server_id, benchmark_command, objective, metric_regex, optimization_direction, \
      target_files, frozen_files, max_experiments, time_budget_minutes, status, \
      baseline_metric, best_metric, total_experiments, accepted_experiments, \
      total_cost_usd, error_message, created_by, \
@@ -74,14 +74,9 @@ pub async fn create_run_handler(
     )
     .await?;
 
-    Regex::new(&req.metric_regex)
-        .map_err(|e| AppError::BadRequest(format!("Invalid metric regex: {e}")))?;
-
-    let direction = req.optimization_direction.as_deref().unwrap_or("lower");
-    if direction != "higher" && direction != "lower" {
-        return Err(AppError::BadRequest(
-            "optimization_direction must be 'higher' or 'lower'".into(),
-        ));
+    if let Some(ref regex) = req.metric_regex {
+        Regex::new(regex)
+            .map_err(|e| AppError::BadRequest(format!("Invalid metric regex: {e}")))?;
     }
 
     if req.max_experiments.is_none() && req.time_budget_minutes.is_none() {
@@ -96,18 +91,19 @@ pub async fn create_run_handler(
 
     sqlx::query(
         "INSERT INTO autoresearch_runs \
-         (id, repo, base_branch, branch_name, benchmark_command, metric_regex, \
+         (id, repo, base_branch, branch_name, benchmark_command, objective, metric_regex, \
           optimization_direction, target_files, frozen_files, max_experiments, \
           time_budget_minutes, benchmark_server_id, created_by) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
     )
     .bind(&id)
     .bind(&req.repo)
     .bind(base_branch)
     .bind(&branch_name)
     .bind(&req.benchmark_command)
+    .bind(&req.objective)
     .bind(&req.metric_regex)
-    .bind(direction)
+    .bind(&req.optimization_direction)
     .bind(&req.target_files)
     .bind(&req.frozen_files)
     .bind(req.max_experiments)
@@ -316,7 +312,7 @@ pub async fn get_run_stats(
     let improvement_pct = match (run.baseline_metric, run.best_metric) {
         (Some(baseline), Some(best)) if baseline != 0.0 => {
             let raw = ((best - baseline) / baseline.abs()) * 100.0;
-            if run.optimization_direction == "lower" {
+            if run.optimization_direction.as_deref() == Some("lower") {
                 -raw
             } else {
                 raw
@@ -410,7 +406,7 @@ pub async fn create_run_pr(
     let improvement = match (run.baseline_metric, run.best_metric) {
         (Some(baseline), Some(best)) if baseline != 0.0 => {
             let raw = ((best - baseline) / baseline.abs()) * 100.0;
-            if run.optimization_direction == "lower" {
+            if run.optimization_direction.as_deref() == Some("lower") {
                 -raw
             } else {
                 raw
@@ -419,15 +415,17 @@ pub async fn create_run_pr(
         _ => 0.0,
     };
 
+    let objective = run.objective.as_deref().unwrap_or("improve performance");
     let body = format!(
         "## Autoresearch Results\n\n\
+         - **Objective:** {}\n\
          - **Baseline metric:** {}\n\
          - **Best metric:** {}\n\
          - **Improvement:** {:.1}%\n\
          - **Experiments:** {} total, {} accepted\n\
-         - **Optimization direction:** {} is better\n\
          - **Benchmark command:** `{}`\n\n\
          Generated automatically by Tekton Autoresearch.",
+        objective,
         run.baseline_metric
             .map(|v| format!("{v}"))
             .unwrap_or("N/A".into()),
@@ -437,7 +435,6 @@ pub async fn create_run_pr(
         improvement,
         run.total_experiments,
         run.accepted_experiments,
-        run.optimization_direction,
         run.benchmark_command,
     );
 
@@ -641,7 +638,17 @@ async fn run_autoresearch_pipeline(
         benchmark_server.as_ref(),
     )
     .await?;
-    let baseline_metric = extract_metric(&baseline_output, &run.metric_regex)?;
+
+    // Ask Claude to analyze the baseline output and extract the metric
+    let baseline_analysis = analyze_benchmark_output(
+        &agent_name,
+        &baseline_output,
+        &run,
+        None, // no previous metric for baseline
+    )
+    .await?;
+
+    let baseline_metric = baseline_analysis.metric_value;
 
     sqlx::query(
         "UPDATE autoresearch_runs SET baseline_metric = $2, best_metric = $2, updated_at = NOW() WHERE id = $1",
@@ -655,7 +662,10 @@ async fn run_autoresearch_pipeline(
         db,
         &tx,
         run_id,
-        &format!("[BASELINE] Baseline metric: {baseline_metric}"),
+        &format!(
+            "[BASELINE] Baseline metric: {baseline_metric} ({})",
+            baseline_analysis.metric_description
+        ),
     )
     .await;
 
@@ -664,6 +674,7 @@ async fn run_autoresearch_pipeline(
     let start_time = Instant::now();
     let mut experiment_number = 0i32;
     let mut best_metric = baseline_metric;
+    let metric_description = baseline_analysis.metric_description;
 
     loop {
         // Check stop conditions
@@ -727,6 +738,7 @@ async fn run_autoresearch_pipeline(
             &run,
             best_metric,
             baseline_metric,
+            &metric_description,
             experiment_number,
             &recent_experiments,
         );
@@ -841,20 +853,23 @@ async fn run_autoresearch_pipeline(
         )
         .await;
 
-        let (metric_value, raw_output, benchmark_ok) = match benchmark_output {
-            Ok(output) => match extract_metric(&output, &run.metric_regex) {
-                Ok(val) => (Some(val), output, true),
-                Err(e) => {
-                    log_and_persist(
-                        db,
-                        &tx,
-                        run_id,
-                        &format!("[EXP {experiment_number}] Metric extraction failed: {e}"),
-                    )
-                    .await;
-                    (None, output, false)
+        let (metric_value, raw_output, is_better) = match benchmark_output {
+            Ok(output) => {
+                match analyze_benchmark_output(&agent_name, &output, &run, Some(best_metric)).await
+                {
+                    Ok(analysis) => (Some(analysis.metric_value), output, analysis.is_improvement),
+                    Err(e) => {
+                        log_and_persist(
+                            db,
+                            &tx,
+                            run_id,
+                            &format!("[EXP {experiment_number}] Metric analysis failed: {e}"),
+                        )
+                        .await;
+                        (None, output, false)
+                    }
                 }
-            },
+            }
             Err(e) => {
                 log_and_persist(
                     db,
@@ -865,16 +880,6 @@ async fn run_autoresearch_pipeline(
                 .await;
                 (None, format!("{e}"), false)
             }
-        };
-
-        // Decide: accept or reject
-        let is_better = match metric_value {
-            Some(val) if benchmark_ok => match run.optimization_direction.as_str() {
-                "lower" => val < best_metric,
-                "higher" => val > best_metric,
-                _ => false,
-            },
-            _ => false,
         };
 
         let duration = exp_start.elapsed().as_secs() as i32;
@@ -1083,41 +1088,97 @@ async fn push_branch(agent_name: &str, branch_name: &str) -> Result<(), AppError
     Ok(())
 }
 
-fn extract_metric(output: &str, regex_str: &str) -> Result<f64, AppError> {
-    let re = Regex::new(regex_str)
-        .map_err(|e| AppError::Internal(format!("Invalid metric regex: {e}")))?;
+struct BenchmarkAnalysis {
+    metric_value: f64,
+    metric_description: String,
+    is_improvement: bool,
+}
 
-    let captures = re.captures(output).ok_or_else(|| {
+/// Ask Claude to analyze benchmark output and extract the metric.
+async fn analyze_benchmark_output(
+    agent_name: &str,
+    benchmark_output: &str,
+    run: &AutoresearchRun,
+    previous_best: Option<f64>,
+) -> Result<BenchmarkAnalysis, AppError> {
+    let objective = run.objective.as_deref().unwrap_or("improve performance");
+    let prev_context = match previous_best {
+        Some(val) => format!("The previous best metric value was {val}."),
+        None => {
+            "This is the baseline run — there is no previous value to compare against.".to_string()
+        }
+    };
+
+    let truncated = &benchmark_output[..benchmark_output.len().min(4000)];
+    let prompt = format!(
+        "You are analyzing benchmark output for an optimization task.\n\
+         \n\
+         OBJECTIVE: {objective}\n\
+         Benchmark command: {}\n\
+         {prev_context}\n\
+         \n\
+         BENCHMARK OUTPUT:\n\
+         {truncated}\n\
+         \n\
+         Respond with EXACTLY three lines, nothing else:\n\
+         METRIC: <a single number representing the key metric>\n\
+         DESCRIPTION: <brief description of what the metric is, e.g. \"execution time in ms\" or \"throughput in ops/sec\">\n\
+         IMPROVED: <true or false — did the metric improve compared to the previous best? If this is the baseline, say true>",
+        run.benchmark_command,
+    );
+
+    let escaped_prompt = prompt.replace('\'', "'\\''");
+    let output = shell::agent_exec_capture(
+        agent_name,
+        &format!(
+            "claude --dangerously-skip-permissions --output-format text -p '{escaped_prompt}'"
+        ),
+    )
+    .await?;
+
+    let mut metric_value = None;
+    let mut metric_description = String::new();
+    let mut is_improvement = false;
+
+    for line in output.lines() {
+        let line = line.trim();
+        if let Some(val) = line.strip_prefix("METRIC:") {
+            let val = val.trim();
+            let num_str: String = val
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+                .collect();
+            metric_value = num_str.parse::<f64>().ok();
+        } else if let Some(desc) = line.strip_prefix("DESCRIPTION:") {
+            metric_description = desc.trim().to_string();
+        } else if let Some(imp) = line.strip_prefix("IMPROVED:") {
+            is_improvement = imp.trim().eq_ignore_ascii_case("true");
+        }
+    }
+
+    let metric_value = metric_value.ok_or_else(|| {
         AppError::Internal(format!(
-            "Metric regex did not match. Regex: {regex_str}\nOutput (first 500 chars): {}",
+            "Claude did not return a valid METRIC value. Response:\n{}",
             &output[..output.len().min(500)]
         ))
     })?;
 
-    let value_str = captures
-        .get(1)
-        .ok_or_else(|| AppError::Internal("Metric regex must have one capture group".into()))?
-        .as_str();
-
-    value_str
-        .trim()
-        .parse::<f64>()
-        .map_err(|e| AppError::Internal(format!("Could not parse metric value '{value_str}': {e}")))
+    Ok(BenchmarkAnalysis {
+        metric_value,
+        metric_description,
+        is_improvement,
+    })
 }
 
 fn build_experiment_prompt(
     run: &AutoresearchRun,
     best_metric: f64,
     baseline_metric: f64,
+    metric_description: &str,
     experiment_number: i32,
     recent_experiments: &[AutoresearchExperiment],
 ) -> String {
-    let direction_desc = if run.optimization_direction == "lower" {
-        "LOWER is better"
-    } else {
-        "HIGHER is better"
-    };
-
+    let objective = run.objective.as_deref().unwrap_or("improve performance");
     let target_desc = run.target_files.as_deref().unwrap_or("any files");
     let frozen_desc = run
         .frozen_files
@@ -1149,9 +1210,9 @@ fn build_experiment_prompt(
     format!(
         "You are an optimization agent running experiment #{experiment_number}.\n\
          \n\
-         OBJECTIVE: Optimize the benchmark metric.\n\
+         OBJECTIVE: {objective}\n\
          Benchmark command: {}\n\
-         Metric direction: {direction_desc}\n\
+         Metric being tracked: {metric_description}\n\
          Baseline metric: {baseline_metric}\n\
          Current best metric: {best_metric}\n\
          \n\

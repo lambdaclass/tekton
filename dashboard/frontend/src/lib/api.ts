@@ -473,8 +473,9 @@ export interface AutoresearchRun {
   agent_name: string | null;
   benchmark_server_id: number | null;
   benchmark_command: string;
-  metric_regex: string;
-  optimization_direction: string;
+  objective: string | null;
+  metric_regex: string | null;
+  optimization_direction: string | null;
   target_files: string | null;
   frozen_files: string | null;
   max_experiments: number | null;
@@ -524,7 +525,8 @@ export const createAutoresearchRun = (data: {
   repo: string;
   base_branch?: string;
   benchmark_command: string;
-  metric_regex: string;
+  objective: string;
+  metric_regex?: string;
   optimization_direction?: string;
   target_files?: string;
   frozen_files?: string;

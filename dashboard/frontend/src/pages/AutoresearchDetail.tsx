@@ -262,12 +262,14 @@ export default function AutoresearchDetail() {
             <dd>{run.repo}</dd>
             <dt className="text-muted-foreground">Base Branch</dt>
             <dd className="font-mono">{run.base_branch}</dd>
+            {run.objective && (
+              <>
+                <dt className="text-muted-foreground">Objective</dt>
+                <dd>{run.objective}</dd>
+              </>
+            )}
             <dt className="text-muted-foreground">Benchmark Command</dt>
             <dd className="font-mono">{run.benchmark_command}</dd>
-            <dt className="text-muted-foreground">Metric Regex</dt>
-            <dd className="font-mono">{run.metric_regex}</dd>
-            <dt className="text-muted-foreground">Direction</dt>
-            <dd>{run.optimization_direction === 'lower' ? 'Lower is better' : 'Higher is better'}</dd>
             {run.target_files && (
               <>
                 <dt className="text-muted-foreground">Target Files</dt>

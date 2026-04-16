@@ -312,8 +312,9 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
             agent_name TEXT,
             benchmark_server_id BIGINT REFERENCES benchmark_servers(id),
             benchmark_command TEXT NOT NULL,
-            metric_regex TEXT NOT NULL,
-            optimization_direction TEXT NOT NULL DEFAULT 'lower',
+            objective TEXT,
+            metric_regex TEXT,
+            optimization_direction TEXT,
             target_files TEXT,
             frozen_files TEXT,
             max_experiments INTEGER,
@@ -334,6 +335,20 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     )
     .execute(pool)
     .await?;
+
+    // Add objective column if missing (for upgrades)
+    let _ = sqlx::query("ALTER TABLE autoresearch_runs ADD COLUMN IF NOT EXISTS objective TEXT")
+        .execute(pool)
+        .await;
+    // Make metric_regex nullable (for upgrades)
+    let _ = sqlx::query("ALTER TABLE autoresearch_runs ALTER COLUMN metric_regex DROP NOT NULL")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query(
+        "ALTER TABLE autoresearch_runs ALTER COLUMN optimization_direction DROP NOT NULL",
+    )
+    .execute(pool)
+    .await;
 
     // Create autoresearch_experiments table
     sqlx::query(
