@@ -591,6 +591,8 @@ async fn run_autoresearch_pipeline(
     )
     .await?;
 
+    log_and_persist(db, &tx, run_id, "[SETUP] Repo cloned and branch created.").await;
+
     // If using a dedicated benchmark server, set up rsync
     let benchmark_server = if let Some(server_id) = run.benchmark_server_id {
         let server = sqlx::query_as::<_, crate::models::BenchmarkServer>(
@@ -623,7 +625,15 @@ async fn run_autoresearch_pipeline(
         .await;
         // Create the destination directory on the benchmark server
         ensure_remote_dir(&server, "autoresearch/repo").await?;
+        log_and_persist(
+            db,
+            &tx,
+            run_id,
+            "[SETUP] Rsyncing repo to benchmark server (step 1: agent → host)...",
+        )
+        .await;
         sync_to_benchmark_server(&agent_name, &server).await?;
+        log_and_persist(db, &tx, run_id, "[SETUP] Repo synced to benchmark server.").await;
 
         Some(server)
     } else {
@@ -633,19 +643,24 @@ async fn run_autoresearch_pipeline(
     let server_id_for_cleanup = benchmark_server.as_ref().map(|s| s.id);
 
     // Phase 2: Baseline benchmark
-    log_and_persist(db, &tx, run_id, "[BASELINE] Running baseline benchmark...").await;
+    log_and_persist(
+        db, &tx, run_id,
+        &format!("[BASELINE] Running baseline benchmark: {}  (first run may take a while if compiling from scratch)", run.benchmark_command),
+    ).await;
+    let bench_start = Instant::now();
     let baseline_output = run_benchmark(
         &agent_name,
         &run.benchmark_command,
         benchmark_server.as_ref(),
     )
     .await?;
+    let bench_secs = bench_start.elapsed().as_secs();
 
     log_and_persist(
         db,
         &tx,
         run_id,
-        "[BASELINE] Benchmark complete. Starting Claude conversation...",
+        &format!("[BASELINE] Benchmark complete ({bench_secs}s). Sending output to Claude..."),
     )
     .await;
 
@@ -687,6 +702,13 @@ async fn run_autoresearch_pipeline(
     );
 
     let escaped = initial_prompt.replace('\'', "'\\''");
+    log_and_persist(
+        db,
+        &tx,
+        run_id,
+        "[CLAUDE] Sending initial prompt (analyze baseline + first optimization)...",
+    )
+    .await;
     let claude_result = shell::agent_exec_capture(
         &agent_name,
         &format!(
@@ -695,8 +717,23 @@ async fn run_autoresearch_pipeline(
     ).await;
 
     let claude_response = match claude_result {
-        Ok(output) => output,
+        Ok(output) => {
+            let preview = if output.len() > 1000 {
+                format!("{}...", &output[..1000])
+            } else {
+                output.clone()
+            };
+            log_and_persist(db, &tx, run_id, &format!("[CLAUDE] Response:\n{preview}")).await;
+            output
+        }
         Err(e) => {
+            log_and_persist(
+                db,
+                &tx,
+                run_id,
+                &format!("[ERROR] Initial Claude call failed: {e}"),
+            )
+            .await;
             cleanup(config, db, &agent_name, server_id_for_cleanup).await;
             return Err(AppError::Internal(format!(
                 "Initial Claude call failed: {e}"
@@ -792,12 +829,13 @@ async fn run_autoresearch_pipeline(
             .await
             .unwrap_or_default();
 
+        let diff_lines = diff.lines().count();
         if diff.trim().is_empty() {
             log_and_persist(
                 db,
                 &tx,
                 run_id,
-                &format!("[EXP {experiment_number}] No changes made, skipping."),
+                &format!("[EXP {experiment_number}] Claude made no code changes, skipping."),
             )
             .await;
             let _ = sqlx::query(
@@ -825,6 +863,15 @@ async fn run_autoresearch_pipeline(
             continue;
         }
 
+        // Log what changed
+        log_and_persist(
+            db,
+            &tx,
+            run_id,
+            &format!("[EXP {experiment_number}] Claude modified {diff_lines} lines. Committing..."),
+        )
+        .await;
+
         // Commit changes locally
         shell::agent_exec_capture(
             &agent_name,
@@ -849,7 +896,10 @@ async fn run_autoresearch_pipeline(
             db,
             &tx,
             run_id,
-            &format!("[EXP {experiment_number}] Running benchmark..."),
+            &format!(
+                "[EXP {experiment_number}] Running benchmark: {}...",
+                run.benchmark_command
+            ),
         )
         .await;
         let _ = sqlx::query(
@@ -859,16 +909,35 @@ async fn run_autoresearch_pipeline(
         .execute(db)
         .await;
 
+        let bench_start = Instant::now();
         let benchmark_result = run_benchmark(
             &agent_name,
             &run.benchmark_command,
             benchmark_server.as_ref(),
         )
         .await;
+        let bench_secs = bench_start.elapsed().as_secs();
 
         let raw_output = match &benchmark_result {
-            Ok(output) => output.clone(),
-            Err(e) => format!("Benchmark failed: {e}"),
+            Ok(output) => {
+                let preview = if output.len() > 500 {
+                    format!("{}...", &output[..500])
+                } else {
+                    output.clone()
+                };
+                log_and_persist(db, &tx, run_id, &format!("[EXP {experiment_number}] Benchmark finished ({bench_secs}s). Output:\n{preview}")).await;
+                output.clone()
+            }
+            Err(e) => {
+                log_and_persist(
+                    db,
+                    &tx,
+                    run_id,
+                    &format!("[EXP {experiment_number}] Benchmark failed ({bench_secs}s): {e}"),
+                )
+                .await;
+                format!("Benchmark failed: {e}")
+            }
         };
 
         // Send benchmark output to Claude and ask for analysis + next optimization
@@ -892,13 +961,28 @@ async fn run_autoresearch_pipeline(
         );
 
         let escaped = continue_prompt.replace('\'', "'\\''");
+        log_and_persist(db, &tx, run_id, &format!("[EXP {experiment_number}] Sending benchmark output to Claude for analysis + next optimization...")).await;
         let claude_result = shell::agent_exec_capture(
             &agent_name,
             &format!("cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text --continue -p '{escaped}'"),
         ).await;
 
         let claude_response = match claude_result {
-            Ok(output) => output,
+            Ok(output) => {
+                let preview = if output.len() > 1000 {
+                    format!("{}...", &output[..1000])
+                } else {
+                    output.clone()
+                };
+                log_and_persist(
+                    db,
+                    &tx,
+                    run_id,
+                    &format!("[EXP {experiment_number}] Claude response:\n{preview}"),
+                )
+                .await;
+                output
+            }
             Err(e) => {
                 log_and_persist(
                     db,
