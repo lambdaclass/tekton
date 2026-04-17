@@ -413,6 +413,20 @@ pub async fn create_task(
     let (tx, _) = broadcast::channel(1024);
     state.task_channels.insert(id.clone(), tx.clone());
 
+    // Persist ALL broadcast messages to task_logs (including Claude streaming output)
+    let persist_db = state.db.clone();
+    let persist_task_id = id.clone();
+    let mut persist_rx = tx.subscribe();
+    tokio::spawn(async move {
+        while let Ok(line) = persist_rx.recv().await {
+            let _ = sqlx::query("INSERT INTO task_logs (task_id, line) VALUES ($1, $2)")
+                .bind(&persist_task_id)
+                .bind(&line)
+                .execute(&persist_db)
+                .await;
+        }
+    });
+
     // Spawn background task
     let config = state.config.clone();
     let db = state.db.clone();
@@ -2381,6 +2395,20 @@ pub async fn reopen_task(
     let (tx, _) = broadcast::channel(1024);
     state.task_channels.insert(id.clone(), tx.clone());
 
+    // Persist ALL broadcast messages to task_logs
+    let persist_db = state.db.clone();
+    let persist_task_id = id.clone();
+    let mut persist_rx = tx.subscribe();
+    tokio::spawn(async move {
+        while let Ok(line) = persist_rx.recv().await {
+            let _ = sqlx::query("INSERT INTO task_logs (task_id, line) VALUES ($1, $2)")
+                .bind(&persist_task_id)
+                .bind(&line)
+                .execute(&persist_db)
+                .await;
+        }
+    });
+
     // Spawn background pipeline
     let config = state.config.clone();
     let db = state.db.clone();
@@ -2869,6 +2897,24 @@ pub async fn recover_interrupted_tasks(
                 let (tx, _) = broadcast::channel(1024);
                 task_channels.insert(task.id.clone(), tx.clone());
 
+                // Persist ALL broadcast messages to task_logs
+                {
+                    let pdb = db.clone();
+                    let ptid = task.id.clone();
+                    let mut prx = tx.subscribe();
+                    tokio::spawn(async move {
+                        while let Ok(line) = prx.recv().await {
+                            let _ = sqlx::query(
+                                "INSERT INTO task_logs (task_id, line) VALUES ($1, $2)",
+                            )
+                            .bind(&ptid)
+                            .bind(&line)
+                            .execute(&pdb)
+                            .await;
+                        }
+                    });
+                }
+
                 let (cfg, db2, channels) = (config.clone(), db.clone(), task_channels.clone());
                 let (task_id, repo, base, created_by) = (
                     task.id.clone(),
@@ -2960,6 +3006,24 @@ pub async fn recover_interrupted_tasks(
                 let had_preview = task.preview_url.is_some();
                 let (tx, _) = broadcast::channel(1024);
                 task_channels.insert(task.id.clone(), tx.clone());
+
+                // Persist ALL broadcast messages to task_logs
+                {
+                    let pdb = db.clone();
+                    let ptid = task.id.clone();
+                    let mut prx = tx.subscribe();
+                    tokio::spawn(async move {
+                        while let Ok(line) = prx.recv().await {
+                            let _ = sqlx::query(
+                                "INSERT INTO task_logs (task_id, line) VALUES ($1, $2)",
+                            )
+                            .bind(&ptid)
+                            .bind(&line)
+                            .execute(&pdb)
+                            .await;
+                        }
+                    });
+                }
 
                 let (cfg, db2, channels) = (config.clone(), db.clone(), task_channels.clone());
                 let (task_id, repo, base, created_by) = (
