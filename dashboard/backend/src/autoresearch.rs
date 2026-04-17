@@ -536,6 +536,21 @@ async fn run_autoresearch_pipeline(
     let branch_name = run.branch_name.as_deref().unwrap_or("autoresearch/unknown");
     let agent_name = format!("ar-{}", &run_id[..8]);
 
+    // Background task: persist ALL broadcast messages to DB (including Claude streaming output)
+    // This ensures logs survive tab switches / WebSocket reconnects.
+    let persist_db = db.clone();
+    let persist_run_id = run_id.to_string();
+    let mut persist_rx = tx.subscribe();
+    let persist_handle = tokio::spawn(async move {
+        while let Ok(line) = persist_rx.recv().await {
+            let _ = sqlx::query("INSERT INTO autoresearch_logs (run_id, line) VALUES ($1, $2)")
+                .bind(&persist_run_id)
+                .bind(&line)
+                .execute(&persist_db)
+                .await;
+        }
+    });
+
     // Phase 1: Setup
     update_run_status(db, run_id, "setting_up").await?;
     log_and_persist(db, &tx, run_id, "[SETUP] Creating agent container...").await;
@@ -613,27 +628,23 @@ async fn run_autoresearch_pipeline(
         .execute(db)
         .await?;
 
+        // Push the branch first so it exists on GitHub
+        log_and_persist(db, &tx, run_id, "[SETUP] Pushing branch to GitHub...").await;
+        push_branch(&agent_name, branch_name).await?;
+
+        // Clone on the benchmark server via the tekton host (token never stored on server)
         log_and_persist(
             db,
             &tx,
             run_id,
             &format!(
-                "[SETUP] Syncing repo to benchmark server {}...",
+                "[SETUP] Cloning repo on benchmark server {}...",
                 server.name
             ),
         )
         .await;
-        // Create the destination directory on the benchmark server
-        ensure_remote_dir(&server, "autoresearch/repo").await?;
-        log_and_persist(
-            db,
-            &tx,
-            run_id,
-            "[SETUP] Rsyncing repo to benchmark server (step 1: agent → host)...",
-        )
-        .await;
-        sync_to_benchmark_server(&agent_name, &server).await?;
-        log_and_persist(db, &tx, run_id, "[SETUP] Repo synced to benchmark server.").await;
+        clone_on_benchmark_server(&server, &run.repo, branch_name, github_token).await?;
+        log_and_persist(db, &tx, run_id, "[SETUP] Repo cloned on benchmark server.").await;
 
         Some(server)
     } else {
@@ -889,10 +900,11 @@ async fn run_autoresearch_pipeline(
                 db,
                 &tx,
                 run_id,
-                &format!("[EXP {experiment_number}] Syncing to benchmark server..."),
+                &format!("[EXP {experiment_number}] Pushing to GitHub and pulling on benchmark server..."),
             )
             .await;
-            sync_to_benchmark_server(&agent_name, server).await?;
+            push_branch(&agent_name, branch_name).await?;
+            pull_on_benchmark_server(server, branch_name, github_token).await?;
         }
 
         // Run benchmark
@@ -1135,6 +1147,7 @@ async fn run_autoresearch_pipeline(
     .await;
 
     cleanup(config, db, &agent_name, server_id_for_cleanup).await;
+    persist_handle.abort();
     Ok(())
 }
 
@@ -1146,29 +1159,13 @@ async fn run_benchmark(
     server: Option<&crate::models::BenchmarkServer>,
 ) -> Result<String, AppError> {
     if let Some(s) = server {
-        let mut ssh_args = vec![
-            "-o".to_string(),
-            "StrictHostKeyChecking=no".to_string(),
-            "-o".to_string(),
-            "ConnectTimeout=30".to_string(),
-        ];
-        if let Some(ref key) = s.ssh_key_path {
-            ssh_args.extend_from_slice(&["-i".to_string(), key.clone()]);
-        }
-        ssh_args.push(format!("{}@{}", s.ssh_user, s.hostname));
-        ssh_args.push(format!(
-            "source ~/.bashrc 2>/dev/null; source ~/.profile 2>/dev/null; source ~/.cargo/env 2>/dev/null; cd autoresearch/repo && {benchmark_command}"
-        ));
-
-        let output = tokio::process::Command::new("ssh")
-            .args(&ssh_args)
-            .output()
-            .await
-            .map_err(|e| AppError::Internal(format!("SSH to benchmark server failed: {e}")))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Ok(format!("{stdout}\n{stderr}"))
+        run_on_benchmark_server(
+            s,
+            &format!(
+                "source ~/.cargo/env 2>/dev/null; cd ~/autoresearch/repo && {benchmark_command}"
+            ),
+        )
+        .await
     } else {
         shell::agent_exec_capture(
             agent_name,
@@ -1178,110 +1175,97 @@ async fn run_benchmark(
     }
 }
 
-/// Create a directory on the benchmark server via SSH from the host.
-async fn ensure_remote_dir(
+/// Run a command on the benchmark server via SSH from the tekton host.
+async fn run_on_benchmark_server(
     server: &crate::models::BenchmarkServer,
-    dir: &str,
-) -> Result<(), AppError> {
+    cmd: &str,
+) -> Result<String, AppError> {
     let mut args = vec![
         "-o".to_string(),
         "StrictHostKeyChecking=no".to_string(),
         "-o".to_string(),
         "UserKnownHostsFile=/dev/null".to_string(),
+        "-o".to_string(),
+        "LogLevel=ERROR".to_string(),
     ];
     if let Some(ref key) = server.ssh_key_path {
         args.extend(["-i".to_string(), key.clone()]);
     }
     args.push(format!("{}@{}", server.ssh_user, server.hostname));
-    args.push(format!("mkdir -p {dir}"));
+    args.push(cmd.to_string());
 
     let output = tokio::process::Command::new("ssh")
         .args(&args)
         .output()
         .await
-        .map_err(|e| AppError::Internal(format!("SSH mkdir failed: {e}")))?;
+        .map_err(|e| AppError::Internal(format!("SSH to benchmark server failed: {e}")))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(AppError::Internal(format!(
-            "mkdir on benchmark server failed: {stderr}"
+            "Command on benchmark server failed: {stderr}\n{stdout}"
         )));
     }
+    Ok(format!("{stdout}\n{stderr}"))
+}
+
+/// Clone the repo on the benchmark server. The token is passed as a one-time
+/// env var via SSH from the tekton host — never stored on the benchmark server.
+async fn clone_on_benchmark_server(
+    server: &crate::models::BenchmarkServer,
+    repo: &str,
+    branch_name: &str,
+    github_token: &str,
+) -> Result<(), AppError> {
+    let clone_url = format!("https://x-access-token:{github_token}@github.com/{repo}.git");
+    // Clone into autoresearch/repo, removing any previous clone
+    run_on_benchmark_server(
+        server,
+        &format!(
+            "rm -rf ~/autoresearch/repo && \
+             git clone --branch {branch_name} --single-branch {clone_url} ~/autoresearch/repo && \
+             cd ~/autoresearch/repo && \
+             git remote set-url origin https://github.com/{repo}.git"
+        ),
+    )
+    .await?;
+    // The last command strips the token from the stored remote URL
     Ok(())
 }
 
-/// Sync repo from agent container to benchmark server.
-/// Runs on the host: pulls from agent via SSH, pushes to benchmark server via SSH.
-/// The host holds both keys — no private keys are copied into the agent container.
-async fn sync_to_benchmark_server(
-    agent_name: &str,
+/// Pull latest changes on the benchmark server. Uses a temporary remote URL
+/// with the token, fetches, then restores the clean URL. Token is never persisted.
+async fn pull_on_benchmark_server(
     server: &crate::models::BenchmarkServer,
+    branch_name: &str,
+    github_token: &str,
 ) -> Result<(), AppError> {
-    let agent_ip = shell::agent_ip_public(agent_name)?;
-    let agent_src = format!("agent@{agent_ip}:/home/agent/repo/");
-    let dest = format!("{}@{}:autoresearch/repo/", server.ssh_user, server.hostname);
+    let repo_url: String = run_on_benchmark_server(
+        server,
+        "cd ~/autoresearch/repo && git remote get-url origin",
+    )
+    .await?
+    .trim()
+    .to_string();
 
-    // Build SSH options for the benchmark server side
-    let mut server_ssh = vec![
-        "-o".to_string(),
-        "StrictHostKeyChecking=no".to_string(),
-        "-o".to_string(),
-        "UserKnownHostsFile=/dev/null".to_string(),
-    ];
-    if let Some(ref key) = server.ssh_key_path {
-        server_ssh.extend(["-i".to_string(), key.clone()]);
-    }
+    let authed_url = repo_url.replace(
+        "https://github.com/",
+        &format!("https://x-access-token:{github_token}@github.com/"),
+    );
 
-    // Step 1: rsync from agent container to a temp dir on the host
-    let tmp_dir = format!("/tmp/autoresearch-sync-{agent_name}");
-    let pull_output = tokio::process::Command::new("rsync")
-        .args([
-            "-az",
-            "--delete",
-            "--exclude",
-            ".git",
-            "-e",
-            "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
-            &agent_src,
-            &format!("{tmp_dir}/"),
-        ])
-        .output()
-        .await
-        .map_err(|e| AppError::Internal(format!("rsync from agent failed: {e}")))?;
-
-    if !pull_output.status.success() {
-        let stderr = String::from_utf8_lossy(&pull_output.stderr);
-        return Err(AppError::Internal(format!(
-            "rsync from agent failed: {stderr}"
-        )));
-    }
-
-    // Step 2: rsync from host temp dir to benchmark server
-    let server_ssh_str = server_ssh.join(" ");
-    let push_output = tokio::process::Command::new("rsync")
-        .args([
-            "-az",
-            "--delete",
-            "-e",
-            &format!("ssh {server_ssh_str}"),
-            &format!("{tmp_dir}/"),
-            &dest,
-        ])
-        .output()
-        .await
-        .map_err(|e| AppError::Internal(format!("rsync to benchmark server failed: {e}")))?;
-
-    if !push_output.status.success() {
-        let stderr = String::from_utf8_lossy(&push_output.stderr);
-        // Clean up temp dir
-        let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
-        return Err(AppError::Internal(format!(
-            "rsync to benchmark server failed: {stderr}"
-        )));
-    }
-
-    // Clean up temp dir
-    let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+    run_on_benchmark_server(
+        server,
+        &format!(
+            "cd ~/autoresearch/repo && \
+             git remote set-url origin '{authed_url}' && \
+             git fetch origin && \
+             git reset --hard origin/{branch_name} && \
+             git remote set-url origin '{repo_url}'"
+        ),
+    )
+    .await?;
     Ok(())
 }
 
