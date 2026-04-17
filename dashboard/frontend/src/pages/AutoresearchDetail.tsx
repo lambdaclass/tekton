@@ -9,6 +9,7 @@ import {
   Check,
   X,
   Loader2,
+  Send,
   ScrollText,
   BarChart3,
   Settings,
@@ -24,6 +25,7 @@ import {
   getAutoresearchStats,
   stopAutoresearchRun,
   createAutoresearchPR,
+  sendAutoresearchMessage,
 } from '@/lib/api';
 import type { AutoresearchExperiment } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -195,6 +197,9 @@ export default function AutoresearchDetail() {
         </div>
       )}
 
+      {/* Suggestion input — send guidance to Claude during a running experiment */}
+      {running && <SuggestionInput runId={id!} />}
+
       {/* Tabs */}
       <Tabs defaultValue="experiments" className="flex flex-col flex-1 min-h-0 pt-3">
         <TabsList variant="line" className="shrink-0 border-b border-border pb-0 mb-0">
@@ -330,6 +335,42 @@ function StatCard({
         {value}
       </div>
     </div>
+  );
+}
+
+function SuggestionInput({ runId }: { runId: string }) {
+  const [message, setMessage] = useState('');
+  const sendMutation = useMutation({
+    mutationFn: (content: string) => sendAutoresearchMessage(runId, content),
+    onSuccess: () => setMessage(''),
+  });
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!message.trim()) return;
+    sendMutation.mutate(message.trim());
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="flex gap-2 px-1 pt-2 shrink-0">
+      <input
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+        placeholder="Send a suggestion to Claude (e.g. 'try optimizing the hash function')"
+        disabled={sendMutation.isPending}
+        className="flex-1 rounded-md border border-input bg-background px-3 py-1.5 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            handleSubmit(e);
+          }
+        }}
+      />
+      <Button type="submit" size="sm" disabled={sendMutation.isPending || !message.trim()}>
+        <Send className="size-3.5 mr-1" />
+        Send
+      </Button>
+    </form>
   );
 }
 

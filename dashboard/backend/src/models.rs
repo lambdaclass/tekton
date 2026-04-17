@@ -412,6 +412,17 @@ pub struct AutoresearchExperiment {
     pub created_at: String,
 }
 
+// ── Autoresearch Messages ──
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct AutoresearchMessage {
+    pub id: i64,
+    pub run_id: String,
+    pub sender: String,
+    pub content: String,
+    pub created_at: String,
+}
+
 // ── Paginated response ──
 
 #[derive(Debug, Serialize)]

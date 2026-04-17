@@ -373,6 +373,19 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
+    // Create autoresearch_messages table (user suggestions during a run)
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS autoresearch_messages (
+            id BIGSERIAL PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            sender TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     // Create autoresearch_logs table
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS autoresearch_logs (

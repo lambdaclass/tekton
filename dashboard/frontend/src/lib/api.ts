@@ -544,6 +544,21 @@ export const getAutoresearchStats = (id: string) =>
   apiFetch<AutoresearchStats>(`/api/autoresearch/runs/${id}/stats`);
 export const createAutoresearchPR = (id: string) =>
   apiFetch<AutoresearchRun>(`/api/autoresearch/runs/${id}/create-pr`, { method: 'POST' });
+
+export interface AutoresearchMessage {
+  id: number;
+  run_id: string;
+  sender: string;
+  content: string;
+  created_at: string;
+}
+export const listAutoresearchMessages = (id: string) =>
+  apiFetch<AutoresearchMessage[]>(`/api/autoresearch/runs/${id}/messages`);
+export const sendAutoresearchMessage = (id: string, content: string) =>
+  apiFetch<AutoresearchMessage>(`/api/autoresearch/runs/${id}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  });
 export function connectAutoresearchOutput(id: string): WebSocket {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   return new WebSocket(`${proto}//${location.host}/api/ws/autoresearch/${id}`);

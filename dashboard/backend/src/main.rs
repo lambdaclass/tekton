@@ -187,6 +187,14 @@ async fn main() -> anyhow::Result<()> {
             "/autoresearch/runs/{id}/experiments",
             get(autoresearch::list_experiments),
         )
+        .route(
+            "/autoresearch/runs/{id}/messages",
+            get(autoresearch::list_messages),
+        )
+        .route(
+            "/autoresearch/runs/{id}/messages",
+            post(autoresearch::send_message),
+        )
         .route("/autoresearch/runs/{id}/stop", post(autoresearch::stop_run))
         .route(
             "/autoresearch/runs/{id}/create-pr",

@@ -10,7 +10,10 @@ use tokio::sync::broadcast;
 
 use crate::auth::{check_repo_permission, AuthUser, MemberUser};
 use crate::error::AppError;
-use crate::models::{AutoresearchExperiment, AutoresearchRun, CreateAutoresearchRunRequest};
+use crate::models::{
+    AutoresearchExperiment, AutoresearchMessage, AutoresearchRun, CreateAutoresearchRunRequest,
+    SendMessageRequest,
+};
 use crate::shell;
 
 pub type StopFlags = Arc<DashMap<String, Arc<AtomicBool>>>;
@@ -363,6 +366,79 @@ pub async fn get_run_stats(
     })))
 }
 
+/// GET /api/autoresearch/runs/{id}/messages
+pub async fn list_messages(
+    user: AuthUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<AutoresearchMessage>>, AppError> {
+    let run = sqlx::query_as::<_, AutoresearchRun>(&format!("{RUN_QUERY} WHERE id = $1"))
+        .bind(&id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|_| AppError::NotFound("Run not found".into()))?;
+
+    if user.0.role != "admin" && run.created_by.as_deref() != Some(&user.0.sub) {
+        return Err(AppError::Forbidden("Not authorized".into()));
+    }
+
+    let messages = sqlx::query_as::<_, AutoresearchMessage>(
+        "SELECT id, run_id, sender, content, \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at \
+         FROM autoresearch_messages WHERE run_id = $1 ORDER BY id ASC",
+    )
+    .bind(&id)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(messages))
+}
+
+/// POST /api/autoresearch/runs/{id}/messages
+pub async fn send_message(
+    user: MemberUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<SendMessageRequest>,
+) -> Result<Json<AutoresearchMessage>, AppError> {
+    let run = sqlx::query_as::<_, AutoresearchRun>(&format!("{RUN_QUERY} WHERE id = $1"))
+        .bind(&id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|_| AppError::NotFound("Run not found".into()))?;
+
+    if user.0.role != "admin" && run.created_by.as_deref() != Some(&user.0.sub) {
+        return Err(AppError::Forbidden("Not authorized".into()));
+    }
+
+    if req.content.trim().is_empty() {
+        return Err(AppError::BadRequest("Message cannot be empty".into()));
+    }
+
+    sqlx::query("INSERT INTO autoresearch_messages (run_id, sender, content) VALUES ($1, $2, $3)")
+        .bind(&id)
+        .bind(&user.0.sub)
+        .bind(&req.content)
+        .execute(&state.db)
+        .await?;
+
+    let message = sqlx::query_as::<_, AutoresearchMessage>(
+        "SELECT id, run_id, sender, content, \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at \
+         FROM autoresearch_messages WHERE run_id = $1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(&id)
+    .fetch_one(&state.db)
+    .await?;
+
+    // Also broadcast it so it shows in the logs
+    if let Some(tx) = state.autoresearch_channels.get(&id) {
+        let _ = tx.send(format!("[USER] {}: {}", user.0.sub, req.content));
+    }
+
+    Ok(Json(message))
+}
+
 /// POST /api/autoresearch/runs/{id}/create-pr
 pub async fn create_run_pr(
     user: MemberUser,
@@ -695,7 +771,8 @@ async fn run_autoresearch_pipeline(
     let start_time = Instant::now();
     let mut experiment_number = 0i32;
     let mut best_metric: Option<f64> = None;
-    let mut branch_created = benchmark_server.is_some(); // already created if we cloned on benchmark server
+    let mut branch_created = benchmark_server.is_some();
+    let mut last_seen_message_id: i64 = 0; // already created if we cloned on benchmark server
 
     let objective = run.objective.as_deref().unwrap_or("improve performance");
     let target_desc = run.target_files.as_deref().unwrap_or("any relevant files");
@@ -985,6 +1062,28 @@ async fn run_autoresearch_pipeline(
             }
         };
 
+        // Check for user messages (suggestions/guidance)
+        let user_messages: Vec<AutoresearchMessage> = sqlx::query_as(
+            "SELECT id, run_id, sender, content, \
+             TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at \
+             FROM autoresearch_messages WHERE run_id = $1 AND id > $2 ORDER BY id ASC",
+        )
+        .bind(run_id)
+        .bind(last_seen_message_id)
+        .fetch_all(db)
+        .await
+        .unwrap_or_default();
+
+        let mut user_guidance = String::new();
+        for msg in &user_messages {
+            last_seen_message_id = msg.id;
+            user_guidance.push_str(&format!(
+                "\n\nUSER SUGGESTION from {}: {}",
+                msg.sender, msg.content
+            ));
+            log_line(&tx, &format!("[USER] {}: {}", msg.sender, msg.content));
+        }
+
         // Send benchmark output to Claude and ask for analysis + next optimization
         let best_str = best_metric
             .map(|v| format!("{v}"))
@@ -996,6 +1095,7 @@ async fn run_autoresearch_pipeline(
              ```\n\
              \n\
              Previous best metric: {best_str}\n\
+             {user_guidance}\n\
              \n\
              Respond with exactly these lines at the END of your response:\n\
              METRIC: <the numeric value of the key metric from this run>\n\
