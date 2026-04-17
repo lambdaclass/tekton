@@ -713,24 +713,16 @@ async fn run_autoresearch_pipeline(
         "[CLAUDE] Sending initial prompt (analyze baseline + first optimization)...",
     )
     .await;
-    let claude_result = shell::agent_exec_stream_and_capture(
+    let claude_result = shell::agent_exec_claude_streaming(
         &agent_name,
         &format!(
-            "{auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text {model_flag} -p '{escaped}'"
+            "{auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose {model_flag} -p '{escaped}'"
         ),
         tx.clone(),
     ).await;
 
     let claude_response = match claude_result {
-        Ok(output) => {
-            let preview = if output.len() > 1000 {
-                format!("{}...", &output[..1000])
-            } else {
-                output.clone()
-            };
-            log_and_persist(db, &tx, run_id, &format!("[CLAUDE] Response:\n{preview}")).await;
-            output
-        }
+        Ok(result) => result.text,
         Err(e) => {
             log_and_persist(
                 db,
@@ -861,9 +853,10 @@ async fn run_autoresearch_pipeline(
             // Ask Claude to try again
             let retry_prompt = "You didn't make any code changes. Please make a concrete code change to optimize the metric.";
             let escaped = retry_prompt.replace('\'', "'\\''");
-            let _ = shell::agent_exec_capture(
+            let _ = shell::agent_exec_claude_streaming(
                 &agent_name,
-                &format!("{auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text {model_flag} --continue -p '{escaped}'"),
+                &format!("{auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose {model_flag} --continue -p '{escaped}'"),
+                tx.clone(),
             ).await;
             continue;
         }
@@ -967,28 +960,14 @@ async fn run_autoresearch_pipeline(
 
         let escaped = continue_prompt.replace('\'', "'\\''");
         log_and_persist(db, &tx, run_id, &format!("[EXP {experiment_number}] Sending benchmark output to Claude for analysis + next optimization...")).await;
-        let claude_result = shell::agent_exec_stream_and_capture(
+        let claude_result = shell::agent_exec_claude_streaming(
             &agent_name,
-            &format!("{auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text {model_flag} --continue -p '{escaped}'"),
+            &format!("{auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose {model_flag} --continue -p '{escaped}'"),
             tx.clone(),
         ).await;
 
         let claude_response = match claude_result {
-            Ok(output) => {
-                let preview = if output.len() > 1000 {
-                    format!("{}...", &output[..1000])
-                } else {
-                    output.clone()
-                };
-                log_and_persist(
-                    db,
-                    &tx,
-                    run_id,
-                    &format!("[EXP {experiment_number}] Claude response:\n{preview}"),
-                )
-                .await;
-                output
-            }
+            Ok(result) => result.text,
             Err(e) => {
                 log_and_persist(
                     db,
@@ -1108,9 +1087,10 @@ async fn run_autoresearch_pipeline(
             // Tell Claude the change was reverted
             let revert_prompt = "Your change did not improve the metric and has been reverted. Try a different approach.";
             let escaped = revert_prompt.replace('\'', "'\\''");
-            let _ = shell::agent_exec_capture(
+            let _ = shell::agent_exec_claude_streaming(
                 &agent_name,
-                &format!("{auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text {model_flag} --continue -p '{escaped}'"),
+                &format!("{auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose {model_flag} --continue -p '{escaped}'"),
+                tx.clone(),
             ).await;
         }
     }
