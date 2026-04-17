@@ -628,9 +628,19 @@ async fn run_autoresearch_pipeline(
         .execute(db)
         .await?;
 
-        // Push the branch first so it exists on GitHub
-        log_and_persist(db, &tx, run_id, "[SETUP] Pushing branch to GitHub...").await;
-        push_branch(&agent_name, branch_name).await?;
+        // Create the branch on GitHub so the benchmark server can clone it
+        log_and_persist(db, &tx, run_id, "[SETUP] Creating branch on GitHub...").await;
+        let base_sha = shell::agent_exec_capture(
+            &agent_name,
+            &format!(
+                "cd /home/agent/repo && git rev-parse 'origin/{}'",
+                run.base_branch
+            ),
+        )
+        .await?
+        .trim()
+        .to_string();
+        crate::tasks::create_github_branch(github_token, &run.repo, branch_name, &base_sha).await?;
 
         // Clone on the benchmark server via the tekton host (token never stored on server)
         log_and_persist(
@@ -685,6 +695,7 @@ async fn run_autoresearch_pipeline(
     let start_time = Instant::now();
     let mut experiment_number = 0i32;
     let mut best_metric: Option<f64> = None;
+    let mut branch_created = benchmark_server.is_some(); // already created if we cloned on benchmark server
 
     let objective = run.objective.as_deref().unwrap_or("improve performance");
     let target_desc = run.target_files.as_deref().unwrap_or("any relevant files");
@@ -789,7 +800,16 @@ async fn run_autoresearch_pipeline(
         if stop_flag.load(Ordering::Relaxed) {
             log_and_persist(db, &tx, run_id, "[STOP] Run stopped by user.").await;
             update_run_status(db, run_id, "stopped").await?;
-            let _ = push_branch(&agent_name, branch_name).await;
+            let _ = push_verified(
+                &agent_name,
+                github_token,
+                &run.repo,
+                branch_name,
+                &run.base_branch,
+                &mut branch_created,
+                "autoresearch optimization",
+            )
+            .await;
             cleanup(config, db, &agent_name, server_id_for_cleanup).await;
             return Ok(());
         }
@@ -903,7 +923,16 @@ async fn run_autoresearch_pipeline(
                 &format!("[EXP {experiment_number}] Pushing to GitHub and pulling on benchmark server..."),
             )
             .await;
-            push_branch(&agent_name, branch_name).await?;
+            push_verified(
+                &agent_name,
+                github_token,
+                &run.repo,
+                branch_name,
+                &run.base_branch,
+                &mut branch_created,
+                "autoresearch optimization",
+            )
+            .await?;
             pull_on_benchmark_server(server, branch_name, github_token).await?;
         }
 
@@ -1038,7 +1067,16 @@ async fn run_autoresearch_pipeline(
             .await;
             best_metric = Some(val);
 
-            let _ = push_branch(&agent_name, branch_name).await;
+            let _ = push_verified(
+                &agent_name,
+                github_token,
+                &run.repo,
+                branch_name,
+                &run.base_branch,
+                &mut branch_created,
+                "autoresearch optimization",
+            )
+            .await;
 
             let _ = sqlx::query(
                 "UPDATE autoresearch_experiments SET status = 'accepted', accepted = true, \
@@ -1114,7 +1152,16 @@ async fn run_autoresearch_pipeline(
     }
 
     // Push final state
-    let _ = push_branch(&agent_name, branch_name).await;
+    let _ = push_verified(
+        &agent_name,
+        github_token,
+        &run.repo,
+        branch_name,
+        &run.base_branch,
+        &mut branch_created,
+        "autoresearch optimization",
+    )
+    .await;
     update_run_status(db, run_id, "completed").await?;
 
     let bl = baseline_metric.unwrap_or(0.0);
@@ -1269,12 +1316,71 @@ async fn pull_on_benchmark_server(
     Ok(())
 }
 
-async fn push_branch(agent_name: &str, branch_name: &str) -> Result<(), AppError> {
-    shell::agent_exec_capture(
+/// Push changes via the GitHub GraphQL API (creates verified/signed commits).
+/// Then sync the agent's local repo to match the remote.
+async fn push_verified(
+    agent_name: &str,
+    github_token: &str,
+    repo: &str,
+    branch_name: &str,
+    base_branch: &str,
+    branch_created: &mut bool,
+    message: &str,
+) -> Result<(), AppError> {
+    // On first push, create the branch on GitHub
+    if !*branch_created {
+        let base_sha = shell::agent_exec_capture(
+            agent_name,
+            &format!("cd /home/agent/repo && git rev-parse 'origin/{base_branch}'"),
+        )
+        .await?
+        .trim()
+        .to_string();
+
+        crate::tasks::create_github_branch(github_token, repo, branch_name, &base_sha).await?;
+        *branch_created = true;
+    }
+
+    // Get the current HEAD OID on the remote branch
+    let head_oid = shell::agent_exec_capture(
         agent_name,
-        &format!("cd /home/agent/repo && git push -u origin {branch_name} --force"),
+        &format!("cd /home/agent/repo && git ls-remote origin refs/heads/{branch_name} | cut -f1"),
+    )
+    .await?
+    .trim()
+    .to_string();
+
+    let expected_oid = if head_oid.is_empty() {
+        // Branch just created, use base branch HEAD
+        shell::agent_exec_capture(
+            agent_name,
+            &format!("cd /home/agent/repo && git rev-parse 'origin/{base_branch}'"),
+        )
+        .await?
+        .trim()
+        .to_string()
+    } else {
+        head_oid
+    };
+
+    // Collect file changes relative to the remote state
+    let base_ref = format!("origin/{base_branch}");
+    let file_changes = crate::tasks::collect_file_changes(agent_name, &base_ref).await?;
+
+    // Push via GitHub API (creates verified commit)
+    crate::tasks::github_create_commit(
+        github_token,
+        repo,
+        branch_name,
+        &expected_oid,
+        &file_changes,
+        message,
     )
     .await?;
+
+    // Sync agent's local repo to match the remote
+    crate::tasks::sync_agent_to_remote(agent_name, branch_name).await?;
+
     Ok(())
 }
 

@@ -89,7 +89,7 @@ struct FileDeletion {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct FileChanges {
+pub struct FileChanges {
     additions: Vec<FileAddition>,
     deletions: Vec<FileDeletion>,
 }
@@ -1590,7 +1590,10 @@ fn build_followup_prompt(original_prompt: &str, history: &[String], new_message:
 /// `subprocess`, `base64`, `json`, and file I/O in its stdlib, making the script
 /// compact and readable compared to an equivalent bash version. The script source lives
 /// in `scripts/collect_file_changes.py` and is embedded at compile time.
-async fn collect_file_changes(agent_name: &str, base_ref: &str) -> Result<FileChanges, AppError> {
+pub async fn collect_file_changes(
+    agent_name: &str,
+    base_ref: &str,
+) -> Result<FileChanges, AppError> {
     // Sanitize base_ref (should be like "origin/main" — never contains quotes)
     let safe_base_ref = base_ref.replace(['\'', '"'], "");
     let python_script =
@@ -1655,7 +1658,7 @@ async fn send_with_retries(
 }
 
 /// Create a branch on GitHub via REST API.
-async fn create_github_branch(
+pub async fn create_github_branch(
     token: &str,
     repo: &str,
     branch_name: &str,
@@ -1694,7 +1697,7 @@ async fn create_github_branch(
 
 /// Create a verified commit on a GitHub branch via the GraphQL API.
 /// Returns the new commit OID.
-async fn github_create_commit(
+pub async fn github_create_commit(
     token: &str,
     repo: &str,
     branch_name: &str,
@@ -1788,7 +1791,7 @@ async fn github_create_commit(
 
 /// Sync the agent's local repo to match the remote branch after an API push.
 /// Uses explicit refspec because the repo is cloned with --single-branch.
-async fn sync_agent_to_remote(agent_name: &str, branch_name: &str) -> Result<(), AppError> {
+pub async fn sync_agent_to_remote(agent_name: &str, branch_name: &str) -> Result<(), AppError> {
     let escaped = branch_name.replace('\'', "'\\''");
     let cmd = format!(
         "cd /home/agent/repo && git fetch origin '{escaped}:refs/remotes/origin/{escaped}' && git reset --hard 'origin/{escaped}'"
