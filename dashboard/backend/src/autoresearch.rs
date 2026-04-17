@@ -690,6 +690,12 @@ async fn run_autoresearch_pipeline(
          The benchmark command is: {}\n\
          Target files to modify: {target_desc}{frozen_desc}\n\
          \n\
+         IMPORTANT RULES:\n\
+         - Do NOT run benchmarks or tests yourself — benchmarks are run for you on a dedicated server after each change.\n\
+         - Focus on reading files and making edits. You may compile to check your work if needed.\n\
+         - Make focused, targeted changes. One optimization per experiment.\n\
+         - Do NOT modify the benchmark command or evaluation code.\n\
+         \n\
          Here is the BASELINE benchmark output:\n\
          ```\n\
          {}\n\
