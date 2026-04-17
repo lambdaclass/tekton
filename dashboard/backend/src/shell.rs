@@ -55,14 +55,22 @@ async fn run_cmd_with_env(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let exit_code = output.status.code().map(|c| c.to_string()).unwrap_or("unknown".into());
+        let exit_code = output
+            .status
+            .code()
+            .map(|c| c.to_string())
+            .unwrap_or("unknown".into());
         tracing::error!("{cmd} failed (exit {exit_code}): stderr={stderr}");
         if !stdout.is_empty() {
             tracing::error!("{cmd} stdout: {stdout}");
         }
         return Err(AppError::Internal(format!(
             "{cmd} failed (exit {exit_code}): {stderr}{}",
-            if !stdout.is_empty() { format!("\nstdout: {}", &stdout[..stdout.len().min(500)]) } else { String::new() }
+            if !stdout.is_empty() {
+                format!("\nstdout: {}", &stdout[..stdout.len().min(500)])
+            } else {
+                String::new()
+            }
         )));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
