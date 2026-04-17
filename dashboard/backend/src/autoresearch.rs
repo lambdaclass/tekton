@@ -713,11 +713,12 @@ async fn run_autoresearch_pipeline(
         "[CLAUDE] Sending initial prompt (analyze baseline + first optimization)...",
     )
     .await;
-    let claude_result = shell::agent_exec_capture(
+    let claude_result = shell::agent_exec_stream_and_capture(
         &agent_name,
         &format!(
             "{auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text {model_flag} -p '{escaped}'"
         ),
+        tx.clone(),
     ).await;
 
     let claude_response = match claude_result {
@@ -966,9 +967,10 @@ async fn run_autoresearch_pipeline(
 
         let escaped = continue_prompt.replace('\'', "'\\''");
         log_and_persist(db, &tx, run_id, &format!("[EXP {experiment_number}] Sending benchmark output to Claude for analysis + next optimization...")).await;
-        let claude_result = shell::agent_exec_capture(
+        let claude_result = shell::agent_exec_stream_and_capture(
             &agent_name,
             &format!("{auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format text {model_flag} --continue -p '{escaped}'"),
+            tx.clone(),
         ).await;
 
         let claude_response = match claude_result {

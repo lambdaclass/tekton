@@ -119,6 +119,86 @@ pub async fn run_cmd_streaming(
     Ok(())
 }
 
+/// Run a command, stream stdout/stderr to a broadcast channel, AND capture the full output.
+/// Useful when you need both real-time logging and the final result.
+pub async fn run_cmd_streaming_capture(
+    cmd: &str,
+    args: &[&str],
+    tx: broadcast::Sender<String>,
+) -> Result<String, AppError> {
+    tracing::info!("Streaming+capture: {cmd} {}", args.join(" "));
+    let mut child = Command::new(cmd)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| AppError::Internal(format!("Failed to spawn {cmd}: {e}")))?;
+
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+
+    let tx2 = tx.clone();
+    let stdout_handle = tokio::spawn(async move {
+        let reader = BufReader::new(stdout);
+        let mut lines = reader.lines();
+        let mut captured = Vec::new();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let _ = tx.send(line.clone());
+            captured.push(line);
+        }
+        captured
+    });
+
+    let stderr_handle = tokio::spawn(async move {
+        let reader = BufReader::new(stderr);
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let _ = tx2.send(line);
+        }
+    });
+
+    let stdout_lines = stdout_handle
+        .await
+        .map_err(|e| AppError::Internal(format!("stdout task failed: {e}")))?;
+    let _ = stderr_handle.await;
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to wait on {cmd}: {e}")))?;
+
+    if !status.success() {
+        return Err(AppError::Internal(format!(
+            "{cmd} exited with status {status}"
+        )));
+    }
+    Ok(stdout_lines.join("\n"))
+}
+
+/// Like agent_exec_capture but also streams each line to a broadcast channel for real-time logs.
+pub async fn agent_exec_stream_and_capture(
+    name: &str,
+    cmd_line: &str,
+    tx: broadcast::Sender<String>,
+) -> Result<String, AppError> {
+    let ip = agent_ip(name)?;
+    run_cmd_streaming_capture(
+        "ssh",
+        &[
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            &format!("agent@{ip}"),
+            cmd_line,
+        ],
+        tx,
+    )
+    .await
+}
+
 // ── Preview operations ──
 
 /// Strip ANSI escape sequences from a string.
