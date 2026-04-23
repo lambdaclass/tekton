@@ -4,7 +4,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ChevronLeft,
   FlaskConical,
-  GitPullRequest,
   GitBranch,
   Square,
   Check,
@@ -24,7 +23,6 @@ import {
   listAutoresearchExperiments,
   getAutoresearchStats,
   stopAutoresearchRun,
-  createAutoresearchPR,
   sendAutoresearchMessage,
 } from '@/lib/api';
 import type { AutoresearchExperiment } from '@/lib/api';
@@ -82,12 +80,6 @@ export default function AutoresearchDetail() {
     },
   });
 
-  const prMutation = useMutation({
-    mutationFn: () => createAutoresearchPR(id!),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['autoresearch-run', id] });
-    },
-  });
 
   if (!run) {
     return <p className="text-sm text-muted-foreground py-8 text-center">Loading...</p>;
