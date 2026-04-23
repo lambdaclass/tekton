@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   FlaskConical,
   GitPullRequest,
+  GitBranch,
   Square,
   Check,
   X,
@@ -14,7 +15,6 @@ import {
   BarChart3,
   Settings,
   Clock,
-  TrendingUp,
   Zap,
   DollarSign,
   Target,
@@ -128,41 +128,11 @@ export default function AutoresearchDetail() {
               {stopMutation.isPending ? 'Stopping...' : 'Stop'}
             </Button>
           )}
-          {!running && run.accepted_experiments > 0 && !run.pr_url && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => prMutation.mutate()}
-              disabled={prMutation.isPending}
-            >
-              <GitPullRequest className="size-3.5 mr-1" />
-              {prMutation.isPending ? 'Creating...' : 'Create PR'}
-            </Button>
-          )}
-          {run.pr_url && (
-            <a href={run.pr_url} target="_blank" rel="noopener noreferrer">
-              <Button size="sm" variant="outline">
-                <GitPullRequest className="size-3.5 mr-1" />
-                PR #{run.pr_number}
-              </Button>
-            </a>
-          )}
         </div>
       </div>
 
       {/* Stats bar */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 px-1 pb-3 border-b border-border/50 shrink-0">
-        <StatCard
-          icon={<TrendingUp className="size-3.5" />}
-          label="Improvement"
-          value={stats ? `${stats.improvement_pct > 0 ? '+' : ''}${stats.improvement_pct.toFixed(1)}%` : '—'}
-          highlight={stats && stats.improvement_pct > 0}
-        />
-        <StatCard
-          icon={<Target className="size-3.5" />}
-          label="Best"
-          value={run.best_metric != null ? run.best_metric.toFixed(4) : '—'}
-        />
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 px-1 pb-3 border-b border-border/50 shrink-0">
         <StatCard
           icon={<Target className="size-3.5" />}
           label="Baseline"
@@ -180,8 +150,8 @@ export default function AutoresearchDetail() {
         />
         <StatCard
           icon={<Clock className="size-3.5" />}
-          label="Est. Remaining"
-          value={stats?.est_remaining_minutes != null ? `${Math.max(0, stats.est_remaining_minutes).toFixed(0)}m` : '—'}
+          label="Running for"
+          value={run.created_at ? formatElapsed(run.created_at) : '—'}
         />
         <StatCard
           icon={<DollarSign className="size-3.5" />}
@@ -189,6 +159,33 @@ export default function AutoresearchDetail() {
           value={run.total_cost_usd ? `$${run.total_cost_usd.toFixed(2)}` : '$0.00'}
         />
       </div>
+
+      {/* Branches created */}
+      {experiments && experiments.filter(e => e.accepted).length > 0 && (
+        <div className="px-1 py-2 border-b border-border/50 shrink-0">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1.5">
+            <GitBranch className="size-3.5" />
+            <span className="font-medium uppercase tracking-wider">Branches ({experiments.filter(e => e.accepted).length})</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {experiments.filter(e => e.accepted).map(exp => {
+              const branchName = `autoresearch/${run.id.slice(0, 8)}/exp-${exp.experiment_number}`;
+              return (
+                <a
+                  key={exp.id}
+                  href={`https://github.com/${run.repo}/tree/${branchName}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-xs font-mono px-2 py-1 rounded-md bg-secondary hover:bg-secondary/80 text-foreground transition-colors"
+                >
+                  <GitBranch className="size-3" />
+                  {branchName}
+                </a>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Error banner */}
       {run.error_message && (
@@ -225,7 +222,7 @@ export default function AutoresearchDetail() {
               <MetricChart
                 experiments={experiments ?? []}
                 baseline={run.baseline_metric}
-                best={run.best_metric}
+                best={null}
               />
             </div>
 
@@ -245,6 +242,8 @@ export default function AutoresearchDetail() {
                     <ExperimentRow
                       key={exp.id}
                       exp={exp}
+                      runId={run.id}
+                      repo={run.repo}
                       expanded={expandedExp === exp.id}
                       onToggle={() => setExpandedExp(expandedExp === exp.id ? null : exp.id)}
                     />
@@ -314,6 +313,18 @@ export default function AutoresearchDetail() {
   );
 }
 
+function formatElapsed(dateStr: string): string {
+  const seconds = Math.round((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours < 24) return `${hours}h ${remainingMinutes}m`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ${hours % 24}h`;
+}
+
 function StatCard({
   icon,
   label,
@@ -376,10 +387,14 @@ function SuggestionInput({ runId }: { runId: string }) {
 
 function ExperimentRow({
   exp,
+  runId,
+  repo,
   expanded,
   onToggle,
 }: {
   exp: AutoresearchExperiment;
+  runId: string;
+  repo: string;
   expanded: boolean;
   onToggle: () => void;
 }) {
@@ -409,16 +424,16 @@ function ExperimentRow({
             {exp.claude_response.slice(0, 120)}
           </p>
         )}
-        {exp.pr_url && (
+        {exp.accepted && (
           <a
-            href={exp.pr_url}
+            href={`https://github.com/${repo}/tree/autoresearch/${runId.slice(0, 8)}/exp-${exp.experiment_number}`}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline mt-1 ml-8"
             onClick={(e) => e.stopPropagation()}
           >
-            <GitPullRequest className="size-3" />
-            PR
+            <GitBranch className="size-3" />
+            branch
           </a>
         )}
       </button>
