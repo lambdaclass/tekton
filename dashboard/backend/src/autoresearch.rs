@@ -795,6 +795,9 @@ async fn run_autoresearch_pipeline(
          - Focus on reading files and making edits. You may compile to check your work if needed.\n\
          - Make focused, targeted changes. One optimization per experiment.\n\
          - Do NOT modify the benchmark command or evaluation code.\n\
+         - NEVER ask questions — you are autonomous. When you face a choice, pick the most reasonable option and record it.\n\
+         - When you make a significant choice (algorithm, approach, file to modify, tradeoff), record it on its own line with this format:\n\
+         DECISION: <what you decided> | ALTERNATIVES: <other options you considered>\n\
          \n\
          Here is the BASELINE benchmark output:\n\
          ```\n\
@@ -1285,9 +1288,9 @@ async fn run_autoresearch_pipeline(
 
         // Tell Claude we're starting fresh
         let reset_msg = if is_better {
-            "Your optimization was accepted and a PR has been created. Now we're back on the base branch. Try a completely different optimization."
+            "Your optimization was accepted and a branch has been created. Now we're back on the base branch. Try a completely different optimization. Remember: record any significant choices with DECISION: ... | ALTERNATIVES: ... and never ask questions — always make autonomous decisions."
         } else {
-            "Your change did not improve the metric. We're back on the base branch. Try a different approach."
+            "Your change did not improve the metric. We're back on the base branch. Try a different approach. Remember: record any significant choices with DECISION: ... | ALTERNATIVES: ... and never ask questions — always make autonomous decisions."
         };
         let escaped = reset_msg.replace('\'', "'\\''");
         let _ = shell::agent_exec_claude_streaming(

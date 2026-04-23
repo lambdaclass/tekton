@@ -17,6 +17,8 @@ import {
   Zap,
   DollarSign,
   Target,
+  Lightbulb,
+  Repeat,
 } from 'lucide-react';
 import {
   getAutoresearchRun,
@@ -32,6 +34,24 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import MetricChart from '@/components/MetricChart';
 import LogViewer from '@/components/LogViewer';
 
+
+interface ParsedDecision {
+  decision: string;
+  alternatives: string;
+}
+
+function parseDecisions(response: string | null): ParsedDecision[] {
+  if (!response) return [];
+  const decisions: ParsedDecision[] = [];
+  for (const line of response.split('\n')) {
+    const trimmed = line.trim();
+    const match = trimmed.match(/^DECISION:\s*(.+?)\s*\|\s*ALTERNATIVES:\s*(.+)$/i);
+    if (match) {
+      decisions.push({ decision: match[1].trim(), alternatives: match[2].trim() });
+    }
+  }
+  return decisions;
+}
 
 function statusColor(status: string) {
   switch (status) {
@@ -196,6 +216,10 @@ export default function AutoresearchDetail() {
             <BarChart3 className="size-3.5" />
             Experiments
           </TabsTrigger>
+          <TabsTrigger value="decisions" className="gap-1.5">
+            <Lightbulb className="size-3.5" />
+            Decisions
+          </TabsTrigger>
           <TabsTrigger value="logs" className="gap-1.5">
             <ScrollText className="size-3.5" />
             Logs
@@ -244,6 +268,11 @@ export default function AutoresearchDetail() {
               )}
             </div>
           </div>
+        </TabsContent>
+
+        {/* Decisions tab */}
+        <TabsContent value="decisions" className="flex-1 overflow-y-auto rounded-b-lg border border-t-0 border-border bg-card p-4">
+          <DecisionsList experiments={experiments ?? []} runId={id!} />
         </TabsContent>
 
         {/* Logs tab — no forceMount so xterm initializes with correct dimensions */}
@@ -341,6 +370,56 @@ function StatCard({
   );
 }
 
+function DecisionsList({ experiments, runId }: { experiments: AutoresearchExperiment[]; runId: string }) {
+  const tryAlternativeMutation = useMutation({
+    mutationFn: (content: string) => sendAutoresearchMessage(runId, content),
+  });
+
+  const allDecisions = experiments.flatMap((exp) =>
+    parseDecisions(exp.claude_response).map((d, idx) => ({ exp, decision: d, idx }))
+  );
+
+  if (allDecisions.length === 0) {
+    return (
+      <div className="text-sm text-muted-foreground text-center py-12">
+        <Lightbulb className="size-8 mx-auto mb-2 opacity-30" />
+        No decisions recorded yet. Claude will log its choices here as it experiments.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {[...allDecisions].reverse().map(({ exp, decision, idx }) => (
+        <div key={`${exp.id}-${idx}`} className="rounded-md border border-border p-3">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-xs font-mono text-muted-foreground">Exp #{exp.experiment_number}</span>
+            {exp.accepted === true && <Badge variant="outline" className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/30">accepted</Badge>}
+            {exp.accepted === false && <Badge variant="outline" className="bg-red-500/10 text-red-700 dark:text-red-400 border-red-500/30">rejected</Badge>}
+          </div>
+          <div className="text-sm mb-2">
+            <span className="font-medium text-muted-foreground">Decision:</span> {decision.decision}
+          </div>
+          <div className="text-sm mb-3">
+            <span className="font-medium text-muted-foreground">Alternatives:</span> {decision.alternatives}
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={tryAlternativeMutation.isPending}
+            onClick={() => tryAlternativeMutation.mutate(
+              `In experiment #${exp.experiment_number} you decided: "${decision.decision}". The alternatives you considered were: "${decision.alternatives}". In your next experiment, try one of those alternatives instead.`
+            )}
+          >
+            <Repeat className="size-3.5 mr-1.5" />
+            Try an alternative
+          </Button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function SuggestionInput({ runId }: { runId: string }) {
   const [message, setMessage] = useState('');
   const sendMutation = useMutation({
@@ -416,18 +495,29 @@ function ExperimentRow({
             {exp.claude_response.slice(0, 120)}
           </p>
         )}
-        {exp.accepted && (
-          <a
-            href={`https://github.com/${repo}/tree/autoresearch/${runId.slice(0, 8)}/exp-${exp.experiment_number}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline mt-1 ml-8"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <GitBranch className="size-3" />
-            branch
-          </a>
-        )}
+        <div className="flex items-center gap-3 mt-1 ml-8">
+          {exp.accepted && (
+            <a
+              href={`https://github.com/${repo}/tree/autoresearch/${runId.slice(0, 8)}/exp-${exp.experiment_number}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <GitBranch className="size-3" />
+              branch
+            </a>
+          )}
+          {(() => {
+            const decisionCount = parseDecisions(exp.claude_response).length;
+            return decisionCount > 0 ? (
+              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                <Lightbulb className="size-3" />
+                {decisionCount} decision{decisionCount > 1 ? 's' : ''}
+              </span>
+            ) : null;
+          })()}
+        </div>
       </button>
       {expanded && exp.diff && (
         <pre className="mt-2 ml-8 text-[11px] font-mono bg-secondary rounded-md p-2 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre">
