@@ -322,7 +322,7 @@ echo ""
 echo "=== Setup complete ==="
 "#;
 
-    let mut args = vec!["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10"];
+    let mut args = vec!["-o", "StrictHostKeyChecking=no", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10"];
     if let Some(key) = ssh_key_path {
         args.extend_from_slice(&["-i", key]);
     }
