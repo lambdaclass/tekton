@@ -34,7 +34,7 @@ const RUN_QUERY: &str = "SELECT id, name, repo, base_branch, branch_name, agent_
 
 const EXP_QUERY: &str = "SELECT id, run_id, experiment_number, status, diff, \
      metric_value, metric_raw_output, accepted, hypothesis, claude_response, \
-     input_tokens, output_tokens, cost_usd, duration_seconds, \
+     input_tokens, output_tokens, cost_usd, duration_seconds, pr_url, \
      TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at \
      FROM autoresearch_experiments";
 
@@ -774,6 +774,7 @@ async fn run_autoresearch_pipeline(
     let mut branch_created = benchmark_server.is_some();
     let mut last_seen_message_id: i64 = 0; // already created if we cloned on benchmark server
 
+    let base_branch = run.base_branch.clone();
     let objective = run.objective.as_deref().unwrap_or("improve performance");
     let target_desc = run.target_files.as_deref().unwrap_or("any relevant files");
     let frozen_desc = run
@@ -877,16 +878,6 @@ async fn run_autoresearch_pipeline(
         if stop_flag.load(Ordering::Relaxed) {
             log_and_persist(db, &tx, run_id, "[STOP] Run stopped by user.").await;
             update_run_status(db, run_id, "stopped").await?;
-            let _ = push_verified(
-                &agent_name,
-                github_token,
-                &run.repo,
-                branch_name,
-                &run.base_branch,
-                &mut branch_created,
-                "autoresearch optimization",
-            )
-            .await;
             cleanup(config, db, &agent_name, server_id_for_cleanup).await;
             return Ok(());
         }
@@ -1081,7 +1072,13 @@ async fn run_autoresearch_pipeline(
                 "\n\nUSER SUGGESTION from {}: {}",
                 msg.sender, msg.content
             ));
-            log_and_persist(db, &tx, run_id, &format!("[USER] {}: {}", msg.sender, msg.content)).await;
+            log_and_persist(
+                db,
+                &tx,
+                run_id,
+                &format!("[USER] {}: {}", msg.sender, msg.content),
+            )
+            .await;
         }
 
         // Send benchmark output to Claude and ask for analysis + next optimization
@@ -1159,29 +1156,61 @@ async fn run_autoresearch_pipeline(
                 db,
                 &tx,
                 run_id,
-                &format!(
-                    "[EXP {experiment_number}] ACCEPTED: {val} (best was {})",
-                    best_str
-                ),
+                &format!("[EXP {experiment_number}] ACCEPTED: {val} (best was {best_str})"),
             )
             .await;
             best_metric = Some(val);
 
-            let _ = push_verified(
+            // Create a dedicated branch for this experiment and push
+            let exp_branch = format!("autoresearch/{}/exp-{experiment_number}", &run_id[..8]);
+            log_and_persist(
+                db,
+                &tx,
+                run_id,
+                &format!("[EXP {experiment_number}] Creating branch {exp_branch} and PR..."),
+            )
+            .await;
+
+            let mut exp_branch_created = false;
+            let commit_msg = format!(
+                "autoresearch: experiment #{experiment_number} — metric {val} (was {best_str})"
+            );
+            match push_verified(
                 &agent_name,
                 github_token,
                 &run.repo,
-                branch_name,
+                &exp_branch,
                 &run.base_branch,
-                &mut branch_created,
-                "autoresearch optimization",
+                &mut exp_branch_created,
+                &commit_msg,
             )
-            .await;
+            .await
+            {
+                Ok(_) => {
+                    log_and_persist(
+                        db,
+                        &tx,
+                        run_id,
+                        &format!("[EXP {experiment_number}] Branch {exp_branch} pushed to GitHub."),
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    log_and_persist(
+                        db,
+                        &tx,
+                        run_id,
+                        &format!("[EXP {experiment_number}] Push failed: {e}"),
+                    )
+                    .await;
+                }
+            }
+            let pr_url: Option<String> = None;
 
             let _ = sqlx::query(
                 "UPDATE autoresearch_experiments SET status = 'accepted', accepted = true, \
                  diff = $2, metric_value = $3, metric_raw_output = $4, \
-                 claude_response = $5, duration_seconds = $6 WHERE id = $1",
+                 claude_response = $5, duration_seconds = $6, pr_url = $7 WHERE id = $1",
             )
             .bind(exp_id)
             .bind(&diff)
@@ -1189,6 +1218,7 @@ async fn run_autoresearch_pipeline(
             .bind(&raw_output)
             .bind(&claude_response)
             .bind(duration)
+            .bind(&pr_url)
             .execute(db)
             .await;
 
@@ -1212,13 +1242,6 @@ async fn run_autoresearch_pipeline(
             )
             .await;
 
-            // Revert
-            let _ = shell::agent_exec_capture(
-                &agent_name,
-                "cd /home/agent/repo && git reset --hard HEAD~1",
-            )
-            .await;
-
             let _ = sqlx::query(
                 "UPDATE autoresearch_experiments SET status = 'rejected', accepted = false, \
                  diff = $2, metric_value = $3, metric_raw_output = $4, \
@@ -1239,29 +1262,42 @@ async fn run_autoresearch_pipeline(
             .bind(run_id)
             .execute(db)
             .await;
+        }
 
-            // Tell Claude the change was reverted
-            let revert_prompt = "Your change did not improve the metric and has been reverted. Try a different approach.";
-            let escaped = revert_prompt.replace('\'', "'\\''");
-            let _ = shell::agent_exec_claude_streaming(
-                &agent_name,
-                &format!("{auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose {model_flag} --continue -p '{escaped}'"),
-                tx.clone(),
+        // Always reset back to clean main for the next experiment (isolated changes)
+        log_and_persist(
+            db,
+            &tx,
+            run_id,
+            &format!("[EXP {experiment_number}] Resetting to {base_branch}..."),
+        )
+        .await;
+        let _ = shell::agent_exec_capture(
+            &agent_name,
+            &format!("cd /home/agent/repo && git checkout {base_branch} && git reset --hard origin/{base_branch}"),
+        ).await;
+        if let Some(ref server) = benchmark_server {
+            let _ = run_on_benchmark_server(
+                server,
+                &format!("cd ~/autoresearch/repo && git checkout {base_branch} && git reset --hard origin/{base_branch}"),
             ).await;
         }
+
+        // Tell Claude we're starting fresh
+        let reset_msg = if is_better {
+            "Your optimization was accepted and a PR has been created. Now we're back on the base branch. Try a completely different optimization."
+        } else {
+            "Your change did not improve the metric. We're back on the base branch. Try a different approach."
+        };
+        let escaped = reset_msg.replace('\'', "'\\''");
+        let _ = shell::agent_exec_claude_streaming(
+            &agent_name,
+            &format!("{auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose {model_flag} --continue -p '{escaped}'"),
+            tx.clone(),
+        ).await;
     }
 
-    // Push final state
-    let _ = push_verified(
-        &agent_name,
-        github_token,
-        &run.repo,
-        branch_name,
-        &run.base_branch,
-        &mut branch_created,
-        "autoresearch optimization",
-    )
-    .await;
+    // No final push needed — each accepted experiment already created its own branch + PR
     update_run_status(db, run_id, "completed").await?;
 
     let bl = baseline_metric.unwrap_or(0.0);
@@ -1323,6 +1359,64 @@ async fn run_benchmark(
 }
 
 /// Run a command on the benchmark server via SSH from the tekton host.
+/// Auto-create a PR for an accepted experiment.
+async fn create_experiment_pr(
+    github_token: &str,
+    repo: &str,
+    exp_branch: &str,
+    base_branch: &str,
+    run: &AutoresearchRun,
+    experiment_number: i32,
+    metric_value: f64,
+    previous_best: &str,
+) -> Result<String, AppError> {
+    let objective = run.objective.as_deref().unwrap_or("improve performance");
+    let title =
+        format!("autoresearch: {objective} (exp #{experiment_number}, metric: {metric_value})");
+    let body = format!(
+        "## Autoresearch Optimization\n\n\
+         - **Objective:** {objective}\n\
+         - **Experiment:** #{experiment_number}\n\
+         - **Metric:** {metric_value} (previous: {previous_best})\n\
+         - **Benchmark command:** `{}`\n\
+         - **Run ID:** {}\n\n\
+         This PR was auto-generated by Tekton Autoresearch.",
+        run.benchmark_command, run.id,
+    );
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("https://api.github.com/repos/{repo}/pulls"))
+        .header("Authorization", format!("token {github_token}"))
+        .header("User-Agent", "tekton-dashboard")
+        .header("Accept", "application/vnd.github+json")
+        .json(&serde_json::json!({
+            "title": title,
+            "body": body,
+            "head": exp_branch,
+            "base": base_branch,
+        }))
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("GitHub API request failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!(
+            "GitHub API returned {status}: {text}"
+        )));
+    }
+
+    let pr_data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to parse PR response: {e}")))?;
+
+    let pr_url = pr_data["html_url"].as_str().unwrap_or("").to_string();
+    Ok(pr_url)
+}
+
 async fn run_on_benchmark_server(
     server: &crate::models::BenchmarkServer,
     cmd: &str,

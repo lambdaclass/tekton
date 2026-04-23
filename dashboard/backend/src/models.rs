@@ -409,6 +409,7 @@ pub struct AutoresearchExperiment {
     pub output_tokens: Option<i64>,
     pub cost_usd: Option<f64>,
     pub duration_seconds: Option<i32>,
+    pub pr_url: Option<String>,
     pub created_at: String,
 }
 

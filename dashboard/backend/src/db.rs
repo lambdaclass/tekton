@@ -336,6 +336,12 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
+    // Add pr_url column to experiments if missing (for upgrades)
+    let _ =
+        sqlx::query("ALTER TABLE autoresearch_experiments ADD COLUMN IF NOT EXISTS pr_url TEXT")
+            .execute(pool)
+            .await;
+
     // Add objective column if missing (for upgrades)
     let _ = sqlx::query("ALTER TABLE autoresearch_runs ADD COLUMN IF NOT EXISTS objective TEXT")
         .execute(pool)

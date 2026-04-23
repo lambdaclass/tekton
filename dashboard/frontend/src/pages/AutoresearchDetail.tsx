@@ -409,6 +409,18 @@ function ExperimentRow({
             {exp.claude_response.slice(0, 120)}
           </p>
         )}
+        {exp.pr_url && (
+          <a
+            href={exp.pr_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline mt-1 ml-8"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <GitPullRequest className="size-3" />
+            PR
+          </a>
+        )}
       </button>
       {expanded && exp.diff && (
         <pre className="mt-2 ml-8 text-[11px] font-mono bg-secondary rounded-md p-2 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre">

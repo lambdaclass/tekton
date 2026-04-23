@@ -509,6 +509,7 @@ export interface AutoresearchExperiment {
   output_tokens: number | null;
   cost_usd: number | null;
   duration_seconds: number | null;
+  pr_url: string | null;
   created_at: string;
 }
 
