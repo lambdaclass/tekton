@@ -56,6 +56,12 @@ const OPENROUTER_MODELS = [
   { value: 'arcee-ai/trinity-large-preview:free', label: 'Arcee Trinity Large (free)', free: true },
 ];
 
+const ANTHROPIC_MODELS = [
+  { value: '', label: 'Default (Sonnet 4.6)' },
+  { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+  { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
+];
+
 export default function Settings() {
   const queryClient = useQueryClient();
   const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMe });
@@ -102,8 +108,8 @@ export default function Settings() {
   const [globalProvider, setGlobalProvider] = useState<ProviderValue>('anthropic');
   const [globalUserSelectedModel, setGlobalUserSelectedModel] = useState<string | null>(null);
   const globalSelectedModel = globalUserSelectedModel
-    ?? (globalSettings?.provider === 'openrouter' && globalSettings?.model ? globalSettings.model : null)
-    ?? OPENROUTER_MODELS[0].value;
+    ?? globalSettings?.model
+    ?? (globalProvider === 'openrouter' ? OPENROUTER_MODELS[0].value : '');
   const [globalApiKey, setGlobalApiKey] = useState('');
 
   const globalSaveMutation = useMutation({
@@ -139,15 +145,15 @@ export default function Settings() {
     globalSaveMutation.mutate({
       provider: globalProvider,
       ...(trimmed ? { api_key: trimmed } : {}),
-      model: globalProvider === 'openrouter' ? globalSelectedModel : undefined,
+      model: globalSelectedModel || undefined,
     });
   };
 
-  const globalConnectedModelLabel =
-    globalSettings?.provider === 'openrouter' && globalSettings.model
-      ? (OPENROUTER_MODELS.find((m) => m.value === globalSettings.model)?.label ??
-          globalSettings.model)
-      : null;
+  const globalConnectedModelLabel = globalSettings?.model
+    ? (OPENROUTER_MODELS.find((m) => m.value === globalSettings.model)?.label
+      ?? ANTHROPIC_MODELS.find((m) => m.value === globalSettings.model)?.label
+      ?? globalSettings.model)
+    : null;
 
   const currentProvider = PROVIDERS.find((p) => p.value === selectedProvider)!;
 
@@ -395,6 +401,24 @@ export default function Settings() {
                       className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
                       {OPENROUTER_MODELS.map((m) => (
+                        <option key={m.value} value={m.value}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {(globalProvider === 'anthropic' || globalProvider === 'anthropic-oauth') && (
+                  <div className="space-y-2">
+                    <Label htmlFor="global-anthropic-model">Model</Label>
+                    <select
+                      id="global-anthropic-model"
+                      value={globalSelectedModel}
+                      onChange={(e) => setGlobalUserSelectedModel(e.target.value)}
+                      className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      {ANTHROPIC_MODELS.map((m) => (
                         <option key={m.value} value={m.value}>
                           {m.label}
                         </option>

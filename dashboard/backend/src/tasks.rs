@@ -871,17 +871,31 @@ pub async fn build_claude_auth_env(
                 String::new(),
             ))
         }
-        Some(cfg) if cfg.provider == "anthropic-oauth" => Ok((
-            format!(
-                "export CLAUDE_CODE_OAUTH_TOKEN='{}' ANTHROPIC_API_KEY=''",
-                cfg.api_key
-            ),
-            String::new(),
-        )),
-        Some(cfg) => Ok((
-            format!("export ANTHROPIC_API_KEY='{}'", cfg.api_key),
-            String::new(),
-        )),
+        Some(cfg) if cfg.provider == "anthropic-oauth" => {
+            let model_env = cfg
+                .model
+                .as_deref()
+                .map(|m| format!(" ANTHROPIC_MODEL='{m}'"))
+                .unwrap_or_default();
+            Ok((
+                format!(
+                    "export CLAUDE_CODE_OAUTH_TOKEN='{}' ANTHROPIC_API_KEY=''{model_env}",
+                    cfg.api_key
+                ),
+                String::new(),
+            ))
+        }
+        Some(cfg) => {
+            let model_env = cfg
+                .model
+                .as_deref()
+                .map(|m| format!(" ANTHROPIC_MODEL='{m}'"))
+                .unwrap_or_default();
+            Ok((
+                format!("export ANTHROPIC_API_KEY='{}'{model_env}", cfg.api_key),
+                String::new(),
+            ))
+        }
         None => {
             // Fallback to the global admin-configured key
             match settings::get_global_ai_config(db, encryption_key).await? {
@@ -898,17 +912,27 @@ pub async fn build_claude_auth_env(
                         String::new(),
                     ))
                 }
-                Some(cfg) if cfg.provider == "anthropic-oauth" => Ok((
-                    format!(
-                "export CLAUDE_CODE_OAUTH_TOKEN='{}' ANTHROPIC_API_KEY=''",
-                cfg.api_key
-            ),
-                    String::new(),
-                )),
-                Some(cfg) => Ok((
-                    format!("export ANTHROPIC_API_KEY='{}'", cfg.api_key),
-                    String::new(),
-                )),
+                Some(cfg) if cfg.provider == "anthropic-oauth" => {
+                    let model_env = cfg.model.as_deref()
+                        .map(|m| format!(" ANTHROPIC_MODEL='{m}'"))
+                        .unwrap_or_default();
+                    Ok((
+                        format!(
+                            "export CLAUDE_CODE_OAUTH_TOKEN='{}' ANTHROPIC_API_KEY=''{model_env}",
+                            cfg.api_key
+                        ),
+                        String::new(),
+                    ))
+                }
+                Some(cfg) => {
+                    let model_env = cfg.model.as_deref()
+                        .map(|m| format!(" ANTHROPIC_MODEL='{m}'"))
+                        .unwrap_or_default();
+                    Ok((
+                        format!("export ANTHROPIC_API_KEY='{}'{model_env}", cfg.api_key),
+                        String::new(),
+                    ))
+                }
                 None => Err(AppError::Internal(
                     "No AI provider configured. Go to Settings → AI Provider to connect your account, or ask an admin to set up a global API key."
                         .into(),
