@@ -10,6 +10,7 @@ import Settings from './pages/Settings';
 import Webhooks from './pages/Webhooks';
 import CostDashboard from './pages/CostDashboard';
 import AuditLog from './pages/AuditLog';
+import KPIDashboard from './pages/KPIDashboard';
 
 export default function App() {
   return (
@@ -22,6 +23,7 @@ export default function App() {
         <Route path="/tasks/:id" element={<TaskDetail />} />
         <Route path="/admin" element={<Admin />} />
         <Route path="/cost" element={<CostDashboard />} />
+        <Route path="/kpis" element={<KPIDashboard />} />
         <Route path="/audit" element={<AuditLog />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/webhooks" element={<Webhooks />} />

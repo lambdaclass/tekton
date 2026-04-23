@@ -382,6 +382,26 @@ export const getAuditLog = (params?: AuditLogParams) => {
   return apiFetch<PaginatedAuditLog>(`/api/admin/audit-log${qs ? `?${qs}` : ''}`);
 };
 
+// Product health KPIs (issue #73)
+export interface KpiTrendPoint {
+  day: string;
+  sessions: number;
+  tasks_with_pr: number;
+}
+export interface Kpis {
+  window_days: number;
+  weekly_active_prompting_users: number;
+  sessions: number;
+  tasks_with_pr: number;
+  session_to_pr_conversion_rate: number;
+  median_time_to_first_pr_seconds: number | null;
+  trends: KpiTrendPoint[];
+}
+export const getKpis = (days?: number) => {
+  const qs = days ? `?days=${days}` : '';
+  return apiFetch<Kpis>(`/api/admin/metrics/kpis${qs}`);
+};
+
 // AI Settings
 export const getAiSettings = () =>
   apiFetch<{ provider: string | null; has_api_key: boolean; model: string | null; has_global_fallback?: boolean }>('/api/settings/ai');

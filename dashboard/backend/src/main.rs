@@ -4,6 +4,7 @@ mod config;
 mod cost;
 mod db;
 mod error;
+mod metrics;
 mod models;
 mod policies;
 mod previews;
@@ -131,6 +132,8 @@ async fn main() -> anyhow::Result<()> {
         )
         // Admin: Audit Log
         .route("/admin/audit-log", get(audit::list_audit_log))
+        // Admin: Product health KPIs
+        .route("/admin/metrics/kpis", get(metrics::get_kpis))
         // Settings
         .route("/settings/ai", get(settings::get_ai_settings))
         .route("/settings/ai", put(settings::put_ai_settings))
