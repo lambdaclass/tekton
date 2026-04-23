@@ -1081,7 +1081,7 @@ async fn run_autoresearch_pipeline(
                 "\n\nUSER SUGGESTION from {}: {}",
                 msg.sender, msg.content
             ));
-            log_line(&tx, &format!("[USER] {}: {}", msg.sender, msg.content));
+            log_and_persist(db, &tx, run_id, &format!("[USER] {}: {}", msg.sender, msg.content)).await;
         }
 
         // Send benchmark output to Claude and ask for analysis + next optimization
