@@ -606,7 +606,11 @@ export interface AutoresearchRun {
   branch_name: string | null;
   agent_name: string | null;
   benchmark_server_id: number | null;
-  benchmark_command: string;
+  benchmark_command: string | null;
+  benchmark_type: string;
+  ethrex_repo_path: string | null;
+  benchmarks_repo_path: string | null;
+  expb_baseline_metrics: Record<string, Record<string, number | null>> | null;
   objective: string | null;
   metric_regex: string | null;
   optimization_direction: string | null;
@@ -645,6 +649,12 @@ export interface AutoresearchExperiment {
   duration_seconds: number | null;
   pr_url: string | null;
   created_at: string;
+  mgas_avg: number | null;
+  latency_avg_ms: number | null;
+  latency_p50_ms: number | null;
+  latency_p95_ms: number | null;
+  latency_p99_ms: number | null;
+  expb_tier_reached: string | null;
 }
 
 export interface AutoresearchStats {
@@ -659,7 +669,10 @@ export const listAutoresearchRuns = () =>
 export const createAutoresearchRun = (data: {
   repo: string;
   base_branch?: string;
-  benchmark_command: string;
+  benchmark_type?: 'shell' | 'expb';
+  benchmark_command?: string;
+  ethrex_repo_path?: string;
+  benchmarks_repo_path?: string;
   objective: string;
   metric_regex?: string;
   optimization_direction?: string;

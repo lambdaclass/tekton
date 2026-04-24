@@ -120,7 +120,10 @@ function CreateRunForm({
 }) {
   const [repo, setRepo] = useState('');
   const [baseBranch, setBaseBranch] = useState('main');
+  const [benchmarkType, setBenchmarkType] = useState<'shell' | 'expb'>('shell');
   const [benchmarkCommand, setBenchmarkCommand] = useState('');
+  const [ethrexRepoPath, setEthrexRepoPath] = useState('');
+  const [benchmarksRepoPath, setBenchmarksRepoPath] = useState('');
   const [objective, setObjective] = useState('');
   const [targetFiles, setTargetFiles] = useState('');
   const [frozenFiles, setFrozenFiles] = useState('');
@@ -151,7 +154,10 @@ function CreateRunForm({
     createMutation.mutate({
       repo,
       base_branch: baseBranch || undefined,
-      benchmark_command: benchmarkCommand,
+      benchmark_type: benchmarkType,
+      benchmark_command: benchmarkType === 'shell' ? benchmarkCommand : undefined,
+      ethrex_repo_path: benchmarkType === 'expb' ? ethrexRepoPath : undefined,
+      benchmarks_repo_path: benchmarkType === 'expb' ? benchmarksRepoPath : undefined,
       objective,
       target_files: targetFiles || undefined,
       frozen_files: frozenFiles || undefined,
@@ -207,17 +213,69 @@ function CreateRunForm({
             />
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="ar-benchmark">Benchmark Command</Label>
-              <Input
-                id="ar-benchmark"
-                value={benchmarkCommand}
-                onChange={(e) => setBenchmarkCommand(e.target.value)}
-                placeholder="make bench-rlp"
-                required
-              />
+          <div className="space-y-2">
+            <Label>Benchmark Type</Label>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant={benchmarkType === 'shell' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setBenchmarkType('shell')}
+              >
+                Shell command
+              </Button>
+              <Button
+                type="button"
+                variant={benchmarkType === 'expb' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setBenchmarkType('expb')}
+              >
+                EXPB (tiered)
+              </Button>
             </div>
+            <p className="text-xs text-muted-foreground">
+              {benchmarkType === 'shell'
+                ? 'Run a shell command, parse its output for a metric. Simple.'
+                : 'Drive an external EXPB service through the fast → gigablocks → slow promotion ladder. Keeps the experiment only if all three tiers pass.'}
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {benchmarkType === 'shell' ? (
+              <div className="space-y-2">
+                <Label htmlFor="ar-benchmark">Benchmark Command</Label>
+                <Input
+                  id="ar-benchmark"
+                  value={benchmarkCommand}
+                  onChange={(e) => setBenchmarkCommand(e.target.value)}
+                  placeholder="make bench-rlp"
+                  required
+                />
+              </div>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="ar-ethrex-path">Ethrex repo path on server</Label>
+                  <Input
+                    id="ar-ethrex-path"
+                    value={ethrexRepoPath}
+                    onChange={(e) => setEthrexRepoPath(e.target.value)}
+                    placeholder="/home/admin/ethrex"
+                    required
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="ar-benchmarks-path">Benchmarks repo path on server</Label>
+                  <Input
+                    id="ar-benchmarks-path"
+                    value={benchmarksRepoPath}
+                    onChange={(e) => setBenchmarksRepoPath(e.target.value)}
+                    placeholder="/home/admin/benchmarks"
+                    required
+                  />
+                </div>
+              </>
+            )}
             <div className="space-y-2">
             </div>
             <div className="space-y-2">
@@ -265,17 +323,26 @@ function CreateRunForm({
 
           {servers && servers.length > 0 && (
             <div className="space-y-2">
-              <Label htmlFor="ar-server">Benchmark Server (optional — leave empty for local)</Label>
+              <Label htmlFor="ar-server">
+                {benchmarkType === 'expb'
+                  ? 'Benchmark Server (required for EXPB)'
+                  : 'Benchmark Server (optional — leave empty for local)'}
+              </Label>
               <select
                 id="ar-server"
                 value={serverId}
                 onChange={(e) => setServerId(e.target.value)}
+                required={benchmarkType === 'expb'}
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               >
-                <option value="">Local (agent container)</option>
+                {benchmarkType === 'shell' && (
+                  <option value="">Local (agent container)</option>
+                )}
+                {benchmarkType === 'expb' && <option value="">Select a server…</option>}
                 {servers.map((s) => (
                   <option key={s.id} value={s.id}>
-                    {s.name} — {s.hostname} {s.hardware_description ? `(${s.hardware_description})` : ''}
+                    {s.name} — {s.hostname}{' '}
+                    {s.hardware_description ? `(${s.hardware_description})` : ''}
                   </option>
                 ))}
               </select>

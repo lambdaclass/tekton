@@ -456,6 +456,35 @@ function SuggestionInput({ runId }: { runId: string }) {
   );
 }
 
+const EXPB_TIER_ORDER = ['fast', 'gigablocks', 'slow'] as const;
+
+function TierBadge({ tierReached }: { tierReached: string | null }) {
+  const reachedIdx = tierReached
+    ? EXPB_TIER_ORDER.indexOf(tierReached as typeof EXPB_TIER_ORDER[number])
+    : -1;
+  return (
+    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+      {EXPB_TIER_ORDER.map((tier, i) => {
+        const passed = reachedIdx >= i;
+        return (
+          <span key={tier} className="flex items-center gap-0.5">
+            <span
+              className={
+                passed
+                  ? 'text-emerald-600 dark:text-emerald-400'
+                  : 'text-muted-foreground/60'
+              }
+            >
+              {tier}
+            </span>
+            <span>{passed ? '✓' : '·'}</span>
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
 function ExperimentRow({
   exp,
   runId,
@@ -507,6 +536,9 @@ function ExperimentRow({
               <GitBranch className="size-3" />
               branch
             </a>
+          )}
+          {(exp.expb_tier_reached != null || exp.mgas_avg != null) && (
+            <TierBadge tierReached={exp.expb_tier_reached} />
           )}
           {(() => {
             const decisionCount = parseDecisions(exp.claude_response).length;
