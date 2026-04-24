@@ -305,7 +305,6 @@ async fn main() -> anyhow::Result<()> {
     )
     .await;
 
-
     let app = Router::new()
         .nest("/api", api)
         .merge(internal)
