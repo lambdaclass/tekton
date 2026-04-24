@@ -4,6 +4,8 @@ mod config;
 mod cost;
 mod db;
 mod error;
+mod intake;
+mod intake_admin;
 mod metrics;
 mod models;
 mod policies;
@@ -137,6 +139,39 @@ async fn main() -> anyhow::Result<()> {
             "/admin/settings/ai",
             delete(settings::delete_global_ai_settings),
         )
+        // Admin: Intake Sources
+        .route("/admin/intake/sources", get(intake_admin::list_sources))
+        .route("/admin/intake/sources", post(intake_admin::create_source))
+        .route(
+            "/admin/intake/sources/{id}",
+            put(intake_admin::update_source),
+        )
+        .route(
+            "/admin/intake/sources/{id}",
+            delete(intake_admin::delete_source),
+        )
+        .route(
+            "/admin/intake/sources/{id}/toggle",
+            post(intake_admin::toggle_source),
+        )
+        .route(
+            "/admin/intake/sources/{id}/issues",
+            get(intake_admin::list_source_issues),
+        )
+        .route(
+            "/admin/intake/sources/{id}/logs",
+            get(intake_admin::list_source_logs),
+        )
+        .route(
+            "/admin/intake/sources/{id}/test",
+            post(intake_admin::test_poll_source),
+        )
+        // Admin: Intake Issues (all sources)
+        .route("/admin/intake/issues", get(intake_admin::list_all_issues))
+        .route(
+            "/admin/intake/issues/{id}/status",
+            patch(intake_admin::update_issue_status),
+        )
         // Admin: Audit Log
         .route("/admin/audit-log", get(audit::list_audit_log))
         // Settings
@@ -163,10 +198,16 @@ async fn main() -> anyhow::Result<()> {
         .route("/ws/logs/{slug}", get(ws::preview_logs_ws))
         .route("/ws/tasks/{id}", get(ws::task_output_ws));
 
-    // Conditionally add test-only auth endpoint when TEST_MODE=true
+    // Conditionally add test-only endpoints when TEST_MODE=true
     let api = if std::env::var("TEST_MODE").as_deref() == Ok("true") {
-        tracing::warn!("TEST_MODE enabled — /api/auth/test-login is active");
+        tracing::warn!("TEST_MODE enabled — test-only endpoints are active");
         api.route("/auth/test-login", post(auth::test_login))
+            .route("/test/intake/sync", post(test_intake_sync))
+            .route("/test/tasks/{id}/status", patch(test_update_task_status))
+            .route(
+                "/test/intake/issues/{id}/status",
+                patch(test_update_intake_issue_status),
+            )
     } else {
         api
     };
@@ -188,6 +229,14 @@ async fn main() -> anyhow::Result<()> {
 
     // Recover tasks that were in-progress before the server restarted
     tasks::recover_interrupted_tasks(
+        state.config.clone(),
+        state.db.clone(),
+        state.task_channels.clone(),
+    )
+    .await;
+
+    // Start the intake daemon (polls external issue trackers)
+    intake::start_intake_daemon(
         state.config.clone(),
         state.db.clone(),
         state.task_channels.clone(),
@@ -219,6 +268,46 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     Ok(())
+}
+
+// ── Test-only handlers (only reachable when TEST_MODE=true) ──
+
+#[derive(serde::Deserialize)]
+struct TestUpdateStatusBody {
+    status: String,
+}
+
+async fn test_intake_sync(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Result<axum::http::StatusCode, error::AppError> {
+    intake::sync_intake_statuses(&state.db).await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+async fn test_update_task_status(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<TestUpdateStatusBody>,
+) -> Result<axum::http::StatusCode, error::AppError> {
+    sqlx::query("UPDATE tasks SET status = $1, updated_at = NOW() WHERE id = $2")
+        .bind(&body.status)
+        .bind(&id)
+        .execute(&state.db)
+        .await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+async fn test_update_intake_issue_status(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    axum::Json(body): axum::Json<TestUpdateStatusBody>,
+) -> Result<axum::http::StatusCode, error::AppError> {
+    sqlx::query("UPDATE intake_issues SET status = $1, error_message = NULL, updated_at = NOW() WHERE id = $2")
+        .bind(&body.status)
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 /// Middleware: hashed assets get immutable cache, HTML gets no-cache.

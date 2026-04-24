@@ -30,6 +30,29 @@ export const TEST_IDS = {
     frontend: "testorg/frontend",
   },
   org: "testorg",
+  intake: {
+    sources: {
+      github: { name: 'GitHub Bugs', repo: 'testorg/testrepo' },
+      linear: { name: 'Linear Features', repo: 'testorg/frontend' },
+    },
+    issues: {
+      backlogAuth: 'Fix null pointer in auth module',
+      backlogDarkMode: 'Add dark mode toggle',
+      pendingSafari: 'Login page crashes on Safari',
+      pendingCsv: 'Implement CSV export',
+      inProgressRateLimit: 'Add rate limiting to API',
+      reviewSecurity: 'Review security headers',
+      doneDeps: 'Upgrade dependencies to latest',
+      failedCi: 'Fix flaky CI test',
+    },
+    sync: {
+      taskSync1: 'task-sync-1',
+      taskSync2: 'task-sync-2',
+      issueSync1Title: 'Sync test issue 1',
+      issueSync2Title: 'Sync test issue 2',
+      issueSync3Title: 'Sync test issue 3',
+    },
+  },
 } as const;
 
 type TestFixtures = {

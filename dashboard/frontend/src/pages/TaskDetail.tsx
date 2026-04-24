@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -44,9 +44,8 @@ import { formatCost, timeAgo } from '@/lib/utils';
 
 const CHAT_STATUSES = ['awaiting_followup', 'running_claude', 'pushing', 'creating_preview'];
 
-function defaultTab(status: string | undefined): string {
+function defaultPanel(status: string | undefined): string {
   if (!status) return 'logs';
-  if (['running_claude', 'awaiting_followup'].includes(status)) return 'conversation';
   if (['completed', 'failed'].includes(status)) return 'diff';
   return 'logs';
 }
@@ -57,6 +56,8 @@ export default function TaskDetail() {
   const [connected, setConnected] = useState(false);
   const [showActivity, setShowActivity] = useState(false);
   const [previewKey, setPreviewKey] = useState(0);
+  const [chatWidth, setChatWidth] = useState(480);
+  const resizing = useRef(false);
 
   const { data: task } = useQuery({
     queryKey: ['task', id],
@@ -124,18 +125,34 @@ export default function TaskDetail() {
     !task.pr_url &&
     (task.status === 'completed' || task.status === 'awaiting_followup');
 
-  const [activeTab, setActiveTab] = useState<string | undefined>(undefined);
-  // Set the tab once when task data first arrives (defaultValue doesn't work with async data)
-  const resolvedTab = useMemo(() => {
-    if (activeTab) return activeTab;
+  const [activePanel, setActivePanel] = useState<string | undefined>(undefined);
+  const resolvedPanel = useMemo(() => {
+    if (activePanel) return activePanel;
     if (!task) return 'logs';
-    const tab = defaultTab(task.status);
-    if (tab === 'conversation' && !showChat) return 'logs';
-    return tab;
-  }, [activeTab, task, showChat]);
+    return defaultPanel(task.status);
+  }, [activePanel, task]);
 
   const policyViolations = actions?.filter((a) => a.action_type === 'policy_violation') ?? [];
   const imageUrls = task ? parseImageUrls(task.image_url) : [];
+
+  const startResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    resizing.current = true;
+    const startX = e.clientX;
+    const startWidth = chatWidth;
+    const onMove = (ev: MouseEvent) => {
+      if (!resizing.current) return;
+      const newWidth = Math.min(Math.max(startWidth + ev.clientX - startX, 300), 800);
+      setChatWidth(newWidth);
+    };
+    const onUp = () => {
+      resizing.current = false;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [chatWidth]);
 
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)]">
@@ -261,234 +278,251 @@ export default function TaskDetail() {
         <PolicyBanner violations={policyViolations} />
       )}
 
-      {/* ===== Main content: full-width tabs ===== */}
-      <Tabs value={resolvedTab} onValueChange={setActiveTab} className="flex flex-col flex-1 min-h-0 pt-3">
-        <TabsList variant="line" className="shrink-0 border-b border-border pb-0 mb-0">
-          {showChat && (
-            <TabsTrigger value="conversation" className="gap-1.5">
-              <MessageSquare className="size-3.5" />
-              Conversation
-              {task?.status === 'awaiting_followup' && (
-                <span className="size-1.5 rounded-full bg-amber-400 animate-pulse" />
-              )}
-            </TabsTrigger>
-          )}
-          <TabsTrigger value="logs" className="gap-1.5">
-            <ScrollText className="size-3.5" />
-            Logs
-          </TabsTrigger>
-          <TabsTrigger value="diff" className="gap-1.5">
-            <FileDiff className="size-3.5" />
-            Diff
-            {diffData?.diff && (
-              <span className="ml-1 text-[10px] text-primary tabular-nums">
-                {diffData.diff.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++')).length}+
-              </span>
+      {/* ===== Two-column layout ===== */}
+      <div className="flex flex-1 min-h-0 pt-3 gap-3">
+        {/* Left column: conversation (always visible when active) or prompt summary */}
+        <div className="flex flex-col min-h-0 shrink-0 rounded-lg border border-border bg-card overflow-hidden" style={{ width: chatWidth }}>
+          <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-card/50 shrink-0">
+            <MessageSquare className="size-3.5 text-muted-foreground" />
+            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Conversation</span>
+            {task?.status === 'awaiting_followup' && (
+              <span className="size-1.5 rounded-full bg-amber-400 animate-pulse" />
             )}
-          </TabsTrigger>
-          {task?.preview_url && (
-            <TabsTrigger value="preview" className="gap-1.5">
-              <Globe className="size-3.5" />
-              Preview
-            </TabsTrigger>
-          )}
-          <TabsTrigger value="info" className="gap-1.5">
-            <Info className="size-3.5" />
-            Info
-          </TabsTrigger>
-        </TabsList>
-
-        {/* Conversation tab with collapsible activity sidebar */}
-        {showChat && (
-          <TabsContent value="conversation" className="flex-1 flex min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden">
-            <div className="flex-1 flex flex-col min-h-0 max-w-3xl mx-auto w-full">
-              <TaskChat
-                taskId={id!}
-                currentUserEmail={me!.login}
-                taskStatus={task!.status}
-              />
-            </div>
-            {/* Activity sidebar toggle */}
-            <div className="flex shrink-0 border-l border-border">
-              <button
-                onClick={() => setShowActivity(!showActivity)}
-                className="flex items-center justify-center w-8 hover:bg-muted/50 transition-colors"
-                title={showActivity ? 'Hide activity' : 'Show activity'}
-                aria-label={showActivity ? 'Hide activity' : 'Show activity'}
-              >
-                <Activity className={`size-4 text-muted-foreground ${showActivity ? 'text-foreground' : ''}`} />
-              </button>
-              {showActivity && (
-                <div className="w-72 overflow-y-auto p-3 border-l border-border bg-card/50">
-                  <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-3">Activity</h3>
-                  <ActivityTimeline actions={actions} />
+          </div>
+          {showChat ? (
+            <TaskChat
+              taskId={id!}
+              currentUserEmail={me!.login}
+              taskStatus={task!.status}
+            />
+          ) : (
+            <div className="flex-1 overflow-y-auto p-4">
+              {task && (
+                <div className="text-sm whitespace-pre-wrap leading-relaxed text-muted-foreground">
+                  {task.prompt}
                 </div>
               )}
             </div>
-          </TabsContent>
-        )}
-
-        {/* Logs tab — forceMount keeps the WebSocket alive across tab switches */}
-        <TabsContent value="logs" forceMount className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden data-[state=inactive]:hidden">
-          <LogsTabs taskId={id!} onConnectionChange={onConnectionChange} />
-        </TabsContent>
-
-        {/* Diff tab */}
-        <TabsContent value="diff" className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden">
-          <div className="flex items-center justify-end px-4 py-2 border-b border-border bg-card/50">
-            <button
-              onClick={() => queryClient.invalidateQueries({ queryKey: ['task-diff', id] })}
-              className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <RotateCcw className="size-3.5" />
-              Refresh
-            </button>
-          </div>
-          {diffData?.diff ? (
-            <div className="flex-1 overflow-y-auto">
-              <DiffViewer diff={diffData.diff} />
-            </div>
-          ) : (
-            <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
-              <FileDiff className="size-8 mb-2 opacity-30" />
-              <p className="text-sm">
-                {task?.branch_name ? 'No diff available yet.' : 'No branch created yet.'}
-              </p>
-            </div>
           )}
-        </TabsContent>
+        </div>
 
-        {/* Preview tab — forceMount keeps iframe alive across tab switches to preserve navigation state */}
-        {task?.preview_url && (
-          <TabsContent value="preview" forceMount className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden data-[state=inactive]:hidden">
-            <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-card/50">
-              <span className="text-sm text-muted-foreground truncate">{task.preview_url}</span>
-              <div className="flex items-center gap-3 shrink-0 ml-3">
+        {/* Resize handle */}
+        <div
+          data-testid="chat-resize-handle"
+          onMouseDown={startResize}
+          className="w-1.5 shrink-0 cursor-col-resize hover:bg-primary/20 active:bg-primary/30 rounded-full transition-colors"
+        />
+
+        {/* Right column: tabbed panel (logs, diff, preview, info) + optional activity sidebar */}
+        <div className="flex flex-1 min-h-0 min-w-0">
+          <Tabs value={resolvedPanel} onValueChange={setActivePanel} className="flex flex-col flex-1 min-h-0 min-w-0">
+            <TabsList variant="line" className="shrink-0 border-b border-border pb-0 mb-0">
+              <TabsTrigger value="logs" className="gap-1.5">
+                <ScrollText className="size-3.5" />
+                Logs
+              </TabsTrigger>
+              <TabsTrigger value="diff" className="gap-1.5">
+                <FileDiff className="size-3.5" />
+                Diff
+                {diffData?.diff && (
+                  <span className="ml-1 text-[10px] text-primary tabular-nums">
+                    {diffData.diff.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++')).length}+
+                  </span>
+                )}
+              </TabsTrigger>
+              {task?.preview_url && (
+                <TabsTrigger value="preview" className="gap-1.5">
+                  <Globe className="size-3.5" />
+                  Preview
+                </TabsTrigger>
+              )}
+              <TabsTrigger value="info" className="gap-1.5">
+                <Info className="size-3.5" />
+                Info
+              </TabsTrigger>
+            </TabsList>
+
+            {/* Logs tab — forceMount keeps the WebSocket alive across tab switches */}
+            <TabsContent value="logs" forceMount className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden data-[state=inactive]:hidden">
+              <LogsTabs taskId={id!} onConnectionChange={onConnectionChange} />
+            </TabsContent>
+
+            {/* Diff tab */}
+            <TabsContent value="diff" className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden">
+              <div className="flex items-center justify-end px-4 py-2 border-b border-border bg-card/50">
                 <button
-                  onClick={() => setPreviewKey(k => k + 1)}
+                  onClick={() => queryClient.invalidateQueries({ queryKey: ['task-diff', id] })}
                   className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
                 >
                   <RotateCcw className="size-3.5" />
                   Refresh
                 </button>
-                <a
-                  href={task.preview_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 text-sm text-blue-600 dark:text-blue-400 hover:underline"
-                >
-                  <ExternalLink className="size-3.5" />
-                  Open in new tab
-                </a>
               </div>
-            </div>
-            <iframe
-              key={previewKey}
-              src={task.preview_url}
-              className="flex-1 w-full border-0"
-              title="Preview"
-              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-            />
-          </TabsContent>
-        )}
+              {diffData?.diff ? (
+                <div className="flex-1 overflow-y-auto">
+                  <DiffViewer diff={diffData.diff} />
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
+                  <FileDiff className="size-8 mb-2 opacity-30" />
+                  <p className="text-sm">
+                    {task?.branch_name ? 'No diff available yet.' : 'No branch created yet.'}
+                  </p>
+                </div>
+              )}
+            </TabsContent>
 
-        {/* Info tab — prompt, subtasks, images, metadata */}
-        <TabsContent value="info" className="flex-1 overflow-y-auto rounded-b-lg border border-t-0 border-border bg-card p-4">
-          {/* Prompt */}
-          {task && (
-            <div className="mb-6">
-              <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">Prompt</h3>
-              <div className="text-sm whitespace-pre-wrap leading-relaxed rounded-md bg-background/50 border border-border/50 p-3">
-                {task.prompt}
+            {/* Preview tab — forceMount keeps iframe alive across tab switches to preserve navigation state */}
+            {task?.preview_url && (
+              <TabsContent value="preview" forceMount className="flex-1 flex flex-col min-h-0 rounded-b-lg border border-t-0 border-border bg-card overflow-hidden data-[state=inactive]:hidden">
+                <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-card/50">
+                  <span className="text-sm text-muted-foreground truncate">{task.preview_url}</span>
+                  <div className="flex items-center gap-3 shrink-0 ml-3">
+                    <button
+                      onClick={() => setPreviewKey(k => k + 1)}
+                      className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <RotateCcw className="size-3.5" />
+                      Refresh
+                    </button>
+                    <a
+                      href={task.preview_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-sm text-blue-600 dark:text-blue-400 hover:underline"
+                    >
+                      <ExternalLink className="size-3.5" />
+                      Open in new tab
+                    </a>
+                  </div>
+                </div>
+                <iframe
+                  key={previewKey}
+                  src={task.preview_url}
+                  className="flex-1 w-full border-0"
+                  title="Preview"
+                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                />
+              </TabsContent>
+            )}
+
+            {/* Info tab — prompt, subtasks, images, metadata */}
+            <TabsContent value="info" className="flex-1 overflow-y-auto rounded-b-lg border border-t-0 border-border bg-card p-4">
+              {/* Prompt */}
+              {task && (
+                <div className="mb-6">
+                  <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">Prompt</h3>
+                  <div className="text-sm whitespace-pre-wrap leading-relaxed rounded-md bg-background/50 border border-border/50 p-3">
+                    {task.prompt}
+                  </div>
+                </div>
+              )}
+
+              {/* Images */}
+              {imageUrls.length > 0 && (
+                <div className="mb-6">
+                  <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2 inline-flex items-center gap-1.5">
+                    <ImageIcon className="size-3" />
+                    Reference Images
+                  </h3>
+                  <div className="flex flex-wrap gap-2">
+                    {imageUrls.map((url, i) => (
+                      <a key={i} href={url} target="_blank" rel="noopener noreferrer">
+                        <img
+                          src={url}
+                          alt={`Task reference image ${i + 1}`}
+                          className="max-h-48 rounded-md border border-border hover:border-muted-foreground/30 transition-colors"
+                          style={{ objectFit: 'contain' }}
+                        />
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Error message */}
+              {task?.error_message && (
+                <div className="mb-6 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3">
+                  <span className="text-destructive text-xs font-medium uppercase tracking-wider">Error</span>
+                  <p className="mt-1 text-sm text-destructive/80">{task.error_message}</p>
+                </div>
+              )}
+
+              {/* Subtasks */}
+              {subtasks && subtasks.length > 0 && (
+                <div className="mb-6">
+                  <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">
+                    Subtasks ({subtasks.length})
+                  </h3>
+                  <div className="space-y-2">
+                    {subtasks.map((sub) => {
+                      const sv = statusVariant(sub.status);
+                      const SubIcon = sv.icon;
+                      return (
+                        <Link key={sub.id} to={`/tasks/${sub.id}`}>
+                          <div className="flex items-center gap-3 p-2.5 rounded-md border border-border hover:bg-secondary/40 transition-colors">
+                            <Badge variant={sv.variant} className={`${sv.className} text-[10px]`}>
+                              {SubIcon && <SubIcon className={`size-3 ${sv.spin ? 'animate-spin' : ''}`} />}
+                              {sub.status.replace(/_/g, ' ')}
+                            </Badge>
+                            <span className="text-sm truncate flex-1">{sub.name || sub.prompt}</span>
+                            <span className="font-mono text-xs text-muted-foreground">{sub.id.slice(0, 8)}</span>
+                          </div>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Task details */}
+              {task && (
+                <div>
+                  <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">Details</h3>
+                  <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
+                    <dt className="text-muted-foreground">Task ID</dt>
+                    <dd className="font-mono text-xs">{task.id}</dd>
+                    <dt className="text-muted-foreground">Created by</dt>
+                    <dd>{task.created_by || '—'}</dd>
+                    <dt className="text-muted-foreground">Created</dt>
+                    <dd>{new Date(task.created_at).toLocaleString()}</dd>
+                    {task.updated_at && (
+                      <>
+                        <dt className="text-muted-foreground">Updated</dt>
+                        <dd>{new Date(task.updated_at).toLocaleString()}</dd>
+                      </>
+                    )}
+                    {task.agent_name && (
+                      <>
+                        <dt className="text-muted-foreground">Agent</dt>
+                        <dd className="font-mono text-xs">{task.agent_name}</dd>
+                      </>
+                    )}
+                  </dl>
+                </div>
+              )}
+            </TabsContent>
+          </Tabs>
+
+          {/* Activity sidebar toggle */}
+          <div className="flex shrink-0 ml-1">
+            <button
+              onClick={() => setShowActivity(!showActivity)}
+              className="flex items-center justify-center w-8 rounded-l-md hover:bg-muted/50 transition-colors border border-border border-r-0"
+              title={showActivity ? 'Hide activity' : 'Show activity'}
+              aria-label={showActivity ? 'Hide activity' : 'Show activity'}
+            >
+              <Activity className={`size-4 text-muted-foreground ${showActivity ? 'text-foreground' : ''}`} />
+            </button>
+            {showActivity && (
+              <div className="w-72 overflow-y-auto p-3 rounded-r-lg border border-border bg-card">
+                <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-3">Activity</h3>
+                <ActivityTimeline actions={actions} />
               </div>
-            </div>
-          )}
-
-          {/* Images */}
-          {imageUrls.length > 0 && (
-            <div className="mb-6">
-              <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2 inline-flex items-center gap-1.5">
-                <ImageIcon className="size-3" />
-                Reference Images
-              </h3>
-              <div className="flex flex-wrap gap-2">
-                {imageUrls.map((url, i) => (
-                  <a key={i} href={url} target="_blank" rel="noopener noreferrer">
-                    <img
-                      src={url}
-                      alt={`Task reference image ${i + 1}`}
-                      className="max-h-48 rounded-md border border-border hover:border-muted-foreground/30 transition-colors"
-                      style={{ objectFit: 'contain' }}
-                    />
-                  </a>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Error message */}
-          {task?.error_message && (
-            <div className="mb-6 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3">
-              <span className="text-destructive text-xs font-medium uppercase tracking-wider">Error</span>
-              <p className="mt-1 text-sm text-destructive/80">{task.error_message}</p>
-            </div>
-          )}
-
-          {/* Subtasks */}
-          {subtasks && subtasks.length > 0 && (
-            <div className="mb-6">
-              <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">
-                Subtasks ({subtasks.length})
-              </h3>
-              <div className="space-y-2">
-                {subtasks.map((sub) => {
-                  const sv = statusVariant(sub.status);
-                  const SubIcon = sv.icon;
-                  return (
-                    <Link key={sub.id} to={`/tasks/${sub.id}`}>
-                      <div className="flex items-center gap-3 p-2.5 rounded-md border border-border hover:bg-secondary/40 transition-colors">
-                        <Badge variant={sv.variant} className={`${sv.className} text-[10px]`}>
-                          {SubIcon && <SubIcon className={`size-3 ${sv.spin ? 'animate-spin' : ''}`} />}
-                          {sub.status.replace(/_/g, ' ')}
-                        </Badge>
-                        <span className="text-sm truncate flex-1">{sub.name || sub.prompt}</span>
-                        <span className="font-mono text-xs text-muted-foreground">{sub.id.slice(0, 8)}</span>
-                      </div>
-                    </Link>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* Task details */}
-          {task && (
-            <div>
-              <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">Details</h3>
-              <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
-                <dt className="text-muted-foreground">Task ID</dt>
-                <dd className="font-mono text-xs">{task.id}</dd>
-                <dt className="text-muted-foreground">Created by</dt>
-                <dd>{task.created_by || '—'}</dd>
-                <dt className="text-muted-foreground">Created</dt>
-                <dd>{new Date(task.created_at).toLocaleString()}</dd>
-                {task.updated_at && (
-                  <>
-                    <dt className="text-muted-foreground">Updated</dt>
-                    <dd>{new Date(task.updated_at).toLocaleString()}</dd>
-                  </>
-                )}
-                {task.agent_name && (
-                  <>
-                    <dt className="text-muted-foreground">Agent</dt>
-                    <dd className="font-mono text-xs">{task.agent_name}</dd>
-                  </>
-                )}
-              </dl>
-            </div>
-          )}
-        </TabsContent>
-      </Tabs>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

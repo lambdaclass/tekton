@@ -35,8 +35,9 @@ async fn check_task_ownership(
     task_id: &str,
     github_login: &str,
     role: &str,
+    github_org: &str,
 ) -> Result<(), AppError> {
-    auth::check_task_ownership(db, task_id, github_login, role).await
+    auth::check_task_ownership(db, task_id, github_login, role, github_org).await
 }
 
 /// Shared context threaded through the pipeline functions.
@@ -184,11 +185,32 @@ pub async fn list_tasks(
     // We'll collect bind values as strings for the dynamic query
     let mut bind_values: Vec<String> = Vec::new();
 
-    // Non-admin users only see their own tasks
+    // Non-admin users see tasks they created OR tasks from repos they have access to
     if user.0.role != "admin" {
-        conditions.push(format!("created_by = ${bind_idx}"));
-        bind_values.push(user.0.sub.clone());
-        bind_idx += 1;
+        let org_prefix = format!("{}/%", state.config.github_org);
+        if user.0.role == "member" {
+            // Members can see tasks from any repo in the org, plus repos explicitly granted
+            conditions.push(format!(
+                "(created_by = ${bind_idx} OR repo LIKE ${} OR repo IN \
+                 (SELECT repo FROM user_repo_permissions WHERE github_login = ${}))",
+                bind_idx + 1,
+                bind_idx + 2,
+            ));
+            bind_values.push(user.0.sub.clone());
+            bind_values.push(org_prefix);
+            bind_values.push(user.0.sub.clone());
+            bind_idx += 3;
+        } else {
+            // Viewers only see tasks from repos explicitly granted
+            conditions.push(format!(
+                "(created_by = ${bind_idx} OR repo IN \
+                 (SELECT repo FROM user_repo_permissions WHERE github_login = ${}))",
+                bind_idx + 1,
+            ));
+            bind_values.push(user.0.sub.clone());
+            bind_values.push(user.0.sub.clone());
+            bind_idx += 2;
+        }
     }
 
     if let Some(ref status) = params.status {
@@ -233,7 +255,8 @@ pub async fn list_tasks(
          TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
+         intake_issue_id, source_type \
          FROM tasks {where_clause} ORDER BY created_at DESC LIMIT ${bind_idx} OFFSET ${next_idx}",
         bind_idx = bind_idx,
         next_idx = bind_idx + 1,
@@ -258,14 +281,22 @@ pub async fn get_task(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Task>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
          TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
+         intake_issue_id, source_type \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -280,7 +311,14 @@ pub async fn get_subtasks(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<Task>>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
 
     // Verify parent exists
     let _ = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tasks WHERE id = $1")
@@ -294,13 +332,136 @@ pub async fn get_subtasks(
          TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
+         intake_issue_id, source_type \
          FROM tasks WHERE parent_task_id = $1 ORDER BY created_at ASC"
     )
     .bind(&id)
     .fetch_all(&state.db)
     .await?;
     Ok(Json(subtasks))
+}
+
+pub(crate) struct SpawnTaskParams {
+    pub prompt: String,
+    pub repo: String,
+    pub base_branch: String,
+    pub created_by: String,
+    pub source_type: Option<String>,
+    pub intake_issue_id: Option<i64>,
+}
+
+/// Internal task spawning for both HTTP handler and intake daemon.
+/// Returns the created Task.
+pub(crate) async fn spawn_task_internal(
+    config: Arc<Config>,
+    db: PgPool,
+    task_channels: TaskChannels,
+    params: SpawnTaskParams,
+) -> Result<Task, AppError> {
+    let SpawnTaskParams {
+        prompt,
+        repo,
+        base_branch,
+        created_by,
+        source_type,
+        intake_issue_id,
+    } = params;
+    let id = Uuid::new_v4().to_string();
+    let short_id = id[..6].to_string();
+
+    sqlx::query(
+        "INSERT INTO tasks (id, prompt, repo, base_branch, status, created_by, source_type, intake_issue_id) \
+         VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7)",
+    )
+    .bind(&id)
+    .bind(&prompt)
+    .bind(&repo)
+    .bind(&base_branch)
+    .bind(&created_by)
+    .bind(&source_type)
+    .bind(intake_issue_id)
+    .execute(&db)
+    .await?;
+
+    record_state_transition(&db, &id, None, "pending").await;
+
+    crate::audit::log_event(
+        &db,
+        "task.created",
+        &created_by,
+        Some(&id),
+        serde_json::json!({ "repo": &repo, "created_by": &created_by, "source_type": &source_type }),
+        None,
+    )
+    .await;
+
+    let task = sqlx::query_as::<_, Task>(
+        "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
+         preview_slug, preview_url, error_message, \
+         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
+         parent_task_id, created_by, screenshot_url, image_url, \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
+         intake_issue_id, source_type \
+         FROM tasks WHERE id = $1"
+    )
+    .bind(&id)
+    .fetch_one(&db)
+    .await?;
+
+    let git_id = get_git_identity(&db, &created_by).await?;
+
+    let preview_slug = format!("t-{short_id}");
+    let preview_url = format!("https://{preview_slug}.{}", config.preview_domain);
+    sqlx::query("UPDATE tasks SET preview_slug = $1, preview_url = $2 WHERE id = $3")
+        .bind(&preview_slug)
+        .bind(&preview_url)
+        .bind(&id)
+        .execute(&db)
+        .await?;
+
+    let (tx, _) = broadcast::channel(1024);
+    task_channels.insert(id.clone(), tx.clone());
+
+    let task_id = id.clone();
+    let channels = task_channels.clone();
+
+    tokio::spawn(async move {
+        let ctx = PipelineCtx {
+            config: &config,
+            db: &db,
+            task_id: &task_id,
+            short_id: &short_id,
+            repo: &repo,
+            base_branch: &base_branch,
+            git_id: &git_id,
+        };
+        let result = run_task_pipeline(&ctx, &prompt, None, None, &created_by, tx.clone()).await;
+
+        if let Err(e) = &result {
+            let _ = update_task_status(&db, &task_id, "failed", Some(&e.to_string())).await;
+            let _ = tx.send(format!("[ERROR] Task failed: {e}"));
+            if let Ok(Some(name)) = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT agent_name FROM tasks WHERE id = $1",
+            )
+            .bind(&task_id)
+            .fetch_one(&db)
+            .await
+            {
+                let _ = shell::destroy_agent(&config, &name).await;
+            }
+        }
+
+        let channels2 = channels;
+        let tid = task_id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            channels2.remove(&tid);
+        });
+    });
+
+    Ok(task)
 }
 
 pub async fn create_task(
@@ -389,7 +550,8 @@ pub async fn create_task(
          TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
+         intake_issue_id, source_type \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2088,7 +2250,14 @@ pub async fn list_messages(
     Path(id): Path<String>,
     Query(params): Query<ListMessagesQuery>,
 ) -> Result<Json<Vec<TaskMessage>>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
 
     let messages = if let Some(before_id) = params.before_id {
         let limit = params.limit.unwrap_or(100);
@@ -2135,7 +2304,14 @@ pub async fn send_message(
     Path(id): Path<String>,
     Json(req): Json<SendMessageRequest>,
 ) -> Result<Json<TaskMessage>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
 
     // Verify task exists
     let task_exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tasks WHERE id = $1")
@@ -2201,7 +2377,14 @@ pub async fn list_actions(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<TaskAction>>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
     let actions = sqlx::query_as::<_, TaskAction>(
         "SELECT id, task_id, action_type, tool_name, tool_input, summary, \
          TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at \
@@ -2330,7 +2513,14 @@ pub async fn reopen_task(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Task>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
 
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
@@ -2338,7 +2528,8 @@ pub async fn reopen_task(
          TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
+         intake_issue_id, source_type \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2433,7 +2624,8 @@ pub async fn reopen_task(
          TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
+         intake_issue_id, source_type \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2447,7 +2639,14 @@ pub async fn get_task_diff(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
 
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
@@ -2455,7 +2654,8 @@ pub async fn get_task_diff(
          TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
+         intake_issue_id, source_type \
          FROM tasks WHERE id = $1",
     )
     .bind(&id)
@@ -2492,14 +2692,22 @@ pub async fn update_task_name(
     Path(id): Path<String>,
     Json(req): Json<UpdateTaskNameRequest>,
 ) -> Result<Json<Task>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
     let _ = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
          TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
+         intake_issue_id, source_type \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2530,7 +2738,8 @@ pub async fn update_task_name(
          TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
+         intake_issue_id, source_type \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2810,7 +3019,8 @@ pub async fn recover_interrupted_tasks(
          TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
+         intake_issue_id, source_type \
          FROM tasks WHERE status NOT IN ('completed', 'failed')",
     )
     .fetch_all(&db)
@@ -3188,7 +3398,14 @@ pub async fn create_pr(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Task>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
 
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
@@ -3196,7 +3413,8 @@ pub async fn create_pr(
          TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
+         intake_issue_id, source_type \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -3302,7 +3520,8 @@ pub async fn create_pr(
          TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
+         intake_issue_id, source_type \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -3318,7 +3537,14 @@ pub async fn link_pr(
     Path(id): Path<String>,
     Json(req): Json<crate::models::LinkPrRequest>,
 ) -> Result<Json<Task>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
     // Extract PR number from URL (e.g. https://github.com/owner/repo/pull/123)
     let pr_number: Option<i32> = req.pr_url.rsplit('/').next().and_then(|s| s.parse().ok());
 
@@ -3346,7 +3572,8 @@ pub async fn link_pr(
          TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds \
+         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
+         intake_issue_id, source_type \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -3362,7 +3589,14 @@ pub async fn get_task_logs(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<TaskLog>>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
     let logs = sqlx::query_as::<_, TaskLog>(
         "SELECT id, task_id, TO_CHAR(timestamp, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as timestamp, line \
          FROM task_logs WHERE task_id = $1 ORDER BY id ASC",

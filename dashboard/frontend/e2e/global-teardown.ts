@@ -15,6 +15,9 @@ async function globalTeardown(_config: FullConfig): Promise<void> { // eslint-di
   // Drop all seeded tables to leave the database clean
   console.log("Cleaning up test database...");
   const dropSql = `
+    DROP TABLE IF EXISTS intake_poll_log CASCADE;
+    DROP TABLE IF EXISTS intake_issues CASCADE;
+    DROP TABLE IF EXISTS intake_sources CASCADE;
     DROP TABLE IF EXISTS task_state_transitions CASCADE;
     DROP TABLE IF EXISTS task_actions CASCADE;
     DROP TABLE IF EXISTS task_messages CASCADE;

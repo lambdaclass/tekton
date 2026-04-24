@@ -130,7 +130,7 @@ e2e.debug: e2e.setup
 e2e.coverage: e2e.setup
 	@cd dashboard/frontend && npm run build:coverage
 	cd dashboard/frontend && DATABASE_URL="postgres://tekton:tekton@localhost:5432/tekton_test" npm run test:e2e
-	@cd dashboard/frontend && npx nyc report --reporter=text-summary
+	@cd dashboard/frontend && npx nyc report
 	@cd dashboard/frontend && npx nyc check-coverage
 
 # ---------------------------------------------------------------------------
