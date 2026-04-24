@@ -288,7 +288,7 @@ function ActivityCard({
           <div>
             <CardTitle className="text-base">Activity over time</CardTitle>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Tasks per day (stacked by status) · cost overlay
+              Daily tasks and cost.
             </p>
           </div>
           <div className="flex items-center gap-4 flex-wrap">
@@ -333,22 +333,17 @@ function ActivityCard({
 
 function LegendRow() {
   return (
-    <div className="flex items-center gap-3 text-xs">
-      <LegendSwatch className="bg-emerald-500/70" label="Completed" />
-      <LegendSwatch className="bg-rose-500/70" label="Failed" />
-      <LegendSwatch className="bg-muted-foreground/40" label="In progress" />
-      <span className="flex items-center gap-1.5">
-        <span className="inline-block w-4 h-[2px] bg-amber-500 rounded-full" />
-        <span className="text-muted-foreground">Cost</span>
-      </span>
+    <div className="flex items-center gap-4 text-xs">
+      <LegendLine className="bg-emerald-500" label="Tasks" />
+      <LegendLine className="bg-amber-500" label="Cost" />
     </div>
   );
 }
 
-function LegendSwatch({ className, label }: { className: string; label: string }) {
+function LegendLine({ className, label }: { className: string; label: string }) {
   return (
     <span className="flex items-center gap-1.5">
-      <span className={`inline-block size-2.5 rounded-sm ${className}`} />
+      <span className={`inline-block w-4 h-[2px] rounded-full ${className}`} />
       <span className="text-muted-foreground">{label}</span>
     </span>
   );
@@ -369,27 +364,36 @@ function ActivityChart({ data }: { data: TasksOverTimeRow[] }) {
   const rawCostMax = Math.max(...data.map((d) => d.cost_usd), 0);
   const costMax = rawCostMax > 0 ? niceCostMax(rawCostMax) : 1;
 
-  const slotW = chartW / data.length;
-  const barW = Math.max(2, slotW * 0.65);
-  const barGap = slotW - barW;
-
   const yTicks = buildYTicks(maxVal);
 
-  const pathPoints = data.map((d, i) => {
-    const x = padLeft + i * slotW + slotW / 2;
-    const y = padTop + chartH - (d.cost_usd / costMax) * chartH;
-    return { x, y, cost: d.cost_usd } as const;
-  });
-  // Straight line segments — bezier smoothing creates spurious peaks on sparse data.
-  const linePath = pathPoints.length
-    ? 'M ' + pathPoints.map((p) => `${p.x} ${p.y}`).join(' L ')
-    : '';
+  const slotW = data.length > 1 ? chartW / (data.length - 1) : chartW;
+  const xFor = (i: number) => padLeft + i * slotW;
   const baseline = padTop + chartH;
-  const areaPath = pathPoints.length
-    ? `M ${pathPoints[0].x} ${baseline} L ${pathPoints
-        .map((p) => `${p.x} ${p.y}`)
-        .join(' L ')} L ${pathPoints[pathPoints.length - 1].x} ${baseline} Z`
-    : '';
+
+  const taskPoints = data.map((d, i) => ({
+    x: xFor(i),
+    y: padTop + chartH - (d.total / maxVal) * chartH,
+    total: d.total,
+  }));
+  const costPoints = data.map((d, i) => ({
+    x: xFor(i),
+    y: padTop + chartH - (d.cost_usd / costMax) * chartH,
+    cost: d.cost_usd,
+  }));
+
+  // Straight segments — bezier smoothing creates spurious peaks on sparse data.
+  const polyline = (pts: { x: number; y: number }[]) =>
+    pts.length ? 'M ' + pts.map((p) => `${p.x} ${p.y}`).join(' L ') : '';
+  const area = (pts: { x: number; y: number }[]) =>
+    pts.length
+      ? `M ${pts[0].x} ${baseline} L ${pts
+          .map((p) => `${p.x} ${p.y}`)
+          .join(' L ')} L ${pts[pts.length - 1].x} ${baseline} Z`
+      : '';
+
+  const taskLinePath = polyline(taskPoints);
+  const taskAreaPath = area(taskPoints);
+  const costLinePath = polyline(costPoints);
 
   const xLabelStep = Math.max(1, Math.ceil(data.length / 8));
 
@@ -397,9 +401,9 @@ function ActivityChart({ data }: { data: TasksOverTimeRow[] }) {
     <div className="w-full overflow-hidden">
       <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-64" preserveAspectRatio="none">
         <defs>
-          <linearGradient id="costArea" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="rgb(245, 158, 11)" stopOpacity="0.22" />
-            <stop offset="100%" stopColor="rgb(245, 158, 11)" stopOpacity="0" />
+          <linearGradient id="taskArea" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="rgb(16, 185, 129)" stopOpacity="0.18" />
+            <stop offset="100%" stopColor="rgb(16, 185, 129)" stopOpacity="0" />
           </linearGradient>
         </defs>
 
@@ -448,74 +452,27 @@ function ActivityChart({ data }: { data: TasksOverTimeRow[] }) {
             );
           })}
 
-        {/* Stacked bars */}
+        {/* X-axis date labels + hover hit targets with tooltips */}
         {data.map((d, i) => {
-          const x = padLeft + i * slotW + barGap / 2;
-          const inProgress = Math.max(0, d.total - d.completed - d.failed);
-          const failedH = (d.failed / maxVal) * chartH;
-          const completedH = (d.completed / maxVal) * chartH;
-          const inProgressH = (inProgress / maxVal) * chartH;
-          const yBase = padTop + chartH;
           const date = new Date(d.day + 'T00:00:00');
           const label = `${date.getMonth() + 1}/${date.getDate()}`;
-          const totalH = failedH + completedH + inProgressH;
-          const r = Math.min(3, barW / 2);
-
+          const cx = xFor(i);
+          const hitW = data.length > 1 ? slotW : chartW;
           return (
             <g key={d.day}>
-              <title>{`${label}: ${d.total} tasks (${d.completed} ✓, ${d.failed} ✗, ${inProgress} running) · ${fmtCost(d.cost_usd)}`}</title>
-              {/* Group bar with rounded top via clip */}
-              {totalH > 0 && (
-                <g clipPath={`url(#clip-${i})`}>
-                  {/* In progress (bottom) */}
-                  {inProgressH > 0 && (
-                    <rect
-                      x={x}
-                      y={yBase - inProgressH}
-                      width={barW}
-                      height={inProgressH}
-                      className="fill-muted-foreground/40"
-                    />
-                  )}
-                  {/* Failed (middle) */}
-                  {failedH > 0 && (
-                    <rect
-                      x={x}
-                      y={yBase - inProgressH - failedH}
-                      width={barW}
-                      height={failedH}
-                      className="fill-rose-500/70"
-                    />
-                  )}
-                  {/* Completed (top) */}
-                  {completedH > 0 && (
-                    <rect
-                      x={x}
-                      y={yBase - inProgressH - failedH - completedH}
-                      width={barW}
-                      height={completedH}
-                      className="fill-emerald-500/75"
-                    />
-                  )}
-                </g>
-              )}
-              <defs>
-                <clipPath id={`clip-${i}`}>
-                  <rect
-                    x={x}
-                    y={yBase - totalH}
-                    width={barW}
-                    height={totalH}
-                    rx={r}
-                    ry={r}
-                  />
-                </clipPath>
-              </defs>
-
+              <rect
+                x={cx - hitW / 2}
+                y={padTop}
+                width={hitW}
+                height={chartH}
+                fill="transparent"
+              >
+                <title>{`${label}: ${d.total} task${d.total === 1 ? '' : 's'} · ${fmtCost(d.cost_usd)}`}</title>
+              </rect>
               {i % xLabelStep === 0 && (
                 <text
-                  x={x + barW / 2}
-                  y={yBase + 16}
+                  x={cx}
+                  y={baseline + 16}
                   textAnchor="middle"
                   className="fill-muted-foreground"
                   style={{ fontSize: 10 }}
@@ -527,28 +484,48 @@ function ActivityChart({ data }: { data: TasksOverTimeRow[] }) {
           );
         })}
 
-        {/* Cost line + area */}
+        {/* Tasks area + line */}
+        <path d={taskAreaPath} fill="url(#taskArea)" />
+        <path
+          d={taskLinePath}
+          fill="none"
+          stroke="rgb(16, 185, 129)"
+          strokeWidth={2}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+        {taskPoints
+          .filter((p) => p.total > 0)
+          .map((p, i) => (
+            <circle
+              key={`t-${i}`}
+              cx={p.x}
+              cy={p.y}
+              r={3}
+              className="fill-emerald-500 stroke-background"
+              strokeWidth={1.5}
+            />
+          ))}
+
+        {/* Cost line */}
         {rawCostMax > 0 && (
           <>
-            <path d={areaPath} fill="url(#costArea)" />
             <path
-              d={linePath}
+              d={costLinePath}
               fill="none"
               stroke="rgb(245, 158, 11)"
               strokeWidth={1.75}
               strokeLinejoin="round"
               strokeLinecap="round"
             />
-            {/* Only render dots on days with actual cost — otherwise the baseline
-                becomes a noisy string of circles. */}
-            {pathPoints
+            {costPoints
               .filter((p) => p.cost > 0)
               .map((p, i) => (
                 <circle
-                  key={`pt-${i}`}
+                  key={`c-${i}`}
                   cx={p.x}
                   cy={p.y}
-                  r={3}
+                  r={2.5}
                   className="fill-amber-500 stroke-background"
                   strokeWidth={1.5}
                 />

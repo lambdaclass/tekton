@@ -111,7 +111,13 @@ pub async fn summary(
 }
 
 /// GET /api/metrics/tasks-over-time?days={n}
-/// Daily task counts split by status for charting.
+///
+/// Daily activity counts + cost for charting. A task is counted as activity on
+/// every day where *something happened* for it: it was created, it received a
+/// message, or it produced a log line. This gives a more honest picture than
+/// bucketing solely by `created_at`, since long-running tasks then show up as
+/// activity each day they were worked on. Cost is attributed to the task's
+/// last-updated day (that's when the cost is actually observed).
 pub async fn tasks_over_time(
     _user: AuthUser,
     State(state): State<crate::AppState>,
@@ -119,26 +125,41 @@ pub async fn tasks_over_time(
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
     let days = parse_days(q.days, q.period.as_deref());
 
-    // Fill every day in the range with zero rows so the chart shows gaps clearly,
-    // then left-join with actual task data. This makes growth/shrinkage trends easy
-    // to read even when some days have no activity.
-    let rows: Vec<(String, i64, i64, i64, f64)> = sqlx::query_as(
+    let rows: Vec<(String, i64, f64)> = sqlx::query_as(
         "WITH days AS (\
             SELECT generate_series(\
                 DATE_TRUNC('day', NOW() - ($1 || ' days')::INTERVAL + INTERVAL '1 day'), \
                 DATE_TRUNC('day', NOW()), \
                 INTERVAL '1 day'\
             ) AS day\
+         ), \
+         activity AS (\
+            SELECT id AS task_id, DATE_TRUNC('day', created_at) AS day FROM tasks \
+            UNION \
+            SELECT task_id, DATE_TRUNC('day', created_at) FROM task_messages \
+            UNION \
+            SELECT task_id, DATE_TRUNC('day', timestamp) FROM task_logs\
+         ), \
+         daily_active AS (\
+            SELECT day, COUNT(DISTINCT task_id)::BIGINT AS total \
+            FROM activity \
+            WHERE day >= DATE_TRUNC('day', NOW() - ($1 || ' days')::INTERVAL + INTERVAL '1 day') \
+            GROUP BY day\
+         ), \
+         daily_cost AS (\
+            SELECT DATE_TRUNC('day', updated_at) AS day, \
+                   COALESCE(SUM(total_cost_usd), 0)::DOUBLE PRECISION AS cost_usd \
+            FROM tasks \
+            WHERE updated_at >= DATE_TRUNC('day', NOW() - ($1 || ' days')::INTERVAL + INTERVAL '1 day') \
+            GROUP BY DATE_TRUNC('day', updated_at)\
          ) \
          SELECT \
             TO_CHAR(d.day, 'YYYY-MM-DD') AS day, \
-            COALESCE(COUNT(t.id), 0)::BIGINT AS total, \
-            COALESCE(COUNT(t.id) FILTER (WHERE t.status = 'completed'), 0)::BIGINT AS completed, \
-            COALESCE(COUNT(t.id) FILTER (WHERE t.status = 'failed'), 0)::BIGINT AS failed, \
-            COALESCE(SUM(t.total_cost_usd), 0)::DOUBLE PRECISION AS cost_usd \
+            COALESCE(da.total, 0)::BIGINT AS total, \
+            COALESCE(dc.cost_usd, 0)::DOUBLE PRECISION AS cost_usd \
          FROM days d \
-         LEFT JOIN tasks t ON DATE_TRUNC('day', t.created_at) = d.day \
-         GROUP BY d.day \
+         LEFT JOIN daily_active da ON da.day = d.day \
+         LEFT JOIN daily_cost dc  ON dc.day = d.day \
          ORDER BY d.day ASC",
     )
     .bind(days.to_string())
@@ -147,12 +168,10 @@ pub async fn tasks_over_time(
 
     let out: Vec<serde_json::Value> = rows
         .into_iter()
-        .map(|(day, total, completed, failed, cost_usd)| {
+        .map(|(day, total, cost_usd)| {
             serde_json::json!({
                 "day": day,
                 "total": total,
-                "completed": completed,
-                "failed": failed,
                 "cost_usd": cost_usd,
             })
         })

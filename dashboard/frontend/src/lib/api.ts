@@ -365,8 +365,6 @@ export interface MetricsSummary {
 export interface TasksOverTimeRow {
   day: string;
   total: number;
-  completed: number;
-  failed: number;
   cost_usd: number;
 }
 export interface TopUserRow {
