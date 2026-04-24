@@ -345,16 +345,19 @@ export const createBudget = (data: { scope_type: string; scope: string; monthly_
 export const deleteBudget = (id: number) =>
   apiFetch<{ deleted: boolean }>(`/api/admin/budgets/${id}`, { method: 'DELETE' });
 
-// Usage metrics (admin-only)
+// Usage metrics (available to any authenticated user)
 export interface MetricsSummary {
   days: number;
   active_users: number;
+  prev_active_users: number;
   total_users: number;
   total_tasks: number;
+  prev_total_tasks: number;
   completed_tasks: number;
   failed_tasks: number;
   in_progress_tasks: number;
   total_cost_usd: number;
+  prev_total_cost_usd: number;
   total_input_tokens: number;
   total_output_tokens: number;
   avg_cost_per_task: number;
@@ -364,6 +367,7 @@ export interface TasksOverTimeRow {
   total: number;
   completed: number;
   failed: number;
+  cost_usd: number;
 }
 export interface TopUserRow {
   login: string;
@@ -377,19 +381,19 @@ export interface TopRepoRow {
 }
 export const getMetricsSummary = (days?: number) => {
   const qs = days ? `?days=${days}` : '';
-  return apiFetch<MetricsSummary>(`/api/admin/metrics/summary${qs}`);
+  return apiFetch<MetricsSummary>(`/api/metrics/summary${qs}`);
 };
 export const getTasksOverTime = (days?: number) => {
   const qs = days ? `?days=${days}` : '';
-  return apiFetch<TasksOverTimeRow[]>(`/api/admin/metrics/tasks-over-time${qs}`);
+  return apiFetch<TasksOverTimeRow[]>(`/api/metrics/tasks-over-time${qs}`);
 };
 export const getTopUsers = (days?: number) => {
   const qs = days ? `?days=${days}` : '';
-  return apiFetch<TopUserRow[]>(`/api/admin/metrics/top-users${qs}`);
+  return apiFetch<TopUserRow[]>(`/api/metrics/top-users${qs}`);
 };
 export const getTopRepos = (days?: number) => {
   const qs = days ? `?days=${days}` : '';
-  return apiFetch<TopRepoRow[]>(`/api/admin/metrics/top-repos${qs}`);
+  return apiFetch<TopRepoRow[]>(`/api/metrics/top-repos${qs}`);
 };
 
 // Audit log

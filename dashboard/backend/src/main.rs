@@ -120,13 +120,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/admin/cost/by-user", get(cost::cost_by_user))
         .route("/admin/cost/by-repo", get(cost::cost_by_repo))
         .route("/admin/cost/trends", get(cost::cost_trends))
-        .route("/admin/metrics/summary", get(metrics::summary))
-        .route(
-            "/admin/metrics/tasks-over-time",
-            get(metrics::tasks_over_time),
-        )
-        .route("/admin/metrics/top-users", get(metrics::top_users))
-        .route("/admin/metrics/top-repos", get(metrics::top_repos))
+        // Usage metrics (available to any authenticated user)
+        .route("/metrics/summary", get(metrics::summary))
+        .route("/metrics/tasks-over-time", get(metrics::tasks_over_time))
+        .route("/metrics/top-users", get(metrics::top_users))
+        .route("/metrics/top-repos", get(metrics::top_repos))
         // Admin: Budgets
         .route("/admin/budgets", get(cost::list_budgets))
         .route("/admin/budgets", post(cost::create_budget))

@@ -18,8 +18,8 @@ test.describe('Admin - Users section', () => {
     await expect(page.getByRole('columnheader', { name: 'Repos' })).toBeVisible();
 
     // Seeded user data (scoped to the Users card specifically — filter by the
-    // card title being exactly "Users" so we don't accidentally match the
-    // Usage Metrics card which also contains the word "Users")
+    // card title being exactly "Users" to avoid matching any other card whose
+    // title contains the word "Users")
     const usersSection = page
       .locator('[class*="card"]')
       .filter({ has: page.locator('[data-slot="card-title"]', { hasText: /^\s*Users\s*$/ }) });

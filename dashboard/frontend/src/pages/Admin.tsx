@@ -16,10 +16,6 @@ import {
   deleteOrgPolicy,
   listPresets,
   getMe,
-  getMetricsSummary,
-  getTasksOverTime,
-  getTopUsers,
-  getTopRepos,
   listIntakeSources,
   createIntakeSource,
   updateIntakeSource,
@@ -29,7 +25,7 @@ import {
   listIntakeLogs,
   testPollSource,
 } from '@/lib/api';
-import type { PolicyPreset, TasksOverTimeRow, IntakeSource } from '@/lib/api';
+import type { PolicyPreset, IntakeSource } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -44,7 +40,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
-import { Users, KeyRound, Shield, Building, Trash2, Plus, X, Settings, BarChart3, Activity, FolderGit2, DollarSign, Zap, Eye, ScrollText, FlaskConical, Pencil, Info } from 'lucide-react';
+import { Users, KeyRound, Shield, Building, Trash2, Plus, X, Settings, Zap, Eye, ScrollText, FlaskConical, Pencil, Info } from 'lucide-react';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Navigate } from 'react-router-dom';
@@ -62,272 +58,12 @@ export default function Admin() {
   return (
     <div className="space-y-8">
       <h1 className="text-2xl font-bold">Admin</h1>
-      <UsageMetricsSection />
       <UsersSection queryClient={queryClient} />
       <SecretsSection queryClient={queryClient} />
       <PoliciesSection queryClient={queryClient} />
       <OrgPoliciesSection queryClient={queryClient} />
       <IntakeSourcesSection queryClient={queryClient} />
     </div>
-  );
-}
-
-const METRICS_PERIOD_OPTIONS = [
-  { value: '7', label: 'Last 7 days' },
-  { value: '30', label: 'Last 30 days' },
-  { value: '90', label: 'Last 90 days' },
-] as const;
-
-function UsageMetricsSection() {
-  const [days, setDays] = useState<number>(30);
-
-  const { data: summary, isLoading: summaryLoading } = useQuery({
-    queryKey: ['metrics-summary', days],
-    queryFn: () => getMetricsSummary(days),
-  });
-  const { data: overTime, isLoading: overTimeLoading } = useQuery({
-    queryKey: ['metrics-tasks-over-time', days],
-    queryFn: () => getTasksOverTime(days),
-  });
-  const { data: topUsers, isLoading: usersLoading } = useQuery({
-    queryKey: ['metrics-top-users', days],
-    queryFn: () => getTopUsers(days),
-  });
-  const { data: topRepos, isLoading: reposLoading } = useQuery({
-    queryKey: ['metrics-top-repos', days],
-    queryFn: () => getTopRepos(days),
-  });
-
-  const fmtCost = (v: number) => (v >= 1 ? `$${v.toFixed(2)}` : `$${v.toFixed(4)}`);
-
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <CardTitle className="flex items-center gap-2">
-            <BarChart3 className="size-5" />
-            Usage Metrics
-          </CardTitle>
-          <Select value={String(days)} onValueChange={(v) => setDays(Number(v))}>
-            <SelectTrigger className="w-40">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {METRICS_PERIOD_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>
-                  {o.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-6">
-        {/* Summary cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <StatCard
-            icon={<Users className="size-4" />}
-            label="Active Users"
-            value={summaryLoading ? '...' : String(summary?.active_users ?? 0)}
-            sub={summary ? `of ${summary.total_users} total` : undefined}
-          />
-          <StatCard
-            icon={<Activity className="size-4" />}
-            label="Tasks Created"
-            value={summaryLoading ? '...' : String(summary?.total_tasks ?? 0)}
-            sub={summary ? `${summary.completed_tasks} completed · ${summary.failed_tasks} failed` : undefined}
-          />
-          <StatCard
-            icon={<DollarSign className="size-4" />}
-            label="Total Cost"
-            value={summaryLoading ? '...' : summary ? fmtCost(summary.total_cost_usd) : '$0'}
-            sub={summary ? `${fmtCost(summary.avg_cost_per_task)} avg/task` : undefined}
-          />
-          <StatCard
-            icon={<FolderGit2 className="size-4" />}
-            label="Tokens"
-            value={summaryLoading ? '...' : summary ? formatTokens(summary.total_input_tokens + summary.total_output_tokens) : '0'}
-            sub={summary ? `${formatTokens(summary.total_input_tokens)} in / ${formatTokens(summary.total_output_tokens)} out` : undefined}
-          />
-        </div>
-
-        {/* Tasks-over-time chart */}
-        <div>
-          <h3 className="text-sm font-medium mb-2 text-muted-foreground">Tasks per Day</h3>
-          {overTimeLoading ? (
-            <p className="text-muted-foreground text-sm">Loading chart...</p>
-          ) : !overTime?.length ? (
-            <p className="text-muted-foreground text-sm">No task activity in this period.</p>
-          ) : (
-            <TasksOverTimeChart data={overTime} />
-          )}
-        </div>
-
-        {/* Top users / repos — side by side */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <h3 className="text-sm font-medium mb-2 text-muted-foreground">Top Users</h3>
-            {usersLoading ? (
-              <p className="text-muted-foreground text-sm">Loading...</p>
-            ) : !topUsers?.length ? (
-              <p className="text-muted-foreground text-sm">No data for this period.</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-left text-xs uppercase text-muted-foreground">
-                    <th className="pb-2">User</th>
-                    <th className="pb-2 text-right">Tasks</th>
-                    <th className="pb-2 text-right">Cost</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {topUsers.map((u) => (
-                    <tr key={u.login} className="border-b border-border/50 hover:bg-secondary/40">
-                      <td className="py-2 font-mono">{u.login}</td>
-                      <td className="py-2 text-right tabular-nums">{u.task_count}</td>
-                      <td className="py-2 text-right tabular-nums">{fmtCost(u.cost_usd)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-          <div>
-            <h3 className="text-sm font-medium mb-2 text-muted-foreground">Top Repos</h3>
-            {reposLoading ? (
-              <p className="text-muted-foreground text-sm">Loading...</p>
-            ) : !topRepos?.length ? (
-              <p className="text-muted-foreground text-sm">No data for this period.</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-left text-xs uppercase text-muted-foreground">
-                    <th className="pb-2">Repo</th>
-                    <th className="pb-2 text-right">Tasks</th>
-                    <th className="pb-2 text-right">Cost</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {topRepos.map((r) => (
-                    <tr key={r.repo} className="border-b border-border/50 hover:bg-secondary/40">
-                      <td className="py-2 font-mono truncate max-w-xs">{r.repo}</td>
-                      <td className="py-2 text-right tabular-nums">{r.task_count}</td>
-                      <td className="py-2 text-right tabular-nums">{fmtCost(r.cost_usd)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function StatCard({ icon, label, value, sub }: { icon: React.ReactNode; label: string; value: string; sub?: string }) {
-  return (
-    <div className="rounded-lg border border-border bg-card p-3">
-      <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
-        {icon}
-        {label}
-      </div>
-      <p className="text-2xl font-bold tabular-nums">{value}</p>
-      {sub && <p className="text-xs text-muted-foreground mt-0.5 tabular-nums">{sub}</p>}
-    </div>
-  );
-}
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
-}
-
-function TasksOverTimeChart({ data }: { data: TasksOverTimeRow[] }) {
-  const width = 800;
-  const height = 180;
-  const padLeft = 40;
-  const padRight = 20;
-  const padTop = 10;
-  const padBottom = 28;
-  const chartW = width - padLeft - padRight;
-  const chartH = height - padTop - padBottom;
-
-  const rawMax = Math.max(...data.map((d) => d.total), 1);
-
-  function niceMax(v: number): number {
-    if (v <= 0) return 1;
-    const mag = Math.pow(10, Math.floor(Math.log10(v)));
-    const norm = v / mag;
-    if (norm <= 1) return mag;
-    if (norm <= 2) return 2 * mag;
-    if (norm <= 5) return 5 * mag;
-    return 10 * mag;
-  }
-  const maxVal = niceMax(rawMax);
-
-  const barW = (chartW / data.length) * 0.7;
-  const barGap = (chartW / data.length) * 0.3;
-
-  const yTicks = [0, maxVal / 2, maxVal];
-
-  return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-44">
-      {/* Grid */}
-      {yTicks.map((v) => {
-        const y = padTop + chartH - (v / maxVal) * chartH;
-        return (
-          <g key={v}>
-            <line x1={padLeft} y1={y} x2={width - padRight} y2={y} stroke="currentColor" strokeOpacity={0.15} />
-            <text x={padLeft - 6} y={y + 4} textAnchor="end" className="fill-muted-foreground" style={{ fontSize: 10 }}>
-              {Math.round(v)}
-            </text>
-          </g>
-        );
-      })}
-      {/* Bars — completed (green) + failed (red) stacked */}
-      {data.map((d, i) => {
-        const x = padLeft + i * (chartW / data.length) + barGap / 2;
-        const failedH = (d.failed / maxVal) * chartH;
-        const completedH = (d.completed / maxVal) * chartH;
-        const otherH = ((d.total - d.completed - d.failed) / maxVal) * chartH;
-        const yBase = padTop + chartH;
-        const date = new Date(d.day);
-        const label = `${date.getMonth() + 1}/${date.getDate()}`;
-        return (
-          <g key={d.day}>
-            <title>{`${label}: ${d.total} tasks (${d.completed} ✓, ${d.failed} ✗)`}</title>
-            {/* Other (pending / in progress) */}
-            {otherH > 0 && (
-              <rect x={x} y={yBase - failedH - completedH - otherH} width={barW} height={otherH} className="fill-muted-foreground/40" />
-            )}
-            {/* Completed */}
-            {completedH > 0 && (
-              <rect x={x} y={yBase - failedH - completedH} width={barW} height={completedH} className="fill-emerald-500/70" />
-            )}
-            {/* Failed */}
-            {failedH > 0 && (
-              <rect x={x} y={yBase - failedH} width={barW} height={failedH} className="fill-red-500/70" />
-            )}
-            {data.length <= 31 && (
-              <text x={x + barW / 2} y={yBase + 14} textAnchor="middle" className="fill-muted-foreground" style={{ fontSize: 9 }}>
-                {label}
-              </text>
-            )}
-          </g>
-        );
-      })}
-      {/* Legend */}
-      <g transform={`translate(${padLeft}, ${padTop - 4})`}>
-        <rect x={0} y={-8} width={10} height={8} className="fill-emerald-500/70" />
-        <text x={14} y={-1} className="fill-muted-foreground" style={{ fontSize: 10 }}>Completed</text>
-        <rect x={80} y={-8} width={10} height={8} className="fill-red-500/70" />
-        <text x={94} y={-1} className="fill-muted-foreground" style={{ fontSize: 10 }}>Failed</text>
-        <rect x={140} y={-8} width={10} height={8} className="fill-muted-foreground/40" />
-        <text x={154} y={-1} className="fill-muted-foreground" style={{ fontSize: 10 }}>In progress</text>
-      </g>
-    </svg>
   );
 }
 
