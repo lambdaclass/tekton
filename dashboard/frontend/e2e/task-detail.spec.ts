@@ -33,9 +33,8 @@ test.describe('Task Detail', () => {
     await expect(adminPage.getByText('$1.50').first()).toBeVisible();
   });
 
-  test('shows prompt text in Info tab', async ({ adminPage }) => {
+  test('shows prompt text in left column', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.completed}`);
-    await adminPage.getByRole('tab', { name: 'Info' }).click();
     await expect(adminPage.getByText('Implement user settings page', { exact: true })).toBeVisible();
   });
 
@@ -62,9 +61,10 @@ test.describe('Task Detail', () => {
     await expect(adminPage.getByText('Container Logs')).toBeVisible();
   });
 
-  test('shows Diff tab for task with branch', async ({ adminPage }) => {
+  test('shows Diff tab with refresh button', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.completed}`);
-    await expect(adminPage.getByRole('tab', { name: 'Diff' })).toBeVisible();
+    await adminPage.getByRole('tab', { name: 'Diff' }).click();
+    await expect(adminPage.getByRole('button', { name: 'Refresh' })).toBeVisible();
   });
 
   test('shows error message for failed task', async ({ adminPage }) => {
@@ -110,9 +110,8 @@ test.describe('Task Detail', () => {
     await expect(adminPage.getByText(TEST_IDS.tasks.completed.slice(0, 8))).toBeVisible();
   });
 
-  test('pending task shows prompt text in Info tab', async ({ adminPage }) => {
+  test('pending task shows prompt text in left column', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.pending}`);
-    await adminPage.getByRole('tab', { name: 'Info' }).click();
     await expect(adminPage.getByText('Add dark mode support')).toBeVisible();
   });
 
@@ -147,5 +146,33 @@ test.describe('Task Detail', () => {
   test('shows Preview tab for task with preview', async ({ adminPage }) => {
     await adminPage.goto(`/tasks/${TEST_IDS.tasks.awaiting}`);
     await expect(adminPage.getByRole('tab', { name: 'Preview' })).toBeVisible();
+  });
+
+  test('preview tab refresh button works', async ({ adminPage }) => {
+    await adminPage.goto(`/tasks/${TEST_IDS.tasks.awaiting}`);
+    await adminPage.getByRole('tab', { name: 'Preview' }).click();
+    const refreshBtn = adminPage.getByRole('button', { name: 'Refresh' });
+    await expect(refreshBtn).toBeVisible();
+    await refreshBtn.click();
+    await expect(refreshBtn).toBeVisible();
+  });
+
+  test('chat panel is resizable by dragging the handle', async ({ adminPage }) => {
+    await adminPage.goto(`/tasks/${TEST_IDS.tasks.awaiting}`);
+    const handle = adminPage.getByTestId('chat-resize-handle');
+    await expect(handle).toBeVisible();
+
+    const box = await handle.boundingBox();
+    if (!box) throw new Error('resize handle has no bounding box');
+
+    const startX = box.x + box.width / 2;
+    const startY = box.y + box.height / 2;
+    await adminPage.mouse.move(startX, startY);
+    await adminPage.mouse.down();
+    await adminPage.mouse.move(startX + 80, startY, { steps: 5 });
+    await adminPage.mouse.up();
+
+    // Handle should still be visible after drag (page didn't crash)
+    await expect(handle).toBeVisible();
   });
 });

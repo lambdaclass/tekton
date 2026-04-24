@@ -19,10 +19,16 @@ CLOSURE_CACHE_DIR="$PREVIEW_DIR/.closure-cache"
 # -- Load secrets -------------------------------------------------------------
 load_secrets() {
     if [[ -f "$SECRETS_FILE" ]]; then
+        # Save any caller-provided GITHUB_TOKEN (e.g. user OAuth from the dashboard)
+        # so it isn't overwritten by the server-wide token in the secrets file.
+        local _caller_token="${GITHUB_TOKEN:-}"
         set -a
         # shellcheck source=/dev/null
         source "$SECRETS_FILE"
         set +a
+        if [[ -n "$_caller_token" ]]; then
+            export GITHUB_TOKEN="$_caller_token"
+        fi
     fi
 }
 
@@ -158,6 +164,13 @@ drop_db() {
 # -- GitHub helpers -----------------------------------------------------------
 
 get_github_token() {
+    # Prefer an explicit GITHUB_TOKEN (e.g. the logged-in user's OAuth token
+    # passed by the dashboard) over the server-wide webhook token.
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        info "Using token from environment (user OAuth)" >&2
+        echo "$GITHUB_TOKEN"
+        return
+    fi
     local webhook_port="${WEBHOOK_PORT:-3100}"
     local token_response
     if token_response=$(curl -sf "http://127.0.0.1:${webhook_port}/internal/token" 2>/dev/null); then
@@ -167,22 +180,26 @@ get_github_token() {
         echo "$token_response" | jq -r '.token'
         return
     fi
-    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        echo "$GITHUB_TOKEN"
-        return
-    fi
     fatal "No GitHub token available. Check $SECRETS_FILE or ensure the webhook is running."
 }
 
 get_commit_sha() {
     local repo="$1" branch="$2" token="$3"
-    local sha
-    sha=$(curl -sf \
+    # URL-encode the branch name so slashes (e.g. feature/foo) don't break the API path
+    local encoded_branch
+    encoded_branch=$(printf '%s' "$branch" | jq -sRr @uri)
+    local sha http_code body
+    body=$(curl -s -w '\n%{http_code}' \
         -H "Authorization: Bearer ${token}" \
         -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/${repo}/commits/${branch}" | jq -r '.sha')
+        "https://api.github.com/repos/${repo}/commits/${encoded_branch}")
+    http_code=$(echo "$body" | tail -1)
+    body=$(echo "$body" | sed '$d')
+    sha=$(echo "$body" | jq -r '.sha')
     if [[ -z "$sha" ]] || [[ "$sha" == "null" ]]; then
-        fatal "Could not get commit SHA for ${repo}@${branch}"
+        local api_msg
+        api_msg=$(echo "$body" | jq -r '.message // empty' 2>/dev/null)
+        fatal "Could not get commit SHA for ${repo}@${branch} (HTTP ${http_code}${api_msg:+: $api_msg})"
     fi
     echo "$sha"
 }
