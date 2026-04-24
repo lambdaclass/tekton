@@ -288,8 +288,10 @@ async fn run_server_setup(
     ssh_user: &str,
     ssh_key_path: Option<&str>,
 ) -> Result<String, AppError> {
-    let setup_script = r#"
-set -u
+    // Piped into `bash -s` over SSH stdin to avoid having the remote login
+    // shell re-parse the script (which would split on embedded `;` and `|`
+    // and break control flow like `if ... ; then`).
+    let setup_script = r#"set -u
 echo "=== Benchmark server verification ==="
 echo "Hostname: $(hostname)"
 echo "Date: $(date -u)"
@@ -311,11 +313,9 @@ check "git binary"    command -v git
 check "rsync binary"  command -v rsync
 mkdir -p ~/autoresearch 2>/dev/null && echo "[OK] ~/autoresearch workspace"
 
-# EXPB benchmark prerequisites. These are optional — the server can still be
-# used for classic shell benchmarks without them — so any missing ones are
-# reported as warnings rather than hard failures.
+# EXPB benchmark prerequisites
 echo
-echo "--- EXPB benchmark prerequisites (optional) ---"
+echo "--- EXPB benchmark prerequisites ---"
 check "docker binary"          command -v docker
 check "passwordless sudo"      sudo -n true
 check "expb binary"            command -v expb
@@ -330,35 +330,52 @@ echo "       exist on this server before starting an EXPB run."
 
 echo
 if [ $status -eq 0 ]; then
-    echo "=== Verification complete: ready for classic shell benchmark runs ==="
+    echo "=== Verification complete: all prerequisites present ==="
 else
     echo "=== Verification complete: some required tools are missing ==="
+    echo "Hint: for 'passwordless sudo', add a file under /etc/sudoers.d/ with:"
+    echo "    $(whoami) ALL=(ALL) NOPASSWD: ALL"
 fi
 exit $status
 "#;
 
-    let mut args = vec![
-        "-o",
-        "StrictHostKeyChecking=no",
-        "-o",
-        "LogLevel=ERROR",
-        "-o",
-        "ConnectTimeout=10",
+    let mut args: Vec<String> = vec![
+        "-o".into(),
+        "StrictHostKeyChecking=no".into(),
+        "-o".into(),
+        "LogLevel=ERROR".into(),
+        "-o".into(),
+        "ConnectTimeout=10".into(),
     ];
     if let Some(key) = ssh_key_path {
-        args.extend_from_slice(&["-i", key]);
+        args.push("-i".into());
+        args.push(key.to_string());
     }
-    let target = format!("{ssh_user}@{hostname}");
-    args.push(&target);
-    args.push("bash");
-    args.push("-c");
+    args.push(format!("{ssh_user}@{hostname}"));
+    // `bash -s` reads the script from stdin, so we don't have to quote the
+    // script into a remote command line. The remote side runs it as-is.
+    args.push("bash".into());
+    args.push("-s".into());
 
-    let output = tokio::process::Command::new("ssh")
+    use tokio::io::AsyncWriteExt;
+    use tokio::process::Command;
+    let mut child = Command::new("ssh")
         .args(&args)
-        .arg(setup_script)
-        .output()
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| AppError::Internal(format!("Failed to spawn ssh: {e}")))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(setup_script.as_bytes())
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to pipe setup script to ssh: {e}")))?;
+    }
+    let output = child
+        .wait_with_output()
         .await
-        .map_err(|e| AppError::Internal(format!("Failed to SSH to server: {e}")))?;
+        .map_err(|e| AppError::Internal(format!("Failed to wait for ssh: {e}")))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
