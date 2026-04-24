@@ -6,6 +6,7 @@ mod config;
 mod cost;
 mod db;
 mod error;
+mod expb;
 mod intake;
 mod intake_admin;
 mod metrics;

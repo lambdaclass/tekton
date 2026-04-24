@@ -6,10 +6,12 @@ use axum::extract::{Path, State};
 use axum::Json;
 use dashmap::DashMap;
 use regex::Regex;
+use sqlx::PgPool;
 use tokio::sync::broadcast;
 
 use crate::auth::{check_repo_permission, AuthUser, MemberUser};
 use crate::error::AppError;
+use crate::expb;
 use crate::models::{
     AutoresearchExperiment, AutoresearchMessage, AutoresearchRun, CreateAutoresearchRunRequest,
     SendMessageRequest,
@@ -23,7 +25,9 @@ pub fn new_stop_flags() -> StopFlags {
 }
 
 const RUN_QUERY: &str = "SELECT id, name, repo, base_branch, branch_name, agent_name, \
-     benchmark_server_id, benchmark_command, objective, metric_regex, optimization_direction, \
+     benchmark_server_id, benchmark_command, benchmark_type, \
+     ethrex_repo_path, benchmarks_repo_path, expb_baseline_metrics, \
+     objective, metric_regex, optimization_direction, \
      target_files, frozen_files, max_experiments, time_budget_minutes, status, \
      baseline_metric, best_metric, total_experiments, accepted_experiments, \
      total_cost_usd, error_message, created_by, \
@@ -35,7 +39,9 @@ const RUN_QUERY: &str = "SELECT id, name, repo, base_branch, branch_name, agent_
 const EXP_QUERY: &str = "SELECT id, run_id, experiment_number, status, diff, \
      metric_value, metric_raw_output, accepted, hypothesis, claude_response, \
      input_tokens, output_tokens, cost_usd, duration_seconds, pr_url, \
-     TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at \
+     TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+     mgas_avg, latency_avg_ms, latency_p50_ms, latency_p95_ms, latency_p99_ms, \
+     expb_tier_reached \
      FROM autoresearch_experiments";
 
 // ── API handlers ──
@@ -77,6 +83,54 @@ pub async fn create_run_handler(
     )
     .await?;
 
+    let benchmark_type = req.benchmark_type.as_deref().unwrap_or("shell");
+    match benchmark_type {
+        "shell" => {
+            if req
+                .benchmark_command
+                .as_deref()
+                .map(|s| s.trim().is_empty())
+                .unwrap_or(true)
+            {
+                return Err(AppError::BadRequest(
+                    "benchmark_command is required for shell benchmark runs".into(),
+                ));
+            }
+        }
+        "expb" => {
+            if req.benchmark_server_id.is_none() {
+                return Err(AppError::BadRequest(
+                    "benchmark_server_id is required for EXPB runs".into(),
+                ));
+            }
+            if req
+                .ethrex_repo_path
+                .as_deref()
+                .map(|s| s.trim().is_empty())
+                .unwrap_or(true)
+            {
+                return Err(AppError::BadRequest(
+                    "ethrex_repo_path is required for EXPB runs".into(),
+                ));
+            }
+            if req
+                .benchmarks_repo_path
+                .as_deref()
+                .map(|s| s.trim().is_empty())
+                .unwrap_or(true)
+            {
+                return Err(AppError::BadRequest(
+                    "benchmarks_repo_path is required for EXPB runs".into(),
+                ));
+            }
+        }
+        other => {
+            return Err(AppError::BadRequest(format!(
+                "Unknown benchmark_type '{other}' (expected 'shell' or 'expb')"
+            )));
+        }
+    }
+
     if let Some(ref regex) = req.metric_regex {
         Regex::new(regex)
             .map_err(|e| AppError::BadRequest(format!("Invalid metric regex: {e}")))?;
@@ -94,16 +148,20 @@ pub async fn create_run_handler(
 
     sqlx::query(
         "INSERT INTO autoresearch_runs \
-         (id, repo, base_branch, branch_name, benchmark_command, objective, metric_regex, \
+         (id, repo, base_branch, branch_name, benchmark_command, benchmark_type, \
+          ethrex_repo_path, benchmarks_repo_path, objective, metric_regex, \
           optimization_direction, target_files, frozen_files, max_experiments, \
           time_budget_minutes, benchmark_server_id, created_by) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
     )
     .bind(&id)
     .bind(&req.repo)
     .bind(base_branch)
     .bind(&branch_name)
     .bind(&req.benchmark_command)
+    .bind(benchmark_type)
+    .bind(&req.ethrex_repo_path)
+    .bind(&req.benchmarks_repo_path)
     .bind(&req.objective)
     .bind(&req.metric_regex)
     .bind(&req.optimization_direction)
@@ -511,7 +569,7 @@ pub async fn create_run_pr(
         improvement,
         run.total_experiments,
         run.accepted_experiments,
-        run.benchmark_command,
+        run.benchmark_command.as_deref().unwrap_or(""),
     );
 
     let client = reqwest::Client::new();
@@ -704,33 +762,40 @@ async fn run_autoresearch_pipeline(
         .execute(db)
         .await?;
 
-        // Create the branch on GitHub so the benchmark server can clone it
-        log_and_persist(db, &tx, run_id, "[SETUP] Creating branch on GitHub...").await;
-        let base_sha = shell::agent_exec_capture(
-            &agent_name,
-            &format!(
-                "cd /home/agent/repo && git rev-parse 'origin/{}'",
-                run.base_branch
-            ),
-        )
-        .await?
-        .trim()
-        .to_string();
-        crate::tasks::create_github_branch(github_token, &run.repo, branch_name, &base_sha).await?;
+        // EXPB runs drive the benchmark fully over SSH: no GitHub branch and
+        // no clone-on-benchmark-server setup — the benchmark host already has
+        // its own ethrex clone that tekton updates via `git fetch + checkout`
+        // on each experiment.
+        if run.benchmark_type != "expb" {
+            // Classic shell flow: create the branch on GitHub so the benchmark
+            // server can clone it, then clone it on the benchmark server.
+            log_and_persist(db, &tx, run_id, "[SETUP] Creating branch on GitHub...").await;
+            let base_sha = shell::agent_exec_capture(
+                &agent_name,
+                &format!(
+                    "cd /home/agent/repo && git rev-parse 'origin/{}'",
+                    run.base_branch
+                ),
+            )
+            .await?
+            .trim()
+            .to_string();
+            crate::tasks::create_github_branch(github_token, &run.repo, branch_name, &base_sha)
+                .await?;
 
-        // Clone on the benchmark server via the tekton host (token never stored on server)
-        log_and_persist(
-            db,
-            &tx,
-            run_id,
-            &format!(
-                "[SETUP] Cloning repo on benchmark server {}...",
-                server.name
-            ),
-        )
-        .await;
-        clone_on_benchmark_server(&server, &run.repo, branch_name, github_token).await?;
-        log_and_persist(db, &tx, run_id, "[SETUP] Repo cloned on benchmark server.").await;
+            log_and_persist(
+                db,
+                &tx,
+                run_id,
+                &format!(
+                    "[SETUP] Cloning repo on benchmark server {}...",
+                    server.name
+                ),
+            )
+            .await;
+            clone_on_benchmark_server(&server, &run.repo, branch_name, github_token).await?;
+            log_and_persist(db, &tx, run_id, "[SETUP] Repo cloned on benchmark server.").await;
+        }
 
         Some(server)
     } else {
@@ -740,17 +805,45 @@ async fn run_autoresearch_pipeline(
     let server_id_for_cleanup = benchmark_server.as_ref().map(|s| s.id);
 
     // Phase 2: Baseline benchmark
-    log_and_persist(
-        db, &tx, run_id,
-        &format!("[BASELINE] Running baseline benchmark: {}  (first run may take a while if compiling from scratch)", run.benchmark_command),
-    ).await;
     let bench_start = Instant::now();
-    let baseline_output = run_benchmark(
-        &agent_name,
-        &run.benchmark_command,
-        benchmark_server.as_ref(),
-    )
-    .await?;
+    let baseline_output = if run.benchmark_type == "expb" {
+        let server = benchmark_server.as_ref().expect("expb validated server");
+        log_and_persist(
+            db,
+            &tx,
+            run_id,
+            "[BASELINE] Running EXPB baselines on main: fast → gigablocks → slow (this will take a while)...",
+        )
+        .await;
+        let ethrex_repo_path = run
+            .ethrex_repo_path
+            .as_deref()
+            .ok_or_else(|| AppError::BadRequest("Run is missing ethrex_repo_path".into()))?;
+        let benchmarks_repo_path = run
+            .benchmarks_repo_path
+            .as_deref()
+            .ok_or_else(|| AppError::BadRequest("Run is missing benchmarks_repo_path".into()))?;
+        run_expb_baseline(
+            db,
+            run_id,
+            &run.base_branch,
+            server,
+            ethrex_repo_path,
+            benchmarks_repo_path,
+        )
+        .await?
+    } else {
+        log_and_persist(
+            db, &tx, run_id,
+            &format!("[BASELINE] Running baseline benchmark: {}  (first run may take a while if compiling from scratch)", run.benchmark_command.as_deref().unwrap_or("")),
+        ).await;
+        run_benchmark(
+            &agent_name,
+            run.benchmark_command.as_deref().unwrap_or(""),
+            benchmark_server.as_ref(),
+        )
+        .await?
+    };
     let bench_secs = bench_start.elapsed().as_secs();
 
     log_and_persist(
@@ -810,7 +903,7 @@ async fn run_autoresearch_pipeline(
          DESCRIPTION: <what the metric is, e.g. \"execution time in ns\">\n\
          \n\
          After that, make your first optimization — a single focused change to improve this metric.",
-        run.benchmark_command,
+        run.benchmark_command.as_deref().unwrap_or(""),
         &baseline_output[..baseline_output.len().min(8000)],
     );
 
@@ -985,39 +1078,32 @@ async fn run_autoresearch_pipeline(
         )
         .await?;
 
-        // Sync to benchmark server if needed
-        if let Some(ref server) = benchmark_server {
-            log_and_persist(
-                db,
-                &tx,
-                run_id,
-                &format!("[EXP {experiment_number}] Pushing to GitHub and pulling on benchmark server..."),
-            )
-            .await;
-            push_verified(
-                &agent_name,
-                github_token,
-                &run.repo,
-                branch_name,
-                &run.base_branch,
-                &mut branch_created,
-                "autoresearch optimization",
-            )
-            .await?;
-            pull_on_benchmark_server(server, branch_name, github_token).await?;
+        // Sync to benchmark server if needed (classic shell flow only — EXPB
+        // runs push directly to the benchmark server from the agent container
+        // as part of the benchmark step below).
+        if run.benchmark_type != "expb" {
+            if let Some(ref server) = benchmark_server {
+                log_and_persist(
+                    db,
+                    &tx,
+                    run_id,
+                    &format!("[EXP {experiment_number}] Pushing to GitHub and pulling on benchmark server..."),
+                )
+                .await;
+                push_verified(
+                    &agent_name,
+                    github_token,
+                    &run.repo,
+                    branch_name,
+                    &run.base_branch,
+                    &mut branch_created,
+                    "autoresearch optimization",
+                )
+                .await?;
+                pull_on_benchmark_server(server, branch_name, github_token).await?;
+            }
         }
 
-        // Run benchmark
-        log_and_persist(
-            db,
-            &tx,
-            run_id,
-            &format!(
-                "[EXP {experiment_number}] Running benchmark: {}...",
-                run.benchmark_command
-            ),
-        )
-        .await;
         let _ = sqlx::query(
             "UPDATE autoresearch_experiments SET status = 'benchmarking' WHERE id = $1",
         )
@@ -1026,12 +1112,55 @@ async fn run_autoresearch_pipeline(
         .await;
 
         let bench_start = Instant::now();
-        let benchmark_result = run_benchmark(
-            &agent_name,
-            &run.benchmark_command,
-            benchmark_server.as_ref(),
-        )
-        .await;
+        // For EXPB, push + tiered gate returns a synthetic output string and a
+        // structural "should keep" decision. For shell, run_benchmark returns
+        // stdout and is_better is parsed later out of Claude's response.
+        let mut expb_keep_override: Option<bool> = None;
+        let benchmark_result: Result<String, AppError> = if run.benchmark_type == "expb" {
+            let server = benchmark_server.as_ref().expect("expb validated server");
+            log_and_persist(
+                db,
+                &tx,
+                run_id,
+                &format!(
+                    "[EXP {experiment_number}] Running tiered EXPB gate (fast → gigablocks → slow)..."
+                ),
+            )
+            .await;
+            // Re-fetch the run row so we see the baseline metrics that were
+            // written during phase 2.
+            let fresh_run =
+                sqlx::query_as::<_, AutoresearchRun>(&format!("{RUN_QUERY} WHERE id = $1"))
+                    .bind(run_id)
+                    .fetch_one(db)
+                    .await?;
+            match run_expb_experiment(db, &agent_name, exp_id, &fresh_run, server, branch_name)
+                .await
+            {
+                Ok((summary, keep)) => {
+                    expb_keep_override = Some(keep);
+                    Ok(summary)
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            log_and_persist(
+                db,
+                &tx,
+                run_id,
+                &format!(
+                    "[EXP {experiment_number}] Running benchmark: {}...",
+                    run.benchmark_command.as_deref().unwrap_or("")
+                ),
+            )
+            .await;
+            run_benchmark(
+                &agent_name,
+                run.benchmark_command.as_deref().unwrap_or(""),
+                benchmark_server.as_ref(),
+            )
+            .await
+        };
         let bench_secs = bench_start.elapsed().as_secs();
 
         let raw_output = match &benchmark_result {
@@ -1149,7 +1278,10 @@ async fn run_autoresearch_pipeline(
 
         // Parse Claude's response for metric and improvement judgment
         let (metric_value, _) = parse_metric_response(&claude_response);
-        let is_better = parse_improved_response(&claude_response);
+        // For EXPB runs, ignore Claude's self-reported IMPROVED flag and use
+        // the structural tiered-gate result instead.
+        let is_better =
+            expb_keep_override.unwrap_or_else(|| parse_improved_response(&claude_response));
 
         let duration = exp_start.elapsed().as_secs() as i32;
 
@@ -1359,6 +1491,255 @@ async fn run_benchmark(
         )
         .await
     }
+}
+
+/// Run one scenario per tier on the benchmark server's `main` branch,
+/// capture the resulting metrics, and store them as a JSONB blob on the run
+/// row so later experiments can compare against them. Returns a
+/// human-readable summary to feed Claude as the initial baseline context.
+async fn run_expb_baseline(
+    db: &PgPool,
+    run_id: &str,
+    base_branch: &str,
+    server: &crate::models::BenchmarkServer,
+    ethrex_repo_path: &str,
+    benchmarks_repo_path: &str,
+) -> Result<String, AppError> {
+    // Make sure the benchmark server's ethrex checkout is on the run's base
+    // branch at the tip of `origin/<base_branch>` before we start.
+    let checkout_cmd = format!(
+        "cd {ethrex_repo_path} && git fetch origin && git checkout {base_branch} \
+         && git reset --hard origin/{base_branch}"
+    );
+    expb_ssh_setup(server, &checkout_cmd).await?;
+
+    let mut summaries: Vec<String> = Vec::with_capacity(3);
+    let mut baselines = serde_json::Map::new();
+    let mut fast_metrics: Option<expb::ExpbMetrics> = None;
+
+    for tier in expb::Tier::all() {
+        let metrics =
+            expb::run_scenario_over_ssh(server, ethrex_repo_path, benchmarks_repo_path, tier)
+                .await?;
+        summaries.push(format_expb_metrics(tier, &metrics));
+        baselines.insert(tier.short_name().to_string(), metrics_to_json(&metrics));
+        if tier == expb::Tier::Fast {
+            fast_metrics = Some(metrics);
+        }
+    }
+
+    // Store all three tiers' baselines so experiments can compare against
+    // them; also populate `baseline_metric` with fast-tier mgas_avg for the
+    // existing UI stat card.
+    sqlx::query(
+        "UPDATE autoresearch_runs SET expb_baseline_metrics = $1, baseline_metric = $2, \
+         updated_at = NOW() WHERE id = $3",
+    )
+    .bind(serde_json::Value::Object(baselines))
+    .bind(fast_metrics.as_ref().and_then(|m| m.mgas_avg))
+    .bind(run_id)
+    .execute(db)
+    .await?;
+
+    Ok(summaries.join("\n\n"))
+}
+
+/// Run one experiment through the tiered EXPB gate on the benchmark server.
+/// Pushes the agent's HEAD to the ethrex checkout on the server, runs each
+/// tier in turn, and compares against the per-tier baselines we stored at
+/// run creation. Persists the resulting metrics onto the experiment row.
+async fn run_expb_experiment(
+    db: &PgPool,
+    agent_name: &str,
+    exp_id: i64,
+    run: &AutoresearchRun,
+    server: &crate::models::BenchmarkServer,
+    branch: &str,
+) -> Result<(String, bool), AppError> {
+    let ethrex_repo_path = run
+        .ethrex_repo_path
+        .as_deref()
+        .ok_or_else(|| AppError::BadRequest("Run is missing ethrex_repo_path".into()))?;
+    let benchmarks_repo_path = run
+        .benchmarks_repo_path
+        .as_deref()
+        .ok_or_else(|| AppError::BadRequest("Run is missing benchmarks_repo_path".into()))?;
+
+    // 1. Push the current branch from the agent container to the ethrex
+    //    checkout on the benchmark server.
+    let ssh_remote = format!(
+        "{}@{}:{}",
+        server.ssh_user, server.hostname, ethrex_repo_path
+    );
+    let ssh_key_flag = server
+        .ssh_key_path
+        .as_deref()
+        .map(|k| format!(" -i {k}"))
+        .unwrap_or_default();
+    let git_ssh = format!(
+        "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR{ssh_key_flag}"
+    );
+    let push_cmd = format!(
+        "cd /home/agent/repo && GIT_LFS_SKIP_PUSH=1 GIT_SSH_COMMAND='{git_ssh}' \
+         git push --force '{ssh_remote}' HEAD:{branch}"
+    );
+    shell::agent_exec_capture(agent_name, &push_cmd).await?;
+
+    // 2. Check out the pushed branch on the benchmark server so docker build
+    //    picks it up.
+    expb_ssh_setup(
+        server,
+        &format!(
+            "cd {ethrex_repo_path} && git fetch origin {branch} && git checkout {branch} \
+             && git reset --hard FETCH_HEAD"
+        ),
+    )
+    .await?;
+
+    // 3. Pull each tier's baseline metrics out of the JSONB we stored.
+    let baseline_obj = run.expb_baseline_metrics.as_ref().ok_or_else(|| {
+        AppError::Internal(
+            "Baselines for this run are missing — the baseline phase did not complete.".into(),
+        )
+    })?;
+    let mut baselines: Vec<(expb::Tier, expb::ExpbMetrics)> = Vec::with_capacity(3);
+    for tier in expb::Tier::all() {
+        let tier_json = baseline_obj.get(tier.short_name()).ok_or_else(|| {
+            AppError::Internal(format!(
+                "Baseline metrics for tier '{}' are missing.",
+                tier.short_name()
+            ))
+        })?;
+        baselines.push((tier, metrics_from_json(tier_json)));
+    }
+
+    // 4. Run the tiered gate.
+    let result = expb::run_tiered(server, ethrex_repo_path, benchmarks_repo_path, &baselines).await;
+
+    // 5. Persist metrics + tier reached on the experiment row.
+    let tier_name = result.tier_reached.map(|t| t.short_name().to_string());
+    let (mgas, latency, p50, p95, p99) = result
+        .final_metrics
+        .as_ref()
+        .map(|m| {
+            (
+                m.mgas_avg,
+                m.latency_avg_ms,
+                m.latency_p50_ms,
+                m.latency_p95_ms,
+                m.latency_p99_ms,
+            )
+        })
+        .unwrap_or((None, None, None, None, None));
+    let _ = sqlx::query(
+        "UPDATE autoresearch_experiments SET \
+            mgas_avg = $1, latency_avg_ms = $2, \
+            latency_p50_ms = $3, latency_p95_ms = $4, latency_p99_ms = $5, \
+            expb_tier_reached = $6 \
+         WHERE id = $7",
+    )
+    .bind(mgas)
+    .bind(latency)
+    .bind(p50)
+    .bind(p95)
+    .bind(p99)
+    .bind(&tier_name)
+    .bind(exp_id)
+    .execute(db)
+    .await;
+
+    // 6. Build a textual summary to feed Claude in place of raw stdout.
+    let mut summary = String::new();
+    if let Some(m) = &result.final_metrics {
+        summary.push_str(&format_expb_metrics(
+            result.tier_reached.unwrap_or(expb::Tier::Fast),
+            m,
+        ));
+    } else {
+        summary.push_str("EXPB produced no metrics (all tiers failed or errored).");
+    }
+    summary.push_str(&format!(
+        "\n\nTier reached: {}.\nPromotion decision: {}.",
+        tier_name.as_deref().unwrap_or("none"),
+        if result.keep { "KEEP" } else { "DISCARD" }
+    ));
+
+    Ok((summary, result.keep))
+}
+
+/// Run a single setup/utility SSH command on the benchmark server and return
+/// its stdout. Fails the autoresearch run on non-zero exit — setup steps
+/// before the actual benchmark must succeed.
+async fn expb_ssh_setup(
+    server: &crate::models::BenchmarkServer,
+    command: &str,
+) -> Result<String, AppError> {
+    let mut args: Vec<String> = vec![
+        "-o".into(),
+        "StrictHostKeyChecking=no".into(),
+        "-o".into(),
+        "UserKnownHostsFile=/dev/null".into(),
+        "-o".into(),
+        "LogLevel=ERROR".into(),
+    ];
+    if let Some(key) = server.ssh_key_path.as_deref() {
+        args.push("-i".into());
+        args.push(key.to_string());
+    }
+    args.push(format!("{}@{}", server.ssh_user, server.hostname));
+    args.push(command.to_string());
+
+    let output = tokio::process::Command::new("ssh")
+        .args(&args)
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to spawn ssh: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::Internal(format!(
+            "SSH setup command failed on {}: {}",
+            server.hostname,
+            stderr.trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn metrics_to_json(m: &expb::ExpbMetrics) -> serde_json::Value {
+    serde_json::json!({
+        "mgas_avg": m.mgas_avg,
+        "latency_avg_ms": m.latency_avg_ms,
+        "latency_p50_ms": m.latency_p50_ms,
+        "latency_p95_ms": m.latency_p95_ms,
+        "latency_p99_ms": m.latency_p99_ms,
+    })
+}
+
+fn metrics_from_json(v: &serde_json::Value) -> expb::ExpbMetrics {
+    let f = |k: &str| v.get(k).and_then(serde_json::Value::as_f64);
+    expb::ExpbMetrics {
+        mgas_avg: f("mgas_avg"),
+        latency_avg_ms: f("latency_avg_ms"),
+        latency_p50_ms: f("latency_p50_ms"),
+        latency_p95_ms: f("latency_p95_ms"),
+        latency_p99_ms: f("latency_p99_ms"),
+    }
+}
+
+fn format_expb_metrics(tier: expb::Tier, m: &expb::ExpbMetrics) -> String {
+    let fmt = |label: &str, v: Option<f64>| match v {
+        Some(x) => format!("  {label}: {x:.4}"),
+        None => format!("  {label}: —"),
+    };
+    format!(
+        "[{scenario}]\n{mgas}\n{lat}\n{p50}\n{p95}\n{p99}",
+        scenario = tier.short_name(),
+        mgas = fmt("mgas_avg", m.mgas_avg),
+        lat = fmt("latency_avg_ms", m.latency_avg_ms),
+        p50 = fmt("latency_p50_ms", m.latency_p50_ms),
+        p95 = fmt("latency_p95_ms", m.latency_p95_ms),
+        p99 = fmt("latency_p99_ms", m.latency_p99_ms),
+    )
 }
 
 async fn run_on_benchmark_server(
