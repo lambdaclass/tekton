@@ -210,7 +210,8 @@ test.describe.serial('Admin - Intake Sources CRUD', () => {
     await expect(section.getByText(SOURCE_NAME)).toBeVisible();
     await expect(section.getByText('e2eorg/e2erepo')).toBeVisible();
     await expect(section.getByText('60s')).toBeVisible();
-    await expect(section.getByText('testadmin')).toBeVisible();
+    // Multiple rows may have 'testadmin' as run_as_user (seed data includes it too)
+    await expect(section.getByText('testadmin').first()).toBeVisible();
   });
 
   test('edit the intake source', async ({ adminPage: page }) => {
