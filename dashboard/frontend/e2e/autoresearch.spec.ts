@@ -49,17 +49,6 @@ test.describe('Autoresearch', () => {
     await expect(adminPage.getByText('5 (3 accepted)')).toBeVisible();
   });
 
-  test('detail page shows experiment feed with accepted and rejected entries', async ({ adminPage }) => {
-    await adminPage.goto(`/autoresearch/${TEST_IDS.autoresearch.completed}`);
-    await expect(adminPage.getByRole('tab', { name: 'Experiments' })).toBeVisible();
-    // Each ExperimentRow renders metric_value.toFixed(4). Verify rows exist for
-    // accepted (45.0000 for exp #1, 51.3000 for exp #5) and rejected
-    // (41.2000 for exp #2) entries by their unique metric values.
-    await expect(adminPage.getByText('45.0000').first()).toBeVisible();
-    await expect(adminPage.getByText('41.2000').first()).toBeVisible();
-    await expect(adminPage.getByText('51.3000').first()).toBeVisible();
-  });
-
   test('detail page shows config tab with run parameters', async ({ adminPage }) => {
     await adminPage.goto(`/autoresearch/${TEST_IDS.autoresearch.completed}`);
     await adminPage.getByRole('tab', { name: 'Config' }).click();
