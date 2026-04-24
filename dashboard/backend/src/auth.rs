@@ -348,12 +348,11 @@ pub async fn check_task_ownership(
         return Ok(());
     }
 
-    let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT created_by, repo FROM tasks WHERE id = $1",
-    )
-    .bind(task_id)
-    .fetch_optional(db)
-    .await?;
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT created_by, repo FROM tasks WHERE id = $1")
+            .bind(task_id)
+            .fetch_optional(db)
+            .await?;
 
     let (created_by, repo) = match row {
         Some(r) => r,
