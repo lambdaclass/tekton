@@ -41,21 +41,24 @@ test.describe('Autoresearch', () => {
     await adminPage.goto(`/autoresearch/${TEST_IDS.autoresearch.completed}`);
     await expect(adminPage.getByText('Optimize sort perf')).toBeVisible();
     await expect(adminPage.getByText('completed')).toBeVisible();
-    // Stats bar values
+    // Stats bar values — current UI: Baseline, Experiments, Rate, Running for, Cost.
     await expect(adminPage.getByText('42.5000').first()).toBeVisible(); // baseline
-    await expect(adminPage.getByText('51.3000').first()).toBeVisible(); // best
-    await expect(adminPage.getByText('Improvement', { exact: true })).toBeVisible();
+    await expect(adminPage.getByText('Baseline', { exact: true })).toBeVisible();
     await expect(adminPage.getByText('Rate', { exact: true })).toBeVisible();
     await expect(adminPage.getByText('Cost', { exact: true }).first()).toBeVisible();
+    await expect(adminPage.getByText('5 (3 accepted)')).toBeVisible();
   });
 
   test('detail page shows experiment feed with accepted and rejected entries', async ({ adminPage }) => {
     await adminPage.goto(`/autoresearch/${TEST_IDS.autoresearch.completed}`);
     await expect(adminPage.getByRole('tab', { name: 'Experiments' })).toBeVisible();
-    await expect(adminPage.getByText('Switched to a more efficient comparison')).toBeVisible();
-    await expect(adminPage.getByText('Attempted parallel sorting')).toBeVisible();
-    // Click on an experiment to expand its diff
-    await adminPage.locator('button:has-text("Optimized inner loop")').click();
+    // Each ExperimentRow renders metric_value.toFixed(4). Check rows exist for
+    // accepted (45.0000, exp #1) and rejected (41.2000, exp #2) entries by
+    // their unique metric values.
+    await expect(adminPage.getByText('45.0000').first()).toBeVisible();
+    await expect(adminPage.getByText('41.2000').first()).toBeVisible();
+    // Click the row for experiment #5 (metric 51.3000) to expand its diff.
+    await adminPage.locator('button', { hasText: '51.3000' }).first().click();
     await expect(adminPage.getByText('diff --git a/src/sort.py').first()).toBeVisible();
   });
 
@@ -83,7 +86,10 @@ test.describe('Autoresearch', () => {
   test('running run shows stop button', async ({ adminPage }) => {
     await adminPage.goto(`/autoresearch/${TEST_IDS.autoresearch.running}`);
     await expect(adminPage.getByText('Speed up parser')).toBeVisible();
-    await expect(adminPage.getByText('running')).toBeVisible();
+    // "running" alone matches both the status badge and the "Running for"
+    // stat label — pin to the exact-match badge.
+    await expect(adminPage.getByText('running', { exact: true })).toBeVisible();
+    await expect(adminPage.getByRole('button', { name: /Stop/i })).toBeVisible();
   });
 
   test('navigation includes Autoresearch link', async ({ adminPage }) => {
