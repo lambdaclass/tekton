@@ -334,25 +334,45 @@ pub async fn check_repo_permission(
     )))
 }
 
-/// Check if a user owns a task (or is an admin).
+/// Check if a user can access a task.
+/// Access is granted if the user is an admin, created the task, or has
+/// permission to the task's repo (via org membership or explicit grant).
 pub async fn check_task_ownership(
     db: &PgPool,
     task_id: &str,
     github_login: &str,
     role: &str,
+    github_org: &str,
 ) -> Result<(), AppError> {
     if role == "admin" {
         return Ok(());
     }
 
-    let created_by: Option<String> =
-        sqlx::query_scalar("SELECT created_by FROM tasks WHERE id = $1")
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT created_by, repo FROM tasks WHERE id = $1")
             .bind(task_id)
             .fetch_optional(db)
-            .await?
-            .flatten();
+            .await?;
 
-    if created_by.as_deref() == Some(github_login) {
+    let (created_by, repo) = match row {
+        Some(r) => r,
+        None => {
+            return Err(AppError::Forbidden(
+                "You do not have permission to access this task".into(),
+            ));
+        }
+    };
+
+    // Allow if user created the task
+    if created_by == github_login {
+        return Ok(());
+    }
+
+    // Allow if user has access to the task's repo
+    if check_repo_permission(db, github_login, &repo, role, github_org)
+        .await
+        .is_ok()
+    {
         return Ok(());
     }
 

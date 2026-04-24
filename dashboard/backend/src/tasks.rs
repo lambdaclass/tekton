@@ -35,8 +35,9 @@ async fn check_task_ownership(
     task_id: &str,
     github_login: &str,
     role: &str,
+    github_org: &str,
 ) -> Result<(), AppError> {
-    auth::check_task_ownership(db, task_id, github_login, role).await
+    auth::check_task_ownership(db, task_id, github_login, role, github_org).await
 }
 
 /// Shared context threaded through the pipeline functions.
@@ -184,11 +185,32 @@ pub async fn list_tasks(
     // We'll collect bind values as strings for the dynamic query
     let mut bind_values: Vec<String> = Vec::new();
 
-    // Non-admin users only see their own tasks
+    // Non-admin users see tasks they created OR tasks from repos they have access to
     if user.0.role != "admin" {
-        conditions.push(format!("created_by = ${bind_idx}"));
-        bind_values.push(user.0.sub.clone());
-        bind_idx += 1;
+        let org_prefix = format!("{}/%", state.config.github_org);
+        if user.0.role == "member" {
+            // Members can see tasks from any repo in the org, plus repos explicitly granted
+            conditions.push(format!(
+                "(created_by = ${bind_idx} OR repo LIKE ${} OR repo IN \
+                 (SELECT repo FROM user_repo_permissions WHERE github_login = ${}))",
+                bind_idx + 1,
+                bind_idx + 2,
+            ));
+            bind_values.push(user.0.sub.clone());
+            bind_values.push(org_prefix);
+            bind_values.push(user.0.sub.clone());
+            bind_idx += 3;
+        } else {
+            // Viewers only see tasks from repos explicitly granted
+            conditions.push(format!(
+                "(created_by = ${bind_idx} OR repo IN \
+                 (SELECT repo FROM user_repo_permissions WHERE github_login = ${}))",
+                bind_idx + 1,
+            ));
+            bind_values.push(user.0.sub.clone());
+            bind_values.push(user.0.sub.clone());
+            bind_idx += 2;
+        }
     }
 
     if let Some(ref status) = params.status {
@@ -259,7 +281,14 @@ pub async fn get_task(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Task>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
@@ -282,7 +311,14 @@ pub async fn get_subtasks(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<Task>>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
 
     // Verify parent exists
     let _ = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tasks WHERE id = $1")
@@ -2214,7 +2250,14 @@ pub async fn list_messages(
     Path(id): Path<String>,
     Query(params): Query<ListMessagesQuery>,
 ) -> Result<Json<Vec<TaskMessage>>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
 
     let messages = if let Some(before_id) = params.before_id {
         let limit = params.limit.unwrap_or(100);
@@ -2261,7 +2304,14 @@ pub async fn send_message(
     Path(id): Path<String>,
     Json(req): Json<SendMessageRequest>,
 ) -> Result<Json<TaskMessage>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
 
     // Verify task exists
     let task_exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tasks WHERE id = $1")
@@ -2327,7 +2377,14 @@ pub async fn list_actions(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<TaskAction>>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
     let actions = sqlx::query_as::<_, TaskAction>(
         "SELECT id, task_id, action_type, tool_name, tool_input, summary, \
          TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at \
@@ -2456,7 +2513,14 @@ pub async fn reopen_task(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Task>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
 
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
@@ -2575,7 +2639,14 @@ pub async fn get_task_diff(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
 
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
@@ -2621,7 +2692,14 @@ pub async fn update_task_name(
     Path(id): Path<String>,
     Json(req): Json<UpdateTaskNameRequest>,
 ) -> Result<Json<Task>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
     let _ = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
@@ -3320,7 +3398,14 @@ pub async fn create_pr(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Task>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
 
     let task = sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
@@ -3452,7 +3537,14 @@ pub async fn link_pr(
     Path(id): Path<String>,
     Json(req): Json<crate::models::LinkPrRequest>,
 ) -> Result<Json<Task>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
     // Extract PR number from URL (e.g. https://github.com/owner/repo/pull/123)
     let pr_number: Option<i32> = req.pr_url.rsplit('/').next().and_then(|s| s.parse().ok());
 
@@ -3497,7 +3589,14 @@ pub async fn get_task_logs(
     State(state): State<crate::AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<TaskLog>>, AppError> {
-    check_task_ownership(&state.db, &id, &user.0.sub, &user.0.role).await?;
+    check_task_ownership(
+        &state.db,
+        &id,
+        &user.0.sub,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
     let logs = sqlx::query_as::<_, TaskLog>(
         "SELECT id, task_id, TO_CHAR(timestamp, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as timestamp, line \
          FROM task_logs WHERE task_id = $1 ORDER BY id ASC",
