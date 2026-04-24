@@ -64,7 +64,7 @@ test.describe('Metrics page', () => {
   test('chart legend shows Tasks and Cost', async ({ adminPage: page }) => {
     await page.goto('/metrics');
 
-    const card = page.locator('[class*="card"]').filter({ hasText: 'Activity over time' });
+    const card = page.locator('[data-slot="card"]').filter({ hasText: 'Activity over time' });
     await expect(card.getByText('Tasks', { exact: true }).first()).toBeVisible();
     await expect(card.getByText('Cost', { exact: true }).first()).toBeVisible();
   });
@@ -72,7 +72,7 @@ test.describe('Metrics page', () => {
   test('Top Users card renders with seeded users', async ({ adminPage: page }) => {
     await page.goto('/metrics');
 
-    const card = page.locator('[class*="card"]').filter({ hasText: 'Top Users' });
+    const card = page.locator('[data-slot="card"]').filter({ hasText: 'Top Users' });
     await expect(card).toBeVisible();
 
     // testadmin and testmember both have seeded tasks with cost.
@@ -83,7 +83,7 @@ test.describe('Metrics page', () => {
   test('Top Repos card renders with seeded repos', async ({ adminPage: page }) => {
     await page.goto('/metrics');
 
-    const card = page.locator('[class*="card"]').filter({ hasText: 'Top Repos' });
+    const card = page.locator('[data-slot="card"]').filter({ hasText: 'Top Repos' });
     await expect(card).toBeVisible();
     await expect(card.getByText('testorg/testrepo')).toBeVisible();
   });
@@ -93,7 +93,7 @@ test.describe('Metrics page', () => {
 
     await expect(page.getByText('Activity over time')).toBeVisible();
     const chart = page
-      .locator('[class*="card"]')
+      .locator('[data-slot="card"]')
       .filter({ hasText: 'Activity over time' })
       .locator('svg')
       .first();
