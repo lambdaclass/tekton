@@ -57,8 +57,9 @@ test.describe('Autoresearch', () => {
     // their unique metric values.
     await expect(adminPage.getByText('45.0000').first()).toBeVisible();
     await expect(adminPage.getByText('41.2000').first()).toBeVisible();
-    // Click the row for experiment #5 (metric 51.3000) to expand its diff.
-    await adminPage.locator('button', { hasText: '51.3000' }).first().click();
+    // Click the 51.3000 metric text (exp #5) to expand its diff. The whole
+    // ExperimentRow is a <button>, so clicking the metric bubbles up.
+    await adminPage.getByText('51.3000').first().click();
     await expect(adminPage.getByText('diff --git a/src/sort.py').first()).toBeVisible();
   });
 
