@@ -11,6 +11,7 @@ import Webhooks from './pages/Webhooks';
 import CostDashboard from './pages/CostDashboard';
 import AuditLog from './pages/AuditLog';
 import IntakeBoard from './pages/IntakeBoard';
+import Metrics from './pages/Metrics';
 
 export default function App() {
   return (
@@ -22,6 +23,7 @@ export default function App() {
         <Route path="/tasks" element={<Tasks />} />
         <Route path="/tasks/:id" element={<TaskDetail />} />
         <Route path="/admin" element={<Admin />} />
+        <Route path="/metrics" element={<Metrics />} />
         <Route path="/cost" element={<CostDashboard />} />
         <Route path="/audit" element={<AuditLog />} />
         <Route path="/settings" element={<Settings />} />

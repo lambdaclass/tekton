@@ -5,7 +5,7 @@ test.describe('Admin - Users section', () => {
     await page.goto('/admin');
 
     await expect(page.getByRole('heading', { name: 'Admin', exact: true })).toBeVisible();
-    await expect(page.locator('[data-slot="card-title"]').filter({ hasText: 'Users' })).toBeVisible();
+    await expect(page.locator('[data-slot="card-title"]').filter({ hasText: /^\s*Users\s*$/ })).toBeVisible();
   });
 
   test('user list shows login, name, and role columns', async ({ adminPage: page }) => {
@@ -17,8 +17,12 @@ test.describe('Admin - Users section', () => {
     await expect(page.getByRole('columnheader', { name: 'Role' })).toBeVisible();
     await expect(page.getByRole('columnheader', { name: 'Repos' })).toBeVisible();
 
-    // Seeded user data (scoped to users table to avoid strict mode violations)
-    const usersSection = page.locator('[class*="card"]').filter({ hasText: 'Users' });
+    // Seeded user data (scoped to the Users card specifically — filter by the
+    // card title being exactly "Users" to avoid matching any other card whose
+    // title contains the word "Users")
+    const usersSection = page
+      .locator('[class*="card"]')
+      .filter({ has: page.locator('[data-slot="card-title"]', { hasText: /^\s*Users\s*$/ }) });
     await expect(usersSection.getByRole('cell', { name: 'testadmin' })).toBeVisible();
     await expect(usersSection.getByRole('cell', { name: 'Test Admin' })).toBeVisible();
     await expect(usersSection.getByRole('cell', { name: 'testmember' })).toBeVisible();
