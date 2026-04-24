@@ -114,10 +114,11 @@ pub async fn summary(
 ///
 /// Daily activity counts + cost for charting. A task is counted as activity on
 /// every day where *something happened* for it: it was created, it received a
-/// message, or it produced a log line. This gives a more honest picture than
-/// bucketing solely by `created_at`, since long-running tasks then show up as
-/// activity each day they were worked on. Cost is attributed to the task's
-/// last-updated day (that's when the cost is actually observed).
+/// message, or it produced a log line. Agent logs count as activity too — a new
+/// log line only appears either because a person sent a new message that day or
+/// because the agent was still working through a long-running task on that day,
+/// and both of those are legitimately "worked on". Cost is attributed to the
+/// task's last-updated day (that's when the cost is actually observed).
 pub async fn tasks_over_time(
     _user: AuthUser,
     State(state): State<crate::AppState>,
