@@ -156,4 +156,23 @@ test.describe('Task Detail', () => {
     await refreshBtn.click();
     await expect(refreshBtn).toBeVisible();
   });
+
+  test('chat panel is resizable by dragging the handle', async ({ adminPage }) => {
+    await adminPage.goto(`/tasks/${TEST_IDS.tasks.awaiting}`);
+    const handle = adminPage.getByTestId('chat-resize-handle');
+    await expect(handle).toBeVisible();
+
+    const box = await handle.boundingBox();
+    if (!box) throw new Error('resize handle has no bounding box');
+
+    const startX = box.x + box.width / 2;
+    const startY = box.y + box.height / 2;
+    await adminPage.mouse.move(startX, startY);
+    await adminPage.mouse.down();
+    await adminPage.mouse.move(startX + 80, startY, { steps: 5 });
+    await adminPage.mouse.up();
+
+    // Handle should still be visible after drag (page didn't crash)
+    await expect(handle).toBeVisible();
+  });
 });

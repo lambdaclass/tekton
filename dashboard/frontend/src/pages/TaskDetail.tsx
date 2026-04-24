@@ -308,6 +308,7 @@ export default function TaskDetail() {
 
         {/* Resize handle */}
         <div
+          data-testid="chat-resize-handle"
           onMouseDown={startResize}
           className="w-1.5 shrink-0 cursor-col-resize hover:bg-primary/20 active:bg-primary/30 rounded-full transition-colors"
         />
