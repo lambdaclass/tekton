@@ -345,6 +345,55 @@ export const createBudget = (data: { scope_type: string; scope: string; monthly_
 export const deleteBudget = (id: number) =>
   apiFetch<{ deleted: boolean }>(`/api/admin/budgets/${id}`, { method: 'DELETE' });
 
+// Usage metrics (available to any authenticated user)
+export interface MetricsSummary {
+  days: number;
+  active_users: number;
+  prev_active_users: number;
+  total_users: number;
+  total_tasks: number;
+  prev_total_tasks: number;
+  completed_tasks: number;
+  failed_tasks: number;
+  in_progress_tasks: number;
+  total_cost_usd: number;
+  prev_total_cost_usd: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  avg_cost_per_task: number;
+}
+export interface TasksOverTimeRow {
+  day: string;
+  total: number;
+  cost_usd: number;
+}
+export interface TopUserRow {
+  login: string;
+  task_count: number;
+  cost_usd: number;
+}
+export interface TopRepoRow {
+  repo: string;
+  task_count: number;
+  cost_usd: number;
+}
+export const getMetricsSummary = (days?: number) => {
+  const qs = days ? `?days=${days}` : '';
+  return apiFetch<MetricsSummary>(`/api/metrics/summary${qs}`);
+};
+export const getTasksOverTime = (days?: number) => {
+  const qs = days ? `?days=${days}` : '';
+  return apiFetch<TasksOverTimeRow[]>(`/api/metrics/tasks-over-time${qs}`);
+};
+export const getTopUsers = (days?: number) => {
+  const qs = days ? `?days=${days}` : '';
+  return apiFetch<TopUserRow[]>(`/api/metrics/top-users${qs}`);
+};
+export const getTopRepos = (days?: number) => {
+  const qs = days ? `?days=${days}` : '';
+  return apiFetch<TopRepoRow[]>(`/api/metrics/top-repos${qs}`);
+};
+
 // Audit log
 export interface AuditLogEntry {
   id: number;
@@ -403,6 +452,91 @@ export const setGlobalAiSettings = (data: { provider: string; api_key?: string; 
   });
 export const deleteGlobalAiSettings = () =>
   apiFetch<{ deleted: boolean }>('/api/admin/settings/ai', { method: 'DELETE' });
+
+// Intake Sources
+export interface IntakeSource {
+  id: number;
+  name: string;
+  provider: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  target_repo: string;
+  target_base_branch: string;
+  label_filter: string[];
+  prompt_template: string | null;
+  run_as_user: string;
+  poll_interval_secs: number;
+  max_concurrent_tasks: number;
+  max_tasks_per_poll: number;
+  auto_create_pr: boolean;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IntakeIssue {
+  id: number;
+  source_id: number;
+  external_id: string;
+  external_url: string | null;
+  external_title: string;
+  external_body: string | null;
+  external_labels: string[];
+  external_updated_at: string | null;
+  task_id: string | null;
+  status: string;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IntakePollLog {
+  id: number;
+  source_id: number;
+  polled_at: string;
+  issues_found: number;
+  issues_created: number;
+  issues_skipped: number;
+  error_message: string | null;
+  duration_ms: number | null;
+}
+
+export const listIntakeSources = () => apiFetch<IntakeSource[]>('/api/admin/intake/sources');
+export const createIntakeSource = (data: {
+  name: string; provider: string; target_repo: string;
+  target_base_branch?: string; label_filter?: string[]; prompt_template?: string;
+  run_as_user: string; poll_interval_secs?: number; max_concurrent_tasks?: number;
+  max_tasks_per_poll?: number; auto_create_pr?: boolean;
+  config?: Record<string, unknown>;
+}) => apiFetch<IntakeSource>('/api/admin/intake/sources', { method: 'POST', body: JSON.stringify(data) });
+export const updateIntakeSource = (id: number, data: Record<string, unknown>) =>
+  apiFetch<IntakeSource>(`/api/admin/intake/sources/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+export const deleteIntakeSource = (id: number) =>
+  apiFetch<{ deleted: boolean }>(`/api/admin/intake/sources/${id}`, { method: 'DELETE' });
+export const toggleIntakeSource = (id: number) =>
+  apiFetch<IntakeSource>(`/api/admin/intake/sources/${id}/toggle`, { method: 'POST' });
+export const listIntakeIssues = (sourceId: number) =>
+  apiFetch<IntakeIssue[]>(`/api/admin/intake/sources/${sourceId}/issues`);
+export const listIntakeLogs = (sourceId: number) =>
+  apiFetch<IntakePollLog[]>(`/api/admin/intake/sources/${sourceId}/logs`);
+export const testPollSource = (id: number) =>
+  apiFetch<{ title: string; url: string; labels: string[] }[]>(`/api/admin/intake/sources/${id}/test`, { method: 'POST' });
+
+// Intake Board (all issues across sources)
+export interface IntakeIssueWithMeta extends IntakeIssue {
+  source_name: string;
+  source_repo: string;
+  task_status: string | null;
+}
+
+export const listAllIntakeIssues = () =>
+  apiFetch<IntakeIssueWithMeta[]>('/api/admin/intake/issues');
+
+export const updateIntakeIssueStatus = (id: number, status: string) =>
+  apiFetch<IntakeIssueWithMeta>(`/api/admin/intake/issues/${id}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  });
 
 // Webhooks
 export interface RepoWebhookInfo {

@@ -58,8 +58,11 @@ get_system_path() {
 # Each container gets a pair: host-address .{N*2} / local-address .{N*2+1}
 # Slots are recycled: we scan tracking files to find used slots, then pick
 # the lowest available one.  Uses a /16 subnet (10.100.0.0–10.100.255.255).
+# Uses flock for atomic claim to prevent concurrent creates from being
+# assigned the same slot.
 
 MAX_SLOT=32512
+SLOT_LOCK="$AGENT_DIR/.slot.lock"
 
 used_slots() {
     # Collect slot numbers from agent tracking files ($AGENT_DIR/<name>)
@@ -96,6 +99,24 @@ next_slot() {
         fi
     done
     fatal "No free IP slots available (all $MAX_SLOT slots in use)."
+}
+
+claim_slot() {
+    local tracking_file="$1"
+    shift
+    local extra_fields="$*"
+    (
+        flock 9
+        local slot
+        slot=$(next_slot)
+        read -r host_ip local_ip <<< "$(slot_to_ips "$slot")"
+        if [[ -n "$extra_fields" ]]; then
+            echo "${slot} ${host_ip} ${local_ip} ${extra_fields}" > "$tracking_file"
+        else
+            echo "${slot} ${host_ip} ${local_ip}" > "$tracking_file"
+        fi
+        echo "$slot"
+    ) 9>"$SLOT_LOCK"
 }
 
 slot_to_ips() {
@@ -140,10 +161,12 @@ cmd_create() {
     local system_path
     system_path=$(get_system_path)
 
-    # Allocate IP
+    # Allocate IP (atomic to prevent concurrent creates getting the same slot)
+    # claim_slot writes the tracking file under flock so no other create can
+    # race for the same slot.
     local slot
-    slot=$(next_slot)
-    read -r host_ip local_ip <<< "$(slot_to_ips "$slot")"
+    slot=$(claim_slot "$AGENT_DIR/$name")
+    read -r _slot host_ip local_ip < "$AGENT_DIR/$name"
 
     info "Creating agent '$name' (host=$host_ip, container=$local_ip)..."
 
@@ -158,9 +181,6 @@ cmd_create() {
     local creds_dest="${container_root}/mnt/claude-creds"
     mkdir -p "$creds_dest"
     cp -r "${CREDS_DIR}"/. "$creds_dest/"
-
-    # Track the agent (this also reserves the slot for future allocations)
-    echo "${slot} ${host_ip} ${local_ip}" > "$AGENT_DIR/$name"
 
     # Start the container
     nixos-container start "$name"

@@ -12,6 +12,8 @@ import CostDashboard from './pages/CostDashboard';
 import AuditLog from './pages/AuditLog';
 import Autoresearch from './pages/Autoresearch';
 import AutoresearchDetail from './pages/AutoresearchDetail';
+import IntakeBoard from './pages/IntakeBoard';
+import Metrics from './pages/Metrics';
 
 export default function App() {
   return (
@@ -25,9 +27,11 @@ export default function App() {
         <Route path="/autoresearch" element={<Autoresearch />} />
         <Route path="/autoresearch/:id" element={<AutoresearchDetail />} />
         <Route path="/admin" element={<Admin />} />
+        <Route path="/metrics" element={<Metrics />} />
         <Route path="/cost" element={<CostDashboard />} />
         <Route path="/audit" element={<AuditLog />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/intake" element={<IntakeBoard />} />
         <Route path="/webhooks" element={<Webhooks />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

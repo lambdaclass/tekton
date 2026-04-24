@@ -1,11 +1,10 @@
-import { useState, useRef, useMemo } from 'react';
+import { useState, useRef, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Send, ImagePlus, X, Loader2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { listTaskMessages, sendTaskMessage, uploadImage, parseImageUrls, type TaskMessage } from '@/lib/api';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { timeAgo } from '@/lib/utils';
 
 interface TaskChatProps {
@@ -30,6 +29,7 @@ export default function TaskChat({ taskId, currentUserEmail, taskStatus }: TaskC
   const [chatImagePreviews, setChatImagePreviews] = useState<string[]>([]);
   const [chatUploading, setChatUploading] = useState(false);
   const chatImageRef = useRef<HTMLInputElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const [dragOver, setDragOver] = useState(false);
 
   const { data: messages } = useQuery({
@@ -128,6 +128,10 @@ export default function TaskChat({ taskId, currentUserEmail, taskStatus }: TaskC
     }));
   }, [messages]);
 
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [processedMessages, isTyping]);
+
   return (
     <div
       className={`flex flex-col h-full ${dragOver ? 'ring-2 ring-primary/50' : ''}`}
@@ -160,7 +164,9 @@ export default function TaskChat({ taskId, currentUserEmail, taskStatus }: TaskC
               className={`w-full rounded-md border-l-2 pl-4 py-3 pr-3 ${
                 msg.sender === currentUserEmail
                   ? 'border-l-blue-500 bg-blue-500/5'
-                  : 'border-l-amber-500 bg-amber-500/5'
+                  : msg.sender === 'claude'
+                    ? 'border-l-amber-500 bg-amber-500/5'
+                    : 'border-l-violet-500 bg-violet-500/5'
               }`}
             >
               <div className="flex items-center gap-2 mb-1.5">
@@ -168,7 +174,9 @@ export default function TaskChat({ taskId, currentUserEmail, taskStatus }: TaskC
                   className={`font-semibold text-xs ${
                     msg.sender === currentUserEmail
                       ? 'text-blue-700 dark:text-blue-400'
-                      : 'text-amber-700 dark:text-amber-400'
+                      : msg.sender === 'claude'
+                        ? 'text-amber-700 dark:text-amber-400'
+                        : 'text-violet-700 dark:text-violet-400'
                   }`}
                 >
                   {msg.sender === currentUserEmail ? 'You' : msg.sender === 'claude' ? 'Claude' : msg.sender}
@@ -204,6 +212,7 @@ export default function TaskChat({ taskId, currentUserEmail, taskStatus }: TaskC
             <span className="typing-dot" style={{animationDelay: '0.3s'}} />
           </div>
         )}
+        <div ref={messagesEndRef} />
       </div>
 
       {/* Input area */}
@@ -228,7 +237,7 @@ export default function TaskChat({ taskId, currentUserEmail, taskStatus }: TaskC
             ))}
           </div>
         )}
-        <form onSubmit={handleSend} className="flex gap-2">
+        <form onSubmit={handleSend} className="flex gap-2 items-end">
           <input
             ref={chatImageRef}
             type="file"
@@ -244,19 +253,30 @@ export default function TaskChat({ taskId, currentUserEmail, taskStatus }: TaskC
             type="button"
             size="icon"
             variant="outline"
+            className="shrink-0"
             onClick={() => chatImageRef.current?.click()}
             disabled={sendMutation.isPending || chatUploading}
           >
             <ImagePlus className="size-4" />
           </Button>
-          <Input
+          <textarea
             value={message}
             onChange={(e) => setMessage(e.target.value)}
-            placeholder="Send a follow-up message..."
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                if (message.trim() || chatImages.length > 0) {
+                  handleSend(e);
+                }
+              }
+            }}
+            placeholder="Send a follow-up message... (Shift+Enter for newline)"
             disabled={sendMutation.isPending || chatUploading}
-            className="flex-1"
+            rows={1}
+            className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 max-h-32 overflow-y-auto"
+            style={{ fieldSizing: 'content' } as React.CSSProperties}
           />
-          <Button type="submit" size="icon" disabled={sendMutation.isPending || chatUploading || (!message.trim() && chatImages.length === 0)}>
+          <Button type="submit" size="icon" className="shrink-0" disabled={sendMutation.isPending || chatUploading || (!message.trim() && chatImages.length === 0)}>
             <Send className="size-4" />
           </Button>
         </form>

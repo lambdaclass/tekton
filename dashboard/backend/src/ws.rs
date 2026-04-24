@@ -167,7 +167,7 @@ async fn handle_autoresearch_output(mut socket: WebSocket, state: AppState, run_
 async fn handle_task_output(mut socket: WebSocket, state: AppState, task_id: String) {
     // First send any existing logs from the DB
     if let Ok(logs) = sqlx::query_as::<_, crate::models::TaskLog>(
-        "SELECT id, task_id, TO_CHAR(timestamp, 'YYYY-MM-DD HH24:MI:SS') as timestamp, line \
+        "SELECT id, task_id, TO_CHAR(timestamp, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as timestamp, line \
          FROM task_logs WHERE task_id = $1 ORDER BY id ASC",
     )
     .bind(&task_id)
