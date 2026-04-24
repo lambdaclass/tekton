@@ -192,7 +192,7 @@ test.describe.serial('Admin - Intake Sources CRUD', () => {
     await dialog.locator('#intake-repo').fill('e2eorg/e2erepo');
     await dialog.locator('#intake-branch').fill('develop');
     await dialog.locator('#intake-labels').fill('bug, e2e-test');
-    await dialog.locator('#intake-user').fill('e2e-admin');
+    await dialog.locator('#intake-user').fill('testadmin');
     await dialog.locator('#intake-interval').fill('60');
     await dialog.locator('#intake-max-concurrent').fill('5');
 
@@ -210,7 +210,7 @@ test.describe.serial('Admin - Intake Sources CRUD', () => {
     await expect(section.getByText(SOURCE_NAME)).toBeVisible();
     await expect(section.getByText('e2eorg/e2erepo')).toBeVisible();
     await expect(section.getByText('60s')).toBeVisible();
-    await expect(section.getByText('e2e-admin')).toBeVisible();
+    await expect(section.getByText('testadmin')).toBeVisible();
   });
 
   test('edit the intake source', async ({ adminPage: page }) => {
@@ -227,7 +227,7 @@ test.describe.serial('Admin - Intake Sources CRUD', () => {
     await expect(dialog.locator('#intake-name')).toHaveValue(SOURCE_NAME);
     await expect(dialog.locator('#intake-repo')).toHaveValue('e2eorg/e2erepo');
     await expect(dialog.locator('#intake-branch')).toHaveValue('develop');
-    await expect(dialog.locator('#intake-user')).toHaveValue('e2e-admin');
+    await expect(dialog.locator('#intake-user')).toHaveValue('testadmin');
 
     // Edit the name and repo
     await dialog.locator('#intake-name').fill(EDITED_NAME);
