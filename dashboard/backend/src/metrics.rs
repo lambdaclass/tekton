@@ -117,8 +117,14 @@ pub async fn summary(
 /// message, or it produced a log line. Agent logs count as activity too — a new
 /// log line only appears either because a person sent a new message that day or
 /// because the agent was still working through a long-running task on that day,
-/// and both of those are legitimately "worked on". Cost is attributed to the
-/// task's last-updated day (that's when the cost is actually observed).
+/// and both of those are legitimately "worked on".
+///
+/// Cost is attributed to every in-window activity day of a task in equal shares
+/// so `total_cost_usd` is split evenly across the days the task was worked on
+/// within the selected window. This keeps the cost curve visually consistent
+/// with the task-activity curve rather than piling cost onto a single
+/// `updated_at` day (which would show cost as zero on days that clearly had
+/// tasks running).
 pub async fn tasks_over_time(
     _user: AuthUser,
     State(state): State<crate::AppState>,
@@ -136,31 +142,35 @@ pub async fn tasks_over_time(
          ), \
          activity AS (\
             SELECT id AS task_id, DATE_TRUNC('day', created_at) AS day FROM tasks \
+             WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL \
             UNION \
             SELECT task_id, DATE_TRUNC('day', created_at) FROM task_messages \
+             WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL \
             UNION \
-            SELECT task_id, DATE_TRUNC('day', timestamp) FROM task_logs\
+            SELECT task_id, DATE_TRUNC('day', timestamp) FROM task_logs \
+             WHERE timestamp >= NOW() - ($1 || ' days')::INTERVAL \
          ), \
-         daily_active AS (\
-            SELECT day, COUNT(DISTINCT task_id)::BIGINT AS total \
+         task_day_counts AS (\
+            SELECT task_id, COUNT(DISTINCT day)::BIGINT AS n_days \
             FROM activity \
-            WHERE day >= DATE_TRUNC('day', NOW() - ($1 || ' days')::INTERVAL + INTERVAL '1 day') \
-            GROUP BY day\
+            GROUP BY task_id\
          ), \
-         daily_cost AS (\
-            SELECT DATE_TRUNC('day', updated_at) AS day, \
-                   COALESCE(SUM(total_cost_usd), 0)::DOUBLE PRECISION AS cost_usd \
-            FROM tasks \
-            WHERE updated_at >= DATE_TRUNC('day', NOW() - ($1 || ' days')::INTERVAL + INTERVAL '1 day') \
-            GROUP BY DATE_TRUNC('day', updated_at)\
+         daily_rows AS (\
+            SELECT \
+                a.day, \
+                a.task_id, \
+                (COALESCE(t.total_cost_usd, 0) / NULLIF(tdc.n_days, 0))::DOUBLE PRECISION AS day_cost \
+            FROM activity a \
+            JOIN tasks t ON t.id = a.task_id \
+            JOIN task_day_counts tdc ON tdc.task_id = a.task_id\
          ) \
          SELECT \
             TO_CHAR(d.day, 'YYYY-MM-DD') AS day, \
-            COALESCE(da.total, 0)::BIGINT AS total, \
-            COALESCE(dc.cost_usd, 0)::DOUBLE PRECISION AS cost_usd \
+            COALESCE(COUNT(DISTINCT dr.task_id), 0)::BIGINT AS total, \
+            COALESCE(SUM(dr.day_cost), 0)::DOUBLE PRECISION AS cost_usd \
          FROM days d \
-         LEFT JOIN daily_active da ON da.day = d.day \
-         LEFT JOIN daily_cost dc  ON dc.day = d.day \
+         LEFT JOIN daily_rows dr ON dr.day = d.day \
+         GROUP BY d.day \
          ORDER BY d.day ASC",
     )
     .bind(days.to_string())
