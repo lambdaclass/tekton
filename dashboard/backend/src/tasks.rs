@@ -2459,18 +2459,6 @@ async fn write_secrets_env_file(
     .await
 }
 
-/// Replace any occurrence of secret values in a log message with [REDACTED].
-#[allow(dead_code)]
-pub fn scrub_secrets(msg: &str, repo_secrets: &[(String, String)]) -> String {
-    let mut result = msg.to_string();
-    for (_, value) in repo_secrets {
-        if !value.is_empty() {
-            result = result.replace(value.as_str(), "[REDACTED]");
-        }
-    }
-    result
-}
-
 fn log_and_send(db: &PgPool, task_id: &str, tx: &broadcast::Sender<String>, msg: &str) {
     let _ = tx.send(msg.to_string());
     // Fire-and-forget DB persist
