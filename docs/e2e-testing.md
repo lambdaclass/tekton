@@ -395,3 +395,39 @@ npm run test:lighthouse
 Tests run serialized (`test.describe.serial`) with a single shared Chrome instance launched via `chrome-launcher`. Each page is audited with the admin auth cookie injected as an HTTP header. The desktop config uses simulated throttling (40ms RTT, 10Mbps throughput, no CPU slowdown).
 
 > **Note:** Lighthouse tests have a 60-second timeout per page (vs 30 seconds for regular tests).
+
+---
+
+## Common Pitfalls
+
+### `getByText` matching multiple elements
+
+`getByText` does **substring matching** and matches across all element types. This frequently causes tests to pass in headless mode (smaller viewport, fewer elements visible) but fail in headed mode (larger viewport, more elements rendered).
+
+**Example:** A page has both a `<label>Event Type</label>` filter control and a `<th>Event Type</th>` table header. `page.getByText('Event Type')` matches both, and Playwright's strict mode throws.
+
+**Fix:** Use a more specific locator:
+
+```ts
+// BAD — matches label AND column header
+await expect(page.getByText('Event Type')).toBeVisible();
+
+// GOOD — scoped by role
+await expect(page.locator('label', { hasText: 'Event Type' })).toBeVisible();
+await expect(page.getByRole('columnheader', { name: 'Event Type' })).toBeVisible();
+
+// GOOD — scoped by role for dialog headings
+await expect(dialog.getByRole('heading', { name: 'Test Poll' })).toBeVisible();
+
+// GOOD — scoped to a CSS class for badge-like elements
+const labels = dialog.locator('span.rounded-full');
+await expect(labels.filter({ hasText: 'bug' })).toBeVisible();
+
+// OK — { exact: true } + scoped to a parent
+await expect(row.getByText('On', { exact: true })).toBeVisible();
+
+// OK — text is long/unique enough that duplicates are unlikely
+await expect(dialog.getByText('Auth module throws NPE when token is expired.')).toBeVisible();
+```
+
+**Rule of thumb:** If the text is short or generic (`'Created'`, `'On'`, `'Error'`), always scope it — via a parent locator, a role, or a CSS selector. Prefer `getByRole` when the element has an obvious ARIA role (`heading`, `button`, `columnheader`, `cell`).

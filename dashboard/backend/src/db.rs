@@ -281,5 +281,98 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
+    // Add intake columns to tasks table
+    for col_sql in &[
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS intake_issue_id BIGINT",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS source_type TEXT DEFAULT 'manual'",
+    ] {
+        let _ = sqlx::query(col_sql).execute(pool).await;
+    }
+
+    // Create intake_sources table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS intake_sources (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            enabled BOOLEAN NOT NULL DEFAULT true,
+            config JSONB NOT NULL DEFAULT '{}',
+            api_token_encrypted TEXT,
+            target_repo TEXT NOT NULL,
+            target_base_branch TEXT NOT NULL DEFAULT 'main',
+            label_filter TEXT[] NOT NULL DEFAULT '{}',
+            prompt_template TEXT,
+            run_as_user TEXT NOT NULL,
+            poll_interval_secs INTEGER NOT NULL DEFAULT 300,
+            max_concurrent_tasks INTEGER NOT NULL DEFAULT 3,
+            max_tasks_per_poll INTEGER NOT NULL DEFAULT 5,
+            auto_create_pr BOOLEAN NOT NULL DEFAULT false,
+            created_by TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Create intake_issues table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS intake_issues (
+            id BIGSERIAL PRIMARY KEY,
+            source_id BIGINT NOT NULL REFERENCES intake_sources(id) ON DELETE CASCADE,
+            external_id TEXT NOT NULL,
+            external_url TEXT,
+            external_title TEXT NOT NULL,
+            external_body TEXT,
+            external_labels TEXT[] NOT NULL DEFAULT '{}',
+            external_updated_at TIMESTAMPTZ,
+            task_id TEXT REFERENCES tasks(id),
+            status TEXT NOT NULL DEFAULT 'backlog',
+            error_message TEXT,
+            prompt TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(source_id, external_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Make api_token_encrypted nullable for existing installs (token now comes from users table)
+    let _ =
+        sqlx::query("ALTER TABLE intake_sources ALTER COLUMN api_token_encrypted DROP NOT NULL")
+            .execute(pool)
+            .await;
+
+    // Add prompt column and migrate status defaults for existing installs
+    for col_sql in &[
+        "ALTER TABLE intake_issues ADD COLUMN IF NOT EXISTS prompt TEXT",
+        "ALTER TABLE intake_issues ALTER COLUMN status SET DEFAULT 'backlog'",
+    ] {
+        let _ = sqlx::query(col_sql).execute(pool).await;
+    }
+    // Migrate orphan pending issues (no task spawned yet) to backlog
+    let _ = sqlx::query(
+        "UPDATE intake_issues SET status = 'backlog' WHERE status = 'pending' AND task_id IS NULL",
+    )
+    .execute(pool)
+    .await;
+
+    // Create intake_poll_log table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS intake_poll_log (
+            id BIGSERIAL PRIMARY KEY,
+            source_id BIGINT NOT NULL REFERENCES intake_sources(id) ON DELETE CASCADE,
+            polled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            issues_found INTEGER NOT NULL DEFAULT 0,
+            issues_created INTEGER NOT NULL DEFAULT 0,
+            issues_skipped INTEGER NOT NULL DEFAULT 0,
+            error_message TEXT,
+            duration_ms INTEGER
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }
