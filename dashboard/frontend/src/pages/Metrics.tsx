@@ -373,18 +373,23 @@ function ActivityChart({ data }: { data: TasksOverTimeRow[] }) {
   const barW = Math.max(2, slotW * 0.65);
   const barGap = slotW - barW;
 
-  const yTicks = [0, maxVal / 4, maxVal / 2, (maxVal * 3) / 4, maxVal];
+  const yTicks = buildYTicks(maxVal);
 
   const pathPoints = data.map((d, i) => {
     const x = padLeft + i * slotW + slotW / 2;
     const y = padTop + chartH - (d.cost_usd / costMax) * chartH;
-    return [x, y] as const;
+    return { x, y, cost: d.cost_usd } as const;
   });
-  const linePath = smoothPath(pathPoints);
-  const areaPath =
-    pathPoints.length > 0
-      ? `${linePath} L ${pathPoints[pathPoints.length - 1][0]} ${padTop + chartH} L ${pathPoints[0][0]} ${padTop + chartH} Z`
-      : '';
+  // Straight line segments — bezier smoothing creates spurious peaks on sparse data.
+  const linePath = pathPoints.length
+    ? 'M ' + pathPoints.map((p) => `${p.x} ${p.y}`).join(' L ')
+    : '';
+  const baseline = padTop + chartH;
+  const areaPath = pathPoints.length
+    ? `M ${pathPoints[0].x} ${baseline} L ${pathPoints
+        .map((p) => `${p.x} ${p.y}`)
+        .join(' L ')} L ${pathPoints[pathPoints.length - 1].x} ${baseline} Z`
+    : '';
 
   const xLabelStep = Math.max(1, Math.ceil(data.length / 8));
 
@@ -530,20 +535,24 @@ function ActivityChart({ data }: { data: TasksOverTimeRow[] }) {
               d={linePath}
               fill="none"
               stroke="rgb(245, 158, 11)"
-              strokeWidth={2}
+              strokeWidth={1.75}
               strokeLinejoin="round"
               strokeLinecap="round"
             />
-            {pathPoints.map(([x, y], i) => (
-              <circle
-                key={`pt-${i}`}
-                cx={x}
-                cy={y}
-                r={2.5}
-                className="fill-amber-500 stroke-background"
-                strokeWidth={1.5}
-              />
-            ))}
+            {/* Only render dots on days with actual cost — otherwise the baseline
+                becomes a noisy string of circles. */}
+            {pathPoints
+              .filter((p) => p.cost > 0)
+              .map((p, i) => (
+                <circle
+                  key={`pt-${i}`}
+                  cx={p.x}
+                  cy={p.y}
+                  r={3}
+                  className="fill-amber-500 stroke-background"
+                  strokeWidth={1.5}
+                />
+              ))}
           </>
         )}
       </svg>
@@ -551,17 +560,19 @@ function ActivityChart({ data }: { data: TasksOverTimeRow[] }) {
   );
 }
 
-function smoothPath(points: readonly (readonly [number, number])[]): string {
-  if (points.length === 0) return '';
-  if (points.length === 1) return `M ${points[0][0]} ${points[0][1]}`;
-  let d = `M ${points[0][0]} ${points[0][1]}`;
-  for (let i = 0; i < points.length - 1; i++) {
-    const [x0, y0] = points[i];
-    const [x1, y1] = points[i + 1];
-    const mx = (x0 + x1) / 2;
-    d += ` C ${mx} ${y0}, ${mx} ${y1}, ${x1} ${y1}`;
+function buildYTicks(maxVal: number): number[] {
+  // For small integer ranges, step by 1; otherwise aim for ~5 nicely spaced ticks.
+  if (maxVal <= 5 && Number.isInteger(maxVal)) {
+    return Array.from({ length: maxVal + 1 }, (_, i) => i);
   }
-  return d;
+  const targetSteps = 4;
+  const rawStep = maxVal / targetSteps;
+  const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const norm = rawStep / mag;
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag;
+  const ticks: number[] = [];
+  for (let v = 0; v <= maxVal + step / 2; v += step) ticks.push(v);
+  return ticks;
 }
 
 function niceMax(v: number): number {
