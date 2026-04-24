@@ -358,7 +358,12 @@ pub struct AutoresearchRun {
     pub branch_name: Option<String>,
     pub agent_name: Option<String>,
     pub benchmark_server_id: Option<i64>,
-    pub benchmark_command: String,
+    pub benchmark_command: Option<String>,
+    pub benchmark_type: String,
+    pub ethrex_repo_path: Option<String>,
+    pub benchmarks_repo_path: Option<String>,
+    /// JSONB: { "fast": { "mgas_avg": ..., "latency_avg_ms": ..., "latency_p50_ms": ..., ... }, "gigablocks": {...}, "slow": {...} }
+    pub expb_baseline_metrics: Option<serde_json::Value>,
     pub objective: Option<String>,
     pub metric_regex: Option<String>,
     pub optimization_direction: Option<String>,
@@ -384,7 +389,8 @@ pub struct AutoresearchRun {
 pub struct CreateAutoresearchRunRequest {
     pub repo: String,
     pub base_branch: Option<String>,
-    pub benchmark_command: String,
+    // Required for benchmark_type='shell'; ignored for 'expb'.
+    pub benchmark_command: Option<String>,
     pub objective: String,
     pub metric_regex: Option<String>,
     pub optimization_direction: Option<String>,
@@ -393,6 +399,10 @@ pub struct CreateAutoresearchRunRequest {
     pub max_experiments: Option<i32>,
     pub time_budget_minutes: Option<i32>,
     pub benchmark_server_id: Option<i64>,
+    // EXPB-specific fields.
+    pub benchmark_type: Option<String>, // 'shell' (default) or 'expb'
+    pub ethrex_repo_path: Option<String>,
+    pub benchmarks_repo_path: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
@@ -413,6 +423,14 @@ pub struct AutoresearchExperiment {
     pub duration_seconds: Option<i32>,
     pub pr_url: Option<String>,
     pub created_at: String,
+    pub mgas_avg: Option<f64>,
+    pub latency_avg_ms: Option<f64>,
+    pub latency_p50_ms: Option<f64>,
+    pub latency_p95_ms: Option<f64>,
+    pub latency_p99_ms: Option<f64>,
+    /// 'fast' | 'gigablocks' | 'slow' — highest tier the experiment passed.
+    /// NULL means nothing passed (or the run is still in progress).
+    pub expb_tier_reached: Option<String>,
 }
 
 // ── Autoresearch Messages ──

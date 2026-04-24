@@ -356,6 +356,38 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .execute(pool)
     .await;
 
+    // EXPB benchmark support. A run is either a classic shell-command benchmark
+    // (benchmark_type='shell') or an EXPB benchmark (benchmark_type='expb')
+    // which drives the upstream benchmarks tooling over SSH through the
+    // tiered fast → gigablocks → slow gate. We store per-tier baseline metrics
+    // on the run (as JSONB) and per-experiment metrics as their own columns.
+    for col_sql in &[
+        // Run shape
+        "ALTER TABLE autoresearch_runs ADD COLUMN IF NOT EXISTS benchmark_type TEXT NOT NULL DEFAULT 'shell'",
+        "ALTER TABLE autoresearch_runs ADD COLUMN IF NOT EXISTS ethrex_repo_path TEXT",
+        "ALTER TABLE autoresearch_runs ADD COLUMN IF NOT EXISTS benchmarks_repo_path TEXT",
+        "ALTER TABLE autoresearch_runs ADD COLUMN IF NOT EXISTS expb_baseline_metrics JSONB",
+        // benchmark_command is only required for shell runs; EXPB runs leave it null
+        "ALTER TABLE autoresearch_runs ALTER COLUMN benchmark_command DROP NOT NULL",
+        // Drop first-draft HTTP-era columns so they don't linger as confusing nulls
+        "ALTER TABLE autoresearch_runs DROP COLUMN IF EXISTS expb_repo_path",
+        "ALTER TABLE autoresearch_runs DROP COLUMN IF EXISTS fast_baseline_run_id",
+        "ALTER TABLE autoresearch_runs DROP COLUMN IF EXISTS gigablocks_baseline_run_id",
+        "ALTER TABLE autoresearch_runs DROP COLUMN IF EXISTS slow_baseline_run_id",
+        // Per-experiment metrics
+        "ALTER TABLE autoresearch_experiments ADD COLUMN IF NOT EXISTS mgas_avg DOUBLE PRECISION",
+        "ALTER TABLE autoresearch_experiments ADD COLUMN IF NOT EXISTS latency_avg_ms DOUBLE PRECISION",
+        "ALTER TABLE autoresearch_experiments ADD COLUMN IF NOT EXISTS latency_p50_ms DOUBLE PRECISION",
+        "ALTER TABLE autoresearch_experiments ADD COLUMN IF NOT EXISTS latency_p95_ms DOUBLE PRECISION",
+        "ALTER TABLE autoresearch_experiments ADD COLUMN IF NOT EXISTS latency_p99_ms DOUBLE PRECISION",
+        "ALTER TABLE autoresearch_experiments ADD COLUMN IF NOT EXISTS expb_tier_reached TEXT",
+        "ALTER TABLE autoresearch_experiments DROP COLUMN IF EXISTS expb_run_ids",
+        // Per-server EXPB fields. No HTTP API URL any more.
+        "ALTER TABLE benchmark_servers DROP COLUMN IF EXISTS expb_api_url",
+    ] {
+        let _ = sqlx::query(col_sql).execute(pool).await;
+    }
+
     // Create autoresearch_experiments table
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS autoresearch_experiments (

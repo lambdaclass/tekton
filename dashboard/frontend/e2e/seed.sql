@@ -180,7 +180,11 @@ CREATE TABLE IF NOT EXISTS autoresearch_runs (
     branch_name TEXT,
     agent_name TEXT,
     benchmark_server_id BIGINT REFERENCES benchmark_servers(id),
-    benchmark_command TEXT NOT NULL,
+    benchmark_command TEXT,
+    benchmark_type TEXT NOT NULL DEFAULT 'shell',
+    ethrex_repo_path TEXT,
+    benchmarks_repo_path TEXT,
+    expb_baseline_metrics JSONB,
     objective TEXT,
     metric_regex TEXT,
     optimization_direction TEXT,
@@ -217,7 +221,13 @@ CREATE TABLE IF NOT EXISTS autoresearch_experiments (
     output_tokens BIGINT DEFAULT 0,
     cost_usd DOUBLE PRECISION DEFAULT 0,
     duration_seconds INTEGER,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    mgas_avg DOUBLE PRECISION,
+    latency_avg_ms DOUBLE PRECISION,
+    latency_p50_ms DOUBLE PRECISION,
+    latency_p95_ms DOUBLE PRECISION,
+    latency_p99_ms DOUBLE PRECISION,
+    expb_tier_reached TEXT
 );
 
 CREATE TABLE IF NOT EXISTS autoresearch_logs (

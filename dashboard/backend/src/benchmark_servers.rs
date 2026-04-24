@@ -289,37 +289,52 @@ async fn run_server_setup(
     ssh_key_path: Option<&str>,
 ) -> Result<String, AppError> {
     let setup_script = r#"
-set -euo pipefail
-echo "=== Benchmark server setup ==="
+set -u
+echo "=== Benchmark server verification ==="
 echo "Hostname: $(hostname)"
 echo "Date: $(date -u)"
+echo
 
-# Check basic tools
-for cmd in git rsync; do
-    if command -v $cmd &>/dev/null; then
-        echo "[OK] $cmd: $(command -v $cmd)"
+status=0
+check() {
+    local label="$1"; shift
+    if "$@" >/dev/null 2>&1; then
+        echo "[OK] $label"
     else
-        echo "[INSTALL] Installing $cmd..."
-        if command -v apt-get &>/dev/null; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq $cmd
-        elif command -v dnf &>/dev/null; then
-            sudo dnf install -y -q $cmd
-        elif command -v nix-env &>/dev/null; then
-            nix-env -iA nixpkgs.$cmd
-        else
-            echo "[ERROR] Cannot install $cmd — unknown package manager"
-            exit 1
-        fi
-        echo "[OK] $cmd installed"
+        echo "[MISSING] $label"
+        status=1
     fi
-done
+}
 
-# Create workspace directory for autoresearch runs
-mkdir -p ~/autoresearch
-echo "[OK] ~/autoresearch workspace ready"
+# Classic shell-benchmark prerequisites
+check "git binary"    command -v git
+check "rsync binary"  command -v rsync
+mkdir -p ~/autoresearch 2>/dev/null && echo "[OK] ~/autoresearch workspace"
 
-echo ""
-echo "=== Setup complete ==="
+# EXPB benchmark prerequisites. These are optional — the server can still be
+# used for classic shell benchmarks without them — so any missing ones are
+# reported as warnings rather than hard failures.
+echo
+echo "--- EXPB benchmark prerequisites (optional) ---"
+check "docker binary"          command -v docker
+check "passwordless sudo"      sudo -n true
+check "expb binary"            command -v expb
+check "overlay FS support"     grep -q overlay /proc/filesystems
+# We cannot know the exact paths where the admin keeps the ethrex clone, the
+# benchmarks checkout, the state snapshot, or the payload data files since
+# tekton does not prescribe them — those are fields on the autoresearch run
+# itself. Just remind the admin here.
+echo "[INFO] Ethrex clone, benchmarks checkout, state snapshot, and payload"
+echo "       data files are configured per autoresearch run. Make sure they"
+echo "       exist on this server before starting an EXPB run."
+
+echo
+if [ $status -eq 0 ]; then
+    echo "=== Verification complete: ready for classic shell benchmark runs ==="
+else
+    echo "=== Verification complete: some required tools are missing ==="
+fi
+exit $status
 "#;
 
     let mut args = vec![
