@@ -359,6 +359,8 @@ function ActivityChart({ data }: { data: TasksOverTimeRow[] }) {
   const chartW = width - padLeft - padRight;
   const chartH = height - padTop - padBottom;
 
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+
   const rawMax = Math.max(...data.map((d) => d.total), 1);
   const maxVal = niceMax(rawMax);
   const rawCostMax = Math.max(...data.map((d) => d.cost_usd), 0);
@@ -397,9 +399,21 @@ function ActivityChart({ data }: { data: TasksOverTimeRow[] }) {
 
   const xLabelStep = Math.max(1, Math.ceil(data.length / 8));
 
+  const hovered = hoverIdx !== null ? data[hoverIdx] : null;
+  const hoveredX = hoverIdx !== null ? xFor(hoverIdx) : 0;
+  const tooltipLeftPct = hoverIdx !== null ? (hoveredX / width) * 100 : 0;
+  const tooltipTopPct = hoverIdx !== null
+    ? (Math.min(taskPoints[hoverIdx].y, rawCostMax > 0 ? costPoints[hoverIdx].y : Infinity) / height) * 100
+    : 0;
+
   return (
-    <div className="w-full overflow-hidden">
-      <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-64" preserveAspectRatio="none">
+    <div className="w-full relative">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="w-full h-64 block"
+        preserveAspectRatio="none"
+        onMouseLeave={() => setHoverIdx(null)}
+      >
         <defs>
           <linearGradient id="taskArea" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="rgb(16, 185, 129)" stopOpacity="0.18" />
@@ -452,35 +466,23 @@ function ActivityChart({ data }: { data: TasksOverTimeRow[] }) {
             );
           })}
 
-        {/* X-axis date labels + hover hit targets with tooltips */}
+        {/* X-axis date labels */}
         {data.map((d, i) => {
           const date = new Date(d.day + 'T00:00:00');
           const label = `${date.getMonth() + 1}/${date.getDate()}`;
           const cx = xFor(i);
-          const hitW = data.length > 1 ? slotW : chartW;
+          if (i % xLabelStep !== 0) return null;
           return (
-            <g key={d.day}>
-              <rect
-                x={cx - hitW / 2}
-                y={padTop}
-                width={hitW}
-                height={chartH}
-                fill="transparent"
-              >
-                <title>{`${label}: ${d.total} task${d.total === 1 ? '' : 's'} · ${fmtCost(d.cost_usd)}`}</title>
-              </rect>
-              {i % xLabelStep === 0 && (
-                <text
-                  x={cx}
-                  y={baseline + 16}
-                  textAnchor="middle"
-                  className="fill-muted-foreground"
-                  style={{ fontSize: 10 }}
-                >
-                  {label}
-                </text>
-              )}
-            </g>
+            <text
+              key={`lbl-${d.day}`}
+              x={cx}
+              y={baseline + 16}
+              textAnchor="middle"
+              className="fill-muted-foreground"
+              style={{ fontSize: 10 }}
+            >
+              {label}
+            </text>
           );
         })}
 
@@ -495,8 +497,9 @@ function ActivityChart({ data }: { data: TasksOverTimeRow[] }) {
           strokeLinecap="round"
         />
         {taskPoints
-          .filter((p) => p.total > 0)
-          .map((p, i) => (
+          .map((p, i) => ({ p, i }))
+          .filter(({ p }) => p.total > 0)
+          .map(({ p, i }) => (
             <circle
               key={`t-${i}`}
               cx={p.x}
@@ -519,8 +522,9 @@ function ActivityChart({ data }: { data: TasksOverTimeRow[] }) {
               strokeLinecap="round"
             />
             {costPoints
-              .filter((p) => p.cost > 0)
-              .map((p, i) => (
+              .map((p, i) => ({ p, i }))
+              .filter(({ p }) => p.cost > 0)
+              .map(({ p, i }) => (
                 <circle
                   key={`c-${i}`}
                   cx={p.x}
@@ -532,9 +536,101 @@ function ActivityChart({ data }: { data: TasksOverTimeRow[] }) {
               ))}
           </>
         )}
+
+        {/* Hover overlay: vertical guide + emphasized points on the hovered day */}
+        {hoverIdx !== null && (
+          <g pointerEvents="none">
+            <line
+              x1={hoveredX}
+              y1={padTop}
+              x2={hoveredX}
+              y2={baseline}
+              stroke="currentColor"
+              strokeOpacity={0.22}
+              strokeDasharray="3 3"
+            />
+            {data[hoverIdx].total > 0 && (
+              <circle
+                cx={hoveredX}
+                cy={taskPoints[hoverIdx].y}
+                r={5}
+                className="fill-emerald-500 stroke-background"
+                strokeWidth={2}
+              />
+            )}
+            {rawCostMax > 0 && data[hoverIdx].cost_usd > 0 && (
+              <circle
+                cx={hoveredX}
+                cy={costPoints[hoverIdx].y}
+                r={4.5}
+                className="fill-amber-500 stroke-background"
+                strokeWidth={2}
+              />
+            )}
+          </g>
+        )}
+
+        {/* Invisible hit targets per day. Drawn last so they catch pointer events
+            over the lines and points. */}
+        {data.map((d, i) => {
+          const cx = xFor(i);
+          const hitW = data.length > 1 ? slotW : chartW;
+          return (
+            <rect
+              key={`hit-${d.day}`}
+              x={cx - hitW / 2}
+              y={padTop}
+              width={hitW}
+              height={chartH}
+              fill="transparent"
+              onMouseEnter={() => setHoverIdx(i)}
+              onMouseMove={() => setHoverIdx(i)}
+            />
+          );
+        })}
       </svg>
+
+      {hovered && hoverIdx !== null && (
+        <div
+          className="pointer-events-none absolute z-10"
+          style={{
+            left: `${tooltipLeftPct}%`,
+            top: `${tooltipTopPct}%`,
+            transform: `translate(${tooltipLeftPct > 70 ? 'calc(-100% - 12px)' : '12px'}, -50%)`,
+          }}
+        >
+          <div className="rounded-md border border-border bg-popover shadow-lg px-3 py-2 text-xs min-w-[160px]">
+            <div className="font-medium text-foreground mb-1.5">
+              {formatFullDate(hovered.day)}
+            </div>
+            <div className="flex items-center justify-between gap-4 tabular-nums">
+              <span className="flex items-center gap-1.5 text-muted-foreground">
+                <span className="inline-block size-2 rounded-full bg-emerald-500" />
+                Tasks
+              </span>
+              <span className="font-medium text-foreground">{hovered.total}</span>
+            </div>
+            <div className="flex items-center justify-between gap-4 tabular-nums mt-1">
+              <span className="flex items-center gap-1.5 text-muted-foreground">
+                <span className="inline-block size-2 rounded-full bg-amber-500" />
+                Cost
+              </span>
+              <span className="font-medium text-foreground">{fmtCost(hovered.cost_usd)}</span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+function formatFullDate(day: string): string {
+  const d = new Date(day + 'T00:00:00');
+  return d.toLocaleDateString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
 }
 
 function buildYTicks(maxVal: number): number[] {
