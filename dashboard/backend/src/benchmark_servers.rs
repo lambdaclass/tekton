@@ -220,9 +220,24 @@ pub async fn setup_server(
         let result = run_server_setup(&hostname, &ssh_user, ssh_key_path.as_deref()).await;
 
         match result {
-            Ok(log) => {
+            Ok(SetupOutcome { ok: true, log }) => {
                 let _ = sqlx::query(
                     "UPDATE benchmark_servers SET status = 'ready', setup_log = $2, error_message = NULL, updated_at = NOW() WHERE id = $1",
+                )
+                .bind(id)
+                .bind(&log)
+                .execute(&db)
+                .await;
+            }
+            Ok(SetupOutcome { ok: false, log }) => {
+                // Verification ran but reported missing prerequisites. Keep
+                // the full output in setup_log (so the dialog renders it
+                // formatted) and put a short summary in error_message.
+                let _ = sqlx::query(
+                    "UPDATE benchmark_servers SET status = 'error', \
+                     setup_log = $2, \
+                     error_message = 'Verification reported missing prerequisites — see setup log below.', \
+                     updated_at = NOW() WHERE id = $1",
                 )
                 .bind(id)
                 .bind(&log)
@@ -232,7 +247,7 @@ pub async fn setup_server(
             Err(e) => {
                 let err_msg = format!("{e}");
                 let _ = sqlx::query(
-                    "UPDATE benchmark_servers SET status = 'error', error_message = $2, updated_at = NOW() WHERE id = $1",
+                    "UPDATE benchmark_servers SET status = 'error', error_message = $2, setup_log = NULL, updated_at = NOW() WHERE id = $1",
                 )
                 .bind(id)
                 .bind(&err_msg)
@@ -287,7 +302,7 @@ async fn run_server_setup(
     hostname: &str,
     ssh_user: &str,
     ssh_key_path: Option<&str>,
-) -> Result<String, AppError> {
+) -> Result<SetupOutcome, AppError> {
     // Piped into `bash -s` over SSH stdin to avoid having the remote login
     // shell re-parse the script (which would split on embedded `;` and `|`
     // and break control flow like `if ... ; then`).
@@ -391,15 +406,21 @@ exit $status
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let log = format!("{stdout}\n{stderr}");
+    let ok = output.status.success();
+    Ok(SetupOutcome { ok, log })
+}
 
-    if !output.status.success() {
-        return Err(AppError::Internal(format!(
-            "Setup failed (exit code {:?}):\n{log}",
-            output.status.code()
-        )));
-    }
-
-    Ok(log)
+/// Result of a verification run.
+///
+/// `Ok(SetupOutcome { ok: true, .. })` means everything is in place.
+/// `Ok(SetupOutcome { ok: false, .. })` means tekton was able to SSH and run
+/// the script, but the script reported one or more missing prerequisites —
+/// the admin needs to fix them on the box. Either way the full output is in
+/// `log`. `Err(AppError)` is reserved for actually-failed connections /
+/// spawn errors that produced no output.
+struct SetupOutcome {
+    ok: bool,
+    log: String,
 }
 
 // ── Non-admin endpoint for autoresearch run creation ──

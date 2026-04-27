@@ -1425,7 +1425,7 @@ function BenchmarkServersSection({ queryClient }: { queryClient: ReturnType<type
             <div className="flex-1 overflow-y-auto">
               {setupLog?.error_message && (
                 <div className="mb-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2">
-                  <p className="text-sm text-destructive">{setupLog.error_message}</p>
+                  <pre className="text-xs font-mono text-destructive whitespace-pre-wrap break-words">{setupLog.error_message}</pre>
                 </div>
               )}
               {setupLog?.setup_log ? (
