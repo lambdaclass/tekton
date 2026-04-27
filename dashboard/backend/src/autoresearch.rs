@@ -1027,10 +1027,14 @@ async fn run_autoresearch_pipeline(
         .fetch_one(db)
         .await?;
 
-        // Check if Claude made any changes (from the previous prompt — either initial or continue)
-        let diff = shell::agent_exec_capture(&agent_name, "cd /home/agent/repo && git diff")
-            .await
-            .unwrap_or_default();
+        // Check if Claude made any changes (working tree OR committed since base)
+        // Claude often commits its own changes via shell, so check diff vs origin/<base_branch>
+        let diff = shell::agent_exec_capture(
+            &agent_name,
+            &format!("cd /home/agent/repo && git diff origin/{base_branch}"),
+        )
+        .await
+        .unwrap_or_default();
 
         let diff_lines = diff.lines().count();
         if diff.trim().is_empty() {
@@ -1076,12 +1080,12 @@ async fn run_autoresearch_pipeline(
         )
         .await;
 
-        // Commit changes locally
-        shell::agent_exec_capture(
+        // Commit any uncommitted changes (Claude may have already committed via shell — that's fine)
+        let _ = shell::agent_exec_capture(
             &agent_name,
-            "cd /home/agent/repo && git add -A && git commit -m 'autoresearch experiment'",
+            "cd /home/agent/repo && git add -A && (git diff --cached --quiet || git commit -m 'autoresearch experiment')",
         )
-        .await?;
+        .await;
 
         // Sync to benchmark server if needed (classic shell flow only — EXPB
         // runs push directly to the benchmark server from the agent container
