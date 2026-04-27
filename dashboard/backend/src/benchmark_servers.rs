@@ -321,7 +321,14 @@ mkdir -p ~/autoresearch 2>/dev/null && echo "[OK] ~/autoresearch workspace"
 echo
 echo "--- EXPB benchmark prerequisites ---"
 check "docker binary"          command -v docker
-check "passwordless sudo"      sudo -n true
+sudo_err="$(sudo -n true 2>&1)"
+sudo_rc=$?
+if [ "$sudo_rc" -eq 0 ]; then
+    echo "[OK] passwordless sudo"
+else
+    echo "[MISSING] passwordless sudo (rc=$sudo_rc): $sudo_err"
+    status=1
+fi
 check "expb binary"            command -v expb
 check "overlay FS support"     grep -q overlay /proc/filesystems
 # We cannot know the exact paths where the admin keeps the ethrex clone, the
