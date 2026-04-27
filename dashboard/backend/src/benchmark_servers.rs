@@ -296,6 +296,9 @@ echo "=== Benchmark server verification ==="
 echo "Hostname: $(hostname)"
 echo "Date:     $(date -u)"
 echo "User:     $(whoami) (home: $HOME)"
+echo "PATH:     $PATH"
+echo "sudo:     $(command -v sudo || echo '(not in PATH)')"
+echo "sudo -n true output: $(sudo -n true 2>&1 || echo "FAILED with exit=$?")"
 echo
 
 status=0
