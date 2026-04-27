@@ -294,7 +294,8 @@ async fn run_server_setup(
     let setup_script = r#"set -u
 echo "=== Benchmark server verification ==="
 echo "Hostname: $(hostname)"
-echo "Date: $(date -u)"
+echo "Date:     $(date -u)"
+echo "User:     $(whoami) (home: $HOME)"
 echo
 
 status=0
