@@ -762,27 +762,30 @@ async fn run_autoresearch_pipeline(
         .execute(db)
         .await?;
 
-        // EXPB runs drive the benchmark fully over SSH: no GitHub branch and
-        // no clone-on-benchmark-server setup — the benchmark host already has
-        // its own ethrex clone that tekton updates via `git fetch + checkout`
-        // on each experiment.
-        if run.benchmark_type != "expb" {
-            // Classic shell flow: create the branch on GitHub so the benchmark
-            // server can clone it, then clone it on the benchmark server.
-            log_and_persist(db, &tx, run_id, "[SETUP] Creating branch on GitHub...").await;
-            let base_sha = shell::agent_exec_capture(
-                &agent_name,
-                &format!(
-                    "cd /home/agent/repo && git rev-parse 'origin/{}'",
-                    run.base_branch
-                ),
-            )
-            .await?
-            .trim()
-            .to_string();
-            crate::tasks::create_github_branch(github_token, &run.repo, branch_name, &base_sha)
-                .await?;
+        // Both shell-with-server and EXPB runs need a branch on GitHub: the
+        // benchmark server fetches commits from GitHub (`git fetch origin
+        // <branch>`) rather than receiving them from the agent container
+        // directly, which keeps the agent container free of any direct
+        // network path to the benchmark host.
+        log_and_persist(db, &tx, run_id, "[SETUP] Creating branch on GitHub...").await;
+        let base_sha = shell::agent_exec_capture(
+            &agent_name,
+            &format!(
+                "cd /home/agent/repo && git rev-parse 'origin/{}'",
+                run.base_branch
+            ),
+        )
+        .await?
+        .trim()
+        .to_string();
+        crate::tasks::create_github_branch(github_token, &run.repo, branch_name, &base_sha).await?;
 
+        // The classic shell flow additionally rsyncs the repo onto the
+        // benchmark server so the host can run the benchmark command against
+        // it. EXPB runs maintain their own ethrex clone on the host
+        // (`ethrex_repo_path`) which fetches from GitHub in `run_expb_experiment`,
+        // so the rsync is unnecessary there.
+        if run.benchmark_type != "expb" {
             log_and_persist(
                 db,
                 &tx,
@@ -864,8 +867,10 @@ async fn run_autoresearch_pipeline(
     let start_time = Instant::now();
     let mut experiment_number = 0i32;
     let mut best_metric: Option<f64> = None;
+    // Setup just created the GitHub branch when a benchmark server is
+    // attached (true for both shell-with-server and EXPB runs).
     let mut branch_created = benchmark_server.is_some();
-    let mut last_seen_message_id: i64 = 0; // already created if we cloned on benchmark server
+    let mut last_seen_message_id: i64 = 0;
 
     let base_branch = run.base_branch.clone();
     let objective = run.objective.as_deref().unwrap_or("improve performance");
@@ -1134,8 +1139,17 @@ async fn run_autoresearch_pipeline(
                     .bind(run_id)
                     .fetch_one(db)
                     .await?;
-            match run_expb_experiment(db, &agent_name, exp_id, &fresh_run, server, branch_name)
-                .await
+            match run_expb_experiment(
+                db,
+                &agent_name,
+                github_token,
+                &mut branch_created,
+                exp_id,
+                &fresh_run,
+                server,
+                branch_name,
+            )
+            .await
             {
                 Ok((summary, keep)) => {
                     expb_keep_override = Some(keep);
@@ -1162,6 +1176,41 @@ async fn run_autoresearch_pipeline(
             .await
         };
         let bench_secs = bench_start.elapsed().as_secs();
+
+        // EXPB benchmark failures are always infrastructure (SSH push, git
+        // fetch, docker build, expb wrapper crash) — never "your code is
+        // bad". Don't burn a Claude turn on them: mark the experiment row
+        // as errored, reset the agent's branch, and skip ahead to the next
+        // iteration so a transient hiccup doesn't poison the comparison.
+        if run.benchmark_type == "expb" {
+            if let Err(ref e) = benchmark_result {
+                log_and_persist(
+                    db,
+                    &tx,
+                    run_id,
+                    &format!(
+                        "[EXP {experiment_number}] EXPB infrastructure error ({bench_secs}s): {e}\n\
+                         Marking experiment as errored and continuing without sending to Claude."
+                    ),
+                )
+                .await;
+                let _ = sqlx::query(
+                    "UPDATE autoresearch_experiments SET status = 'error', \
+                     metric_raw_output = $2, duration_seconds = $3 WHERE id = $1",
+                )
+                .bind(exp_id)
+                .bind(format!("{e}"))
+                .bind(bench_secs as i32)
+                .execute(db)
+                .await;
+                let _ = shell::agent_exec_capture(
+                    &agent_name,
+                    "cd /home/agent/repo && git reset --hard HEAD~1",
+                )
+                .await;
+                continue;
+            }
+        }
 
         let raw_output = match &benchmark_result {
             Ok(output) => {
@@ -1548,9 +1597,12 @@ async fn run_expb_baseline(
 /// Pushes the agent's HEAD to the ethrex checkout on the server, runs each
 /// tier in turn, and compares against the per-tier baselines we stored at
 /// run creation. Persists the resulting metrics onto the experiment row.
+#[allow(clippy::too_many_arguments)]
 async fn run_expb_experiment(
     db: &PgPool,
     agent_name: &str,
+    github_token: &str,
+    branch_created: &mut bool,
     exp_id: i64,
     run: &AutoresearchRun,
     server: &crate::models::BenchmarkServer,
@@ -1565,28 +1617,22 @@ async fn run_expb_experiment(
         .as_deref()
         .ok_or_else(|| AppError::BadRequest("Run is missing benchmarks_repo_path".into()))?;
 
-    // 1. Push the current branch from the agent container to the ethrex
-    //    checkout on the benchmark server.
-    let ssh_remote = format!(
-        "{}@{}:{}",
-        server.ssh_user, server.hostname, ethrex_repo_path
-    );
-    let ssh_key_flag = server
-        .ssh_key_path
-        .as_deref()
-        .map(|k| format!(" -i {k}"))
-        .unwrap_or_default();
-    let git_ssh = format!(
-        "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR{ssh_key_flag}"
-    );
-    let push_cmd = format!(
-        "cd /home/agent/repo && GIT_LFS_SKIP_PUSH=1 GIT_SSH_COMMAND='{git_ssh}' \
-         git push --force '{ssh_remote}' HEAD:{branch}"
-    );
-    shell::agent_exec_capture(agent_name, &push_cmd).await?;
+    // 1. Push the agent container's HEAD to GitHub via the verified-commits
+    //    flow. The agent container only ever talks to GitHub — it never needs
+    //    a network path to the benchmark host.
+    push_verified(
+        agent_name,
+        github_token,
+        &run.repo,
+        branch,
+        &run.base_branch,
+        branch_created,
+        "autoresearch optimization",
+    )
+    .await?;
 
-    // 2. Check out the pushed branch on the benchmark server so docker build
-    //    picks it up.
+    // 2. Tell the benchmark server to fetch + check out the pushed branch
+    //    from GitHub (the host's ethrex clone has GitHub as its origin).
     expb_ssh_setup(
         server,
         &format!(
