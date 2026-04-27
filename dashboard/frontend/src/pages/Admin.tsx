@@ -18,6 +18,7 @@ import {
   getMe,
   listBenchmarkServers,
   createBenchmarkServer,
+  updateBenchmarkServer,
   deleteBenchmarkServer,
   setupBenchmarkServer,
   getBenchmarkServerSetupLog,
@@ -1244,6 +1245,7 @@ function BenchmarkServersSection({ queryClient }: { queryClient: ReturnType<type
   const [hardwareDescription, setHardwareDescription] = useState('');
   const [setupLogServer, setSetupLogServer] = useState<BenchmarkServer | null>(null);
   const [setupLog, setSetupLog] = useState<{ setup_log: string | null; error_message: string | null; status: string } | null>(null);
+  const [editServer, setEditServer] = useState<BenchmarkServer | null>(null);
 
   const createMutation = useMutation({
     mutationFn: createBenchmarkServer,
@@ -1343,6 +1345,14 @@ function BenchmarkServersSection({ queryClient }: { queryClient: ReturnType<type
                       <Button
                         variant="ghost"
                         size="sm"
+                        onClick={() => setEditServer(s)}
+                        disabled={s.status === 'busy'}
+                      >
+                        <Pencil className="size-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         className="text-destructive hover:text-destructive"
                         onClick={() => {
                           if (confirm(`Delete benchmark server "${s.name}"?`)) {
@@ -1426,8 +1436,103 @@ function BenchmarkServersSection({ queryClient }: { queryClient: ReturnType<type
             </div>
           </DialogContent>
         </Dialog>
+
+        {/* Edit Server Dialog */}
+        {editServer && (
+          <EditBenchmarkServerDialog
+            server={editServer}
+            onClose={() => setEditServer(null)}
+            queryClient={queryClient}
+          />
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+function EditBenchmarkServerDialog({
+  server,
+  onClose,
+  queryClient,
+}: {
+  server: BenchmarkServer;
+  onClose: () => void;
+  queryClient: ReturnType<typeof useQueryClient>;
+}) {
+  const [name, setName] = useState(server.name);
+  const [hostname, setHostname] = useState(server.hostname);
+  const [sshUser, setSshUser] = useState(server.ssh_user);
+  const [sshKeyPath, setSshKeyPath] = useState(server.ssh_key_path ?? '');
+  const [hardwareDescription, setHardwareDescription] = useState(server.hardware_description ?? '');
+
+  const updateMutation = useMutation({
+    mutationFn: () =>
+      updateBenchmarkServer(server.id, {
+        name: name !== server.name ? name : undefined,
+        hostname: hostname !== server.hostname ? hostname : undefined,
+        ssh_user: sshUser !== server.ssh_user ? sshUser : undefined,
+        ssh_key_path:
+          (sshKeyPath || null) !== (server.ssh_key_path || null) ? sshKeyPath : undefined,
+        hardware_description:
+          (hardwareDescription || null) !== (server.hardware_description || null)
+            ? hardwareDescription
+            : undefined,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-benchmark-servers'] });
+      onClose();
+    },
+  });
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    updateMutation.mutate();
+  };
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Edit Benchmark Server</DialogTitle>
+          <DialogDescription>
+            Changes apply on the next Setup or autoresearch run that uses this server.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label htmlFor="bs-edit-name">Name</Label>
+              <Input id="bs-edit-name" value={name} onChange={(e) => setName(e.target.value)} required />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="bs-edit-hostname">Hostname / IP</Label>
+              <Input id="bs-edit-hostname" value={hostname} onChange={(e) => setHostname(e.target.value)} required />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="bs-edit-ssh-user">SSH User</Label>
+              <Input id="bs-edit-ssh-user" value={sshUser} onChange={(e) => setSshUser(e.target.value)} placeholder="root" />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="bs-edit-ssh-key">SSH Key Path (on tekton server)</Label>
+              <Input id="bs-edit-ssh-key" value={sshKeyPath} onChange={(e) => setSshKeyPath(e.target.value)} placeholder="/root/.ssh/id_ed25519" />
+            </div>
+            <div className="space-y-1 md:col-span-2">
+              <Label htmlFor="bs-edit-hw">Hardware Description</Label>
+              <Input id="bs-edit-hw" value={hardwareDescription} onChange={(e) => setHardwareDescription(e.target.value)} placeholder="8x A100 80GB, 128GB RAM" />
+            </div>
+          </div>
+          {updateMutation.isError && (
+            <p className="text-destructive text-sm">{(updateMutation.error as Error).message}</p>
+          )}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={updateMutation.isPending}>
+              {updateMutation.isPending ? 'Saving…' : 'Save changes'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
