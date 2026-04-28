@@ -762,29 +762,11 @@ async fn run_autoresearch_pipeline(
         .execute(db)
         .await?;
 
-        // Both shell-with-server and EXPB runs need a branch on GitHub: the
-        // benchmark server fetches commits from GitHub (`git fetch origin
-        // <branch>`) rather than receiving them from the agent container
-        // directly, which keeps the agent container free of any direct
-        // network path to the benchmark host.
-        log_and_persist(db, &tx, run_id, "[SETUP] Creating branch on GitHub...").await;
-        let base_sha = shell::agent_exec_capture(
-            &agent_name,
-            &format!(
-                "cd /home/agent/repo && git rev-parse 'origin/{}'",
-                run.base_branch
-            ),
-        )
-        .await?
-        .trim()
-        .to_string();
-        crate::tasks::create_github_branch(github_token, &run.repo, branch_name, &base_sha).await?;
-
-        // The classic shell flow additionally rsyncs the repo onto the
-        // benchmark server so the host can run the benchmark command against
-        // it. EXPB runs maintain their own ethrex clone on the host
-        // (`ethrex_repo_path`) which fetches from GitHub in `run_expb_experiment`,
-        // so the rsync is unnecessary there.
+        // The classic shell flow rsyncs the repo onto the benchmark server so
+        // the host can run the benchmark command against it. Each iteration
+        // will then `git fetch origin <exp-N>` from GitHub. EXPB runs maintain
+        // their own ethrex clone on the host (`ethrex_repo_path`), so this
+        // initial clone is unnecessary there.
         if run.benchmark_type != "expb" {
             log_and_persist(
                 db,
@@ -796,7 +778,7 @@ async fn run_autoresearch_pipeline(
                 ),
             )
             .await;
-            clone_on_benchmark_server(&server, &run.repo, branch_name, github_token).await?;
+            clone_on_benchmark_server(&server, &run.repo, &run.base_branch, github_token).await?;
             log_and_persist(db, &tx, run_id, "[SETUP] Repo cloned on benchmark server.").await;
         }
 
@@ -867,9 +849,6 @@ async fn run_autoresearch_pipeline(
     let start_time = Instant::now();
     let mut experiment_number = 0i32;
     let mut best_metric: Option<f64> = None;
-    // Setup just created the GitHub branch when a benchmark server is
-    // attached (true for both shell-with-server and EXPB runs).
-    let mut branch_created = benchmark_server.is_some();
     let mut last_seen_message_id: i64 = 0;
 
     let base_branch = run.base_branch.clone();
@@ -1011,6 +990,11 @@ async fn run_autoresearch_pipeline(
 
         experiment_number += 1;
         let exp_start = Instant::now();
+        // Each experiment gets its own fresh branch off base. No state from
+        // prior experiments is carried over — the GitHub branch starts at
+        // base SHA and receives a single commit with this experiment's diff.
+        let exp_branch = format!("autoresearch/{}/exp-{experiment_number}", &run_id[..8]);
+        let mut exp_branch_created = false;
         log_and_persist(
             db,
             &tx,
@@ -1087,29 +1071,29 @@ async fn run_autoresearch_pipeline(
         )
         .await;
 
-        // Sync to benchmark server if needed (classic shell flow only — EXPB
-        // runs push directly to the benchmark server from the agent container
-        // as part of the benchmark step below).
+        // Push this experiment's diff to its own dedicated branch on GitHub
+        // (classic shell flow — EXPB does the same push inside
+        // run_expb_experiment as part of the benchmark step below).
         if run.benchmark_type != "expb" {
             if let Some(ref server) = benchmark_server {
                 log_and_persist(
                     db,
                     &tx,
                     run_id,
-                    &format!("[EXP {experiment_number}] Pushing to GitHub and pulling on benchmark server..."),
+                    &format!("[EXP {experiment_number}] Pushing {exp_branch} to GitHub and fetching on benchmark server..."),
                 )
                 .await;
                 push_verified(
                     &agent_name,
                     github_token,
                     &run.repo,
-                    branch_name,
+                    &exp_branch,
                     &run.base_branch,
-                    &mut branch_created,
-                    "autoresearch optimization",
+                    &mut exp_branch_created,
+                    "autoresearch experiment",
                 )
                 .await?;
-                pull_on_benchmark_server(server, branch_name, github_token).await?;
+                pull_on_benchmark_server(server, &exp_branch, github_token).await?;
             }
         }
 
@@ -1147,11 +1131,11 @@ async fn run_autoresearch_pipeline(
                 db,
                 &agent_name,
                 github_token,
-                &mut branch_created,
+                &mut exp_branch_created,
                 exp_id,
                 &fresh_run,
                 server,
-                branch_name,
+                &exp_branch,
             )
             .await
             {
@@ -1271,7 +1255,11 @@ async fn run_autoresearch_pipeline(
             .map(|v| format!("{v}"))
             .unwrap_or("unknown".into());
         let continue_prompt = format!(
-            "Here is the benchmark output after your last change:\n\
+            "REMINDER OF YOUR OBJECTIVE (do not lose sight of this — it overrides the obvious \
+             local hot-path-optimization instinct):\n\
+             {objective}\n\
+             \n\
+             Here is the benchmark output after your last change:\n\
              ```\n\
              {}\n\
              ```\n\
@@ -1283,7 +1271,10 @@ async fn run_autoresearch_pipeline(
              METRIC: <the numeric value of the key metric from this run>\n\
              IMPROVED: <true or false — is this better than the previous best?>\n\
              \n\
-             Then make another optimization — a single focused change to further improve the metric.",
+             Then make another optimization — a single focused change that advances the OBJECTIVE \
+             above. If the objective involves research (reading external sources, surveying ideas), \
+             do that research now if you haven't already, and pick the next idea from it; do not \
+             default to repeatedly micro-optimizing the same hot file.",
             &raw_output[..raw_output.len().min(8000)],
         );
 
@@ -1349,50 +1340,15 @@ async fn run_autoresearch_pipeline(
             .await;
             best_metric = Some(val);
 
-            // Create a dedicated branch for this experiment and push
-            let exp_branch = format!("autoresearch/{}/exp-{experiment_number}", &run_id[..8]);
+            // The experiment's branch was already created and pushed at the
+            // top of this iteration; nothing more to push here.
             log_and_persist(
                 db,
                 &tx,
                 run_id,
-                &format!("[EXP {experiment_number}] Creating branch {exp_branch} and PR..."),
+                &format!("[EXP {experiment_number}] Branch {exp_branch} kept on GitHub."),
             )
             .await;
-
-            let mut exp_branch_created = false;
-            let commit_msg = format!(
-                "autoresearch: experiment #{experiment_number} — metric {val} (was {best_str})"
-            );
-            match push_verified(
-                &agent_name,
-                github_token,
-                &run.repo,
-                &exp_branch,
-                &run.base_branch,
-                &mut exp_branch_created,
-                &commit_msg,
-            )
-            .await
-            {
-                Ok(_) => {
-                    log_and_persist(
-                        db,
-                        &tx,
-                        run_id,
-                        &format!("[EXP {experiment_number}] Branch {exp_branch} pushed to GitHub."),
-                    )
-                    .await;
-                }
-                Err(e) => {
-                    log_and_persist(
-                        db,
-                        &tx,
-                        run_id,
-                        &format!("[EXP {experiment_number}] Push failed: {e}"),
-                    )
-                    .await;
-                }
-            }
             let pr_url: Option<String> = None;
 
             let _ = sqlx::query(
@@ -1471,12 +1427,25 @@ async fn run_autoresearch_pipeline(
             ).await;
         }
 
-        // Tell Claude we're starting fresh
-        let reset_msg = if is_better {
-            "Your optimization was accepted and a branch has been created. Now we're back on the base branch. Try a completely different optimization. Remember: record any significant choices with DECISION: ... | ALTERNATIVES: ... and never ask questions — always make autonomous decisions."
+        // Tell Claude we're starting fresh — and re-state the objective so it
+        // doesn't drift after dozens of `--continue` turns.
+        let reset_body = if is_better {
+            "Your optimization was accepted and a branch has been created. Now we're back on the base branch. Try a completely different optimization."
         } else {
-            "Your change did not improve the metric. We're back on the base branch. Try a different approach. Remember: record any significant choices with DECISION: ... | ALTERNATIVES: ... and never ask questions — always make autonomous decisions."
+            "Your change did not improve the metric. We're back on the base branch. Try a different approach."
         };
+        let reset_msg = format!(
+            "REMINDER OF YOUR OBJECTIVE (do not lose sight of this — it overrides the obvious \
+             local hot-path-optimization instinct):\n\
+             {objective}\n\
+             \n\
+             {reset_body} If your objective involves research (reading external sources, surveying \
+             ideas), make sure you've actually done that research and are picking ideas from it \
+             rather than defaulting to micro-optimizing the same files repeatedly.\n\
+             \n\
+             Remember: record any significant choices with DECISION: ... | ALTERNATIVES: ... and \
+             never ask questions — always make autonomous decisions."
+        );
         let escaped = reset_msg.replace('\'', "'\\''");
         let _ = shell::agent_exec_claude_streaming(
             &agent_name,
@@ -1876,8 +1845,9 @@ async fn pull_on_benchmark_server(
         &format!(
             "cd ~/autoresearch/repo && \
              git remote set-url origin '{authed_url}' && \
-             git fetch origin && \
-             git reset --hard origin/{branch_name} && \
+             git fetch origin {branch_name} && \
+             git checkout -B {branch_name} FETCH_HEAD && \
+             git reset --hard FETCH_HEAD && \
              git remote set-url origin '{repo_url}'"
         ),
     )
