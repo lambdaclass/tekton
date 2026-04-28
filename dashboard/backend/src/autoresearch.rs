@@ -862,31 +862,46 @@ async fn run_autoresearch_pipeline(
 
     // Initial prompt with baseline output
     let initial_prompt = format!(
-        "You are an optimization agent. Your objective: {objective}\n\
+        "OBJECTIVE (this is the most important instruction — everything else \
+         on this page is supporting context, not a substitute):\n\
+         {objective}\n\
          \n\
-         The benchmark command is: {}\n\
-         Target files to modify: {target_desc}{frozen_desc}\n\
+         If your objective involves research (reading external URLs, surveying \
+         ideas from another project, exploring an unfamiliar subsystem), do \
+         that research NOW, before touching any code. Use WebFetch on URLs in \
+         the objective, take notes on what you learn, and only then pick \
+         which idea you will try first.\n\
          \n\
-         IMPORTANT RULES:\n\
-         - Do NOT run benchmarks or tests yourself — benchmarks are run for you on a dedicated server after each change.\n\
-         - Focus on reading files and making edits. You may compile to check your work if needed.\n\
-         - Make focused, targeted changes. One optimization per experiment.\n\
-         - Do NOT modify the benchmark command or evaluation code.\n\
-         - NEVER ask questions — you are autonomous. When you face a choice, pick the most reasonable option and record it.\n\
-         - When you make a significant choice (algorithm, approach, file to modify, tradeoff), record it on its own line with this format:\n\
-         DECISION: <what you decided> | ALTERNATIVES: <other options you considered>\n\
+         Do NOT default to micro-optimizing the obvious hot file of the \
+         benchmark. That is the most common failure mode of agents in this \
+         loop, and it directly contradicts a research-shaped objective. The \
+         metric below is how we measure whether a change helps — it is NOT \
+         a license to ignore the objective and chase the hottest function. \
+         A modest metric gain that genuinely advances the objective is more \
+         valuable than a clever metric hack that doesn't.\n\
          \n\
-         Here is the BASELINE benchmark output:\n\
+         Context for grounding your work:\n\
+         - Benchmark command: {}\n\
+         - Target files (suggestion only — your objective may direct you elsewhere): {target_desc}{frozen_desc}\n\
+         - BASELINE benchmark output:\n\
          ```\n\
          {}\n\
          ```\n\
          \n\
-         First, analyze this output and identify the key metric to track.\n\
-         Then respond with exactly these lines at the END of your response:\n\
-         METRIC: <the numeric value of the key metric>\n\
-         DESCRIPTION: <what the metric is, e.g. \"execution time in ns\">\n\
+         IMPORTANT RULES:\n\
+         - Do NOT run benchmarks or tests yourself — benchmarks are run for you on a dedicated server after each change.\n\
+         - Focus on reading files (and external sources, when the objective calls for it) and making edits. You may compile to check your work.\n\
+         - Make focused, targeted changes. One change per experiment.\n\
+         - Do NOT modify the benchmark command or evaluation code.\n\
+         - NEVER ask questions — you are autonomous. Pick the most reasonable option and record it.\n\
+         - When you make a significant choice (algorithm, approach, file to modify, tradeoff), record it on its own line as:\n\
+         DECISION: <what you decided> | ALTERNATIVES: <other options you considered>\n\
          \n\
-         After that, make your first optimization — a single focused change to improve this metric.",
+         End your response with exactly these lines:\n\
+         METRIC: <the numeric value of the key metric from the baseline>\n\
+         DESCRIPTION: <what the metric measures, e.g. \"execution time in ns\">\n\
+         \n\
+         After identifying the metric, make your first concrete change toward the objective.",
         run.benchmark_command.as_deref().unwrap_or(""),
         &baseline_output[..baseline_output.len().min(8000)],
     );
