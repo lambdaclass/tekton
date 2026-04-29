@@ -893,6 +893,10 @@ async fn run_autoresearch_pipeline(
          - Focus on reading files (and external sources, when the objective calls for it) and making edits. You may compile to check your work.\n\
          - Make focused, targeted changes. One change per experiment.\n\
          - Do NOT modify the benchmark command or evaluation code.\n\
+         - Do NOT \"optimize\" the metric by moving existing work into or out of the timed/measured \
+         window (e.g. relocating validation, hashing, or DB I/O to before/after the benchmark's \
+         start/stop instants, or behind a background thread that isn't waited on). The metric must \
+         reflect a real reduction in work — not a relocation of work outside the measurement.\n\
          - NEVER ask questions — you are autonomous. Pick the most reasonable option and record it.\n\
          - When you make a significant choice (algorithm, approach, file to modify, tradeoff), record it on its own line as:\n\
          DECISION: <what you decided> | ALTERNATIVES: <other options you considered>\n\
@@ -1292,7 +1296,9 @@ async fn run_autoresearch_pipeline(
              Then make another optimization — a single focused change that advances the OBJECTIVE \
              above. If the objective involves research (reading external sources, surveying ideas), \
              do that research now if you haven't already, and pick the next idea from it; do not \
-             default to repeatedly micro-optimizing the same hot file.",
+             default to repeatedly micro-optimizing the same hot file. \
+             Do NOT relocate existing work into or out of the timed/measured window to game the \
+             metric — the change must reduce real work, not hide it from the benchmark.",
             &raw_output[..raw_output.len().min(8000)],
         );
 
