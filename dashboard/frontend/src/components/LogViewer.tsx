@@ -36,13 +36,21 @@ interface LogViewerProps {
   previewSlug?: string;
   /** For autoresearch run logs */
   autoresearchRunId?: string;
+  /** For autoresearch: current run status, used to disable WS auto-reconnect
+   *  on terminal states (otherwise the backend's post-cleanup channel removal
+   *  causes an endless reconnect → re-replay → terminal-clear loop). */
+  autoresearchRunStatus?: string;
   /** For preview logs: external WS (no DB history) */
   ws?: WebSocket | null;
   onConnectionChange?: (connected: boolean) => void;
 }
 
-export default function LogViewer({ taskId, previewSlug, autoresearchRunId, ws, onConnectionChange }: LogViewerProps) {
+export default function LogViewer({ taskId, previewSlug, autoresearchRunId, autoresearchRunStatus, ws, onConnectionChange }: LogViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // Read inside the WS close handler so we don't tear down + recreate the
+  // socket every time the parent re-renders with a fresh status.
+  const autoresearchRunStatusRef = useRef(autoresearchRunStatus);
+  autoresearchRunStatusRef.current = autoresearchRunStatus;
 
   // Mode 1: Self-managed WS for task logs with auto-reconnect
   useEffect(() => {
@@ -174,9 +182,14 @@ export default function LogViewer({ taskId, previewSlug, autoresearchRunId, ws, 
       });
       socket.addEventListener('close', () => {
         onConnectionChange?.(false);
-        if (!disposed) {
-          reconnectTimer = setTimeout(connect, 3000);
-        }
+        if (disposed) return;
+        // If the run has finished, the backend's channel will be gone and
+        // every reconnect just replays the DB history and closes again,
+        // wiping any text selection. Stop reconnecting on terminal states.
+        const status = autoresearchRunStatusRef.current;
+        const isTerminal = status === 'completed' || status === 'failed' || status === 'stopped';
+        if (isTerminal) return;
+        reconnectTimer = setTimeout(connect, 3000);
       });
     }
 
