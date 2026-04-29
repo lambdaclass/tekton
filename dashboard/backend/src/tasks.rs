@@ -90,7 +90,7 @@ struct FileDeletion {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct FileChanges {
+pub struct FileChanges {
     additions: Vec<FileAddition>,
     deletions: Vec<FileDeletion>,
 }
@@ -575,6 +575,20 @@ pub async fn create_task(
     let (tx, _) = broadcast::channel(1024);
     state.task_channels.insert(id.clone(), tx.clone());
 
+    // Persist ALL broadcast messages to task_logs (including Claude streaming output)
+    let persist_db = state.db.clone();
+    let persist_task_id = id.clone();
+    let mut persist_rx = tx.subscribe();
+    tokio::spawn(async move {
+        while let Ok(line) = persist_rx.recv().await {
+            let _ = sqlx::query("INSERT INTO task_logs (task_id, line) VALUES ($1, $2)")
+                .bind(&persist_task_id)
+                .bind(&line)
+                .execute(&persist_db)
+                .await;
+        }
+    });
+
     // Spawn background task
     let config = state.config.clone();
     let db = state.db.clone();
@@ -1000,7 +1014,7 @@ async fn run_task_pipeline(
 /// Returns (env_export_string, model_flag) where model_flag is always `""`.
 /// Model selection uses ANTHROPIC_MODEL env var rather than --model flag to
 /// avoid the Claude CLI's client-side validation against Anthropic-only names.
-async fn build_claude_auth_env(
+pub async fn build_claude_auth_env(
     db: &PgPool,
     encryption_key: &str,
     created_by: &str,
@@ -1019,17 +1033,31 @@ async fn build_claude_auth_env(
                 String::new(),
             ))
         }
-        Some(cfg) if cfg.provider == "anthropic-oauth" => Ok((
-            format!(
-                "export CLAUDE_CODE_OAUTH_TOKEN='{}' ANTHROPIC_API_KEY=''",
-                cfg.api_key
-            ),
-            String::new(),
-        )),
-        Some(cfg) => Ok((
-            format!("export ANTHROPIC_API_KEY='{}'", cfg.api_key),
-            String::new(),
-        )),
+        Some(cfg) if cfg.provider == "anthropic-oauth" => {
+            let model_env = cfg
+                .model
+                .as_deref()
+                .map(|m| format!(" ANTHROPIC_MODEL='{m}'"))
+                .unwrap_or_default();
+            Ok((
+                format!(
+                    "export CLAUDE_CODE_OAUTH_TOKEN='{}' ANTHROPIC_API_KEY=''{model_env}",
+                    cfg.api_key
+                ),
+                String::new(),
+            ))
+        }
+        Some(cfg) => {
+            let model_env = cfg
+                .model
+                .as_deref()
+                .map(|m| format!(" ANTHROPIC_MODEL='{m}'"))
+                .unwrap_or_default();
+            Ok((
+                format!("export ANTHROPIC_API_KEY='{}'{model_env}", cfg.api_key),
+                String::new(),
+            ))
+        }
         None => {
             // Fallback to the global admin-configured key
             match settings::get_global_ai_config(db, encryption_key).await? {
@@ -1046,17 +1074,27 @@ async fn build_claude_auth_env(
                         String::new(),
                     ))
                 }
-                Some(cfg) if cfg.provider == "anthropic-oauth" => Ok((
-                    format!(
-                "export CLAUDE_CODE_OAUTH_TOKEN='{}' ANTHROPIC_API_KEY=''",
-                cfg.api_key
-            ),
-                    String::new(),
-                )),
-                Some(cfg) => Ok((
-                    format!("export ANTHROPIC_API_KEY='{}'", cfg.api_key),
-                    String::new(),
-                )),
+                Some(cfg) if cfg.provider == "anthropic-oauth" => {
+                    let model_env = cfg.model.as_deref()
+                        .map(|m| format!(" ANTHROPIC_MODEL='{m}'"))
+                        .unwrap_or_default();
+                    Ok((
+                        format!(
+                            "export CLAUDE_CODE_OAUTH_TOKEN='{}' ANTHROPIC_API_KEY=''{model_env}",
+                            cfg.api_key
+                        ),
+                        String::new(),
+                    ))
+                }
+                Some(cfg) => {
+                    let model_env = cfg.model.as_deref()
+                        .map(|m| format!(" ANTHROPIC_MODEL='{m}'"))
+                        .unwrap_or_default();
+                    Ok((
+                        format!("export ANTHROPIC_API_KEY='{}'{model_env}", cfg.api_key),
+                        String::new(),
+                    ))
+                }
                 None => Err(AppError::Internal(
                     "No AI provider configured. Go to Settings → AI Provider to connect your account, or ask an admin to set up a global API key."
                         .into(),
@@ -1738,7 +1776,10 @@ fn build_followup_prompt(original_prompt: &str, history: &[String], new_message:
 /// `subprocess`, `base64`, `json`, and file I/O in its stdlib, making the script
 /// compact and readable compared to an equivalent bash version. The script source lives
 /// in `scripts/collect_file_changes.py` and is embedded at compile time.
-async fn collect_file_changes(agent_name: &str, base_ref: &str) -> Result<FileChanges, AppError> {
+pub async fn collect_file_changes(
+    agent_name: &str,
+    base_ref: &str,
+) -> Result<FileChanges, AppError> {
     // Sanitize base_ref (should be like "origin/main" — never contains quotes)
     let safe_base_ref = base_ref.replace(['\'', '"'], "");
     let python_script =
@@ -1803,7 +1844,7 @@ async fn send_with_retries(
 }
 
 /// Create a branch on GitHub via REST API.
-async fn create_github_branch(
+pub async fn create_github_branch(
     token: &str,
     repo: &str,
     branch_name: &str,
@@ -1842,7 +1883,7 @@ async fn create_github_branch(
 
 /// Create a verified commit on a GitHub branch via the GraphQL API.
 /// Returns the new commit OID.
-async fn github_create_commit(
+pub async fn github_create_commit(
     token: &str,
     repo: &str,
     branch_name: &str,
@@ -1936,7 +1977,7 @@ async fn github_create_commit(
 
 /// Sync the agent's local repo to match the remote branch after an API push.
 /// Uses explicit refspec because the repo is cloned with --single-branch.
-async fn sync_agent_to_remote(agent_name: &str, branch_name: &str) -> Result<(), AppError> {
+pub async fn sync_agent_to_remote(agent_name: &str, branch_name: &str) -> Result<(), AppError> {
     let escaped = branch_name.replace('\'', "'\\''");
     let cmd = format!(
         "cd /home/agent/repo && git fetch origin '{escaped}:refs/remotes/origin/{escaped}' && git reset --hard 'origin/{escaped}'"
@@ -2418,18 +2459,6 @@ async fn write_secrets_env_file(
     .await
 }
 
-/// Replace any occurrence of secret values in a log message with [REDACTED].
-#[allow(dead_code)]
-pub fn scrub_secrets(msg: &str, repo_secrets: &[(String, String)]) -> String {
-    let mut result = msg.to_string();
-    for (_, value) in repo_secrets {
-        if !value.is_empty() {
-            result = result.replace(value.as_str(), "[REDACTED]");
-        }
-    }
-    result
-}
-
 fn log_and_send(db: &PgPool, task_id: &str, tx: &broadcast::Sender<String>, msg: &str) {
     let _ = tx.send(msg.to_string());
     // Fire-and-forget DB persist
@@ -2571,6 +2600,20 @@ pub async fn reopen_task(
     // Create broadcast channel
     let (tx, _) = broadcast::channel(1024);
     state.task_channels.insert(id.clone(), tx.clone());
+
+    // Persist ALL broadcast messages to task_logs
+    let persist_db = state.db.clone();
+    let persist_task_id = id.clone();
+    let mut persist_rx = tx.subscribe();
+    tokio::spawn(async move {
+        while let Ok(line) = persist_rx.recv().await {
+            let _ = sqlx::query("INSERT INTO task_logs (task_id, line) VALUES ($1, $2)")
+                .bind(&persist_task_id)
+                .bind(&line)
+                .execute(&persist_db)
+                .await;
+        }
+    });
 
     // Spawn background pipeline
     let config = state.config.clone();
@@ -3079,6 +3122,24 @@ pub async fn recover_interrupted_tasks(
                 let (tx, _) = broadcast::channel(1024);
                 task_channels.insert(task.id.clone(), tx.clone());
 
+                // Persist ALL broadcast messages to task_logs
+                {
+                    let pdb = db.clone();
+                    let ptid = task.id.clone();
+                    let mut prx = tx.subscribe();
+                    tokio::spawn(async move {
+                        while let Ok(line) = prx.recv().await {
+                            let _ = sqlx::query(
+                                "INSERT INTO task_logs (task_id, line) VALUES ($1, $2)",
+                            )
+                            .bind(&ptid)
+                            .bind(&line)
+                            .execute(&pdb)
+                            .await;
+                        }
+                    });
+                }
+
                 let (cfg, db2, channels) = (config.clone(), db.clone(), task_channels.clone());
                 let (task_id, repo, base, created_by) = (
                     task.id.clone(),
@@ -3170,6 +3231,24 @@ pub async fn recover_interrupted_tasks(
                 let had_preview = task.preview_url.is_some();
                 let (tx, _) = broadcast::channel(1024);
                 task_channels.insert(task.id.clone(), tx.clone());
+
+                // Persist ALL broadcast messages to task_logs
+                {
+                    let pdb = db.clone();
+                    let ptid = task.id.clone();
+                    let mut prx = tx.subscribe();
+                    tokio::spawn(async move {
+                        while let Ok(line) = prx.recv().await {
+                            let _ = sqlx::query(
+                                "INSERT INTO task_logs (task_id, line) VALUES ($1, $2)",
+                            )
+                            .bind(&ptid)
+                            .bind(&line)
+                            .execute(&pdb)
+                            .await;
+                        }
+                    });
+                }
 
                 let (cfg, db2, channels) = (config.clone(), db.clone(), task_channels.clone());
                 let (task_id, repo, base, created_by) = (

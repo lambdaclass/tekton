@@ -100,6 +100,70 @@ pub async fn task_output_ws(
     ws.on_upgrade(move |socket| handle_task_output(socket, state, id))
 }
 
+/// WebSocket endpoint for streaming autoresearch run logs.
+pub async fn autoresearch_output_ws(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    ws.on_upgrade(move |socket| handle_autoresearch_output(socket, state, id))
+}
+
+async fn handle_autoresearch_output(mut socket: WebSocket, state: AppState, run_id: String) {
+    // Send existing logs from DB
+    if let Ok(logs) = sqlx::query_as::<_, (String,)>(
+        "SELECT line FROM autoresearch_logs WHERE run_id = $1 ORDER BY id ASC",
+    )
+    .bind(&run_id)
+    .fetch_all(&state.db)
+    .await
+    {
+        for (line,) in logs {
+            if socket.send(Message::Text(line.into())).await.is_err() {
+                return;
+            }
+        }
+    }
+
+    // Subscribe to live updates
+    let rx = state
+        .autoresearch_channels
+        .get(&run_id)
+        .map(|entry| entry.value().subscribe());
+
+    let Some(mut rx) = rx else {
+        let _ = socket.send(Message::Close(None)).await;
+        return;
+    };
+
+    loop {
+        tokio::select! {
+            msg = rx.recv() => {
+                match msg {
+                    Ok(line) => {
+                        if socket.send(Message::Text(line.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        let _ = socket.send(Message::Close(None)).await;
+                        break;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                }
+            }
+            msg = socket.recv() => {
+                if msg.is_none() {
+                    break;
+                }
+                if let Some(Ok(Message::Close(_))) = msg {
+                    break;
+                }
+            }
+        }
+    }
+}
+
 async fn handle_task_output(mut socket: WebSocket, state: AppState, task_id: String) {
     // First send any existing logs from the DB
     if let Ok(logs) = sqlx::query_as::<_, crate::models::TaskLog>(

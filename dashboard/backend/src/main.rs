@@ -1,9 +1,12 @@
 mod audit;
 mod auth;
+mod autoresearch;
+mod benchmark_servers;
 mod config;
 mod cost;
 mod db;
 mod error;
+mod expb;
 mod intake;
 mod intake_admin;
 mod metrics;
@@ -39,6 +42,8 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub db: PgPool,
     pub task_channels: TaskChannels,
+    pub autoresearch_channels: TaskChannels,
+    pub autoresearch_stop_flags: autoresearch::StopFlags,
 }
 
 #[tokio::main]
@@ -59,6 +64,8 @@ async fn main() -> anyhow::Result<()> {
         config: Arc::new(config),
         db,
         task_channels: tasks::new_task_channels(),
+        autoresearch_channels: tasks::new_task_channels(),
+        autoresearch_stop_flags: autoresearch::new_stop_flags(),
     };
 
     let api = Router::new()
@@ -137,6 +144,31 @@ async fn main() -> anyhow::Result<()> {
             "/admin/settings/ai",
             delete(settings::delete_global_ai_settings),
         )
+        // Admin: Benchmark Servers
+        .route(
+            "/admin/benchmark-servers",
+            get(benchmark_servers::list_servers),
+        )
+        .route(
+            "/admin/benchmark-servers",
+            post(benchmark_servers::create_server),
+        )
+        .route(
+            "/admin/benchmark-servers/{id}",
+            put(benchmark_servers::update_server),
+        )
+        .route(
+            "/admin/benchmark-servers/{id}",
+            delete(benchmark_servers::delete_server),
+        )
+        .route(
+            "/admin/benchmark-servers/{id}/setup",
+            post(benchmark_servers::setup_server),
+        )
+        .route(
+            "/admin/benchmark-servers/{id}/setup-log",
+            get(benchmark_servers::get_setup_log),
+        )
         // Admin: Intake Sources
         .route("/admin/intake/sources", get(intake_admin::list_sources))
         .route("/admin/intake/sources", post(intake_admin::create_source))
@@ -189,12 +221,42 @@ async fn main() -> anyhow::Result<()> {
             "/webhooks/repos/{owner}/{repo}/{hook_id}",
             delete(webhooks::delete_webhook),
         )
+        // Autoresearch
+        .route("/autoresearch/runs", get(autoresearch::list_runs))
+        .route("/autoresearch/runs", post(autoresearch::create_run_handler))
+        .route("/autoresearch/runs/{id}", get(autoresearch::get_run))
+        .route(
+            "/autoresearch/runs/{id}/experiments",
+            get(autoresearch::list_experiments),
+        )
+        .route(
+            "/autoresearch/runs/{id}/messages",
+            get(autoresearch::list_messages),
+        )
+        .route(
+            "/autoresearch/runs/{id}/messages",
+            post(autoresearch::send_message),
+        )
+        .route("/autoresearch/runs/{id}/stop", post(autoresearch::stop_run))
+        .route(
+            "/autoresearch/runs/{id}/create-pr",
+            post(autoresearch::create_run_pr),
+        )
+        .route(
+            "/autoresearch/runs/{id}/stats",
+            get(autoresearch::get_run_stats),
+        )
+        .route(
+            "/autoresearch/benchmark-servers",
+            get(benchmark_servers::list_available_servers),
+        )
         // Repos
         .route("/repos", get(tasks::list_repos))
         .route("/repos/{owner}/{repo}/branches", get(tasks::list_branches))
         // WebSockets
         .route("/ws/logs/{slug}", get(ws::preview_logs_ws))
-        .route("/ws/tasks/{id}", get(ws::task_output_ws));
+        .route("/ws/tasks/{id}", get(ws::task_output_ws))
+        .route("/ws/autoresearch/{id}", get(ws::autoresearch_output_ws));
 
     // Conditionally add test-only endpoints when TEST_MODE=true
     let api = if std::env::var("TEST_MODE").as_deref() == Ok("true") {
@@ -232,6 +294,9 @@ async fn main() -> anyhow::Result<()> {
         state.task_channels.clone(),
     )
     .await;
+
+    // Recover interrupted autoresearch runs
+    autoresearch::recover_interrupted_runs(&state.db).await;
 
     // Start the intake daemon (polls external issue trackers)
     intake::start_intake_daemon(

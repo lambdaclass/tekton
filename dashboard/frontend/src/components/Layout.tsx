@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getMe, logout, listTasks } from '@/lib/api';
-import { LayoutDashboard, Container, BrainCircuit, LogOut, Shield, SlidersHorizontal, DollarSign, ScrollText, Sun, Moon, Kanban, Webhook, BarChart3 } from 'lucide-react';
+import { LayoutDashboard, Container, BrainCircuit, FlaskConical, LogOut, Shield, SlidersHorizontal, DollarSign, ScrollText, Sun, Moon, Kanban, Webhook, BarChart3 } from 'lucide-react';
 import { useTheme } from '@/hooks/use-theme';
 import { Toaster, toast } from 'sonner';
 import CommandPalette from '@/components/CommandPalette';
@@ -38,6 +38,7 @@ const NAV_ITEMS = [
   { to: '/', label: 'Home', icon: LayoutDashboard },
   { to: '/previews', label: 'Previews', icon: Container },
   { to: '/tasks', label: 'Tasks', icon: BrainCircuit },
+  { to: '/autoresearch', label: 'Autoresearch', icon: FlaskConical },
   { to: '/metrics', label: 'Metrics', icon: BarChart3 },
   { to: '/webhooks', label: 'Automated Previews', icon: Webhook },
   { to: '/settings', label: 'Settings', icon: SlidersHorizontal },
