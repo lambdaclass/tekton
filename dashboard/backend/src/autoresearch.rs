@@ -1120,10 +1120,12 @@ async fn run_autoresearch_pipeline(
         .await;
 
         let bench_start = Instant::now();
-        // For EXPB, push + tiered gate returns a synthetic output string and a
-        // structural "should keep" decision. For shell, run_benchmark returns
-        // stdout and is_better is parsed later out of Claude's response.
+        // For EXPB, push + tiered gate returns a synthetic output string, a
+        // structural "should keep" decision, and the actual final-tier
+        // mgas_avg measured on the bench server. For shell, run_benchmark
+        // returns stdout and is_better is parsed later from Claude's response.
         let mut expb_keep_override: Option<bool> = None;
+        let mut expb_metric_override: Option<f64> = None;
         let benchmark_result: Result<String, AppError> = if run.benchmark_type == "expb" {
             let server = benchmark_server.as_ref().expect("expb validated server");
             log_and_persist(
@@ -1154,8 +1156,9 @@ async fn run_autoresearch_pipeline(
             )
             .await
             {
-                Ok((summary, keep)) => {
+                Ok((summary, keep, mgas)) => {
                     expb_keep_override = Some(keep);
+                    expb_metric_override = mgas;
                     Ok(summary)
                 }
                 Err(e) => Err(e),
@@ -1335,10 +1338,14 @@ async fn run_autoresearch_pipeline(
             }
         };
 
-        // Parse Claude's response for metric and improvement judgment
-        let (metric_value, _) = parse_metric_response(&claude_response);
-        // For EXPB runs, ignore Claude's self-reported IMPROVED flag and use
-        // the structural tiered-gate result instead.
+        // Parse Claude's response for metric and improvement judgment.
+        // For EXPB runs we ignore both Claude's METRIC: line and its IMPROVED:
+        // flag — the agent has hallucinated metric values in past runs (e.g.
+        // claimed 720 mgas/sec when the actual measurement was 673). Instead
+        // we trust the structural tiered-gate result and the final-tier
+        // mgas_avg measured by the EXPB harness.
+        let (claude_metric_value, _) = parse_metric_response(&claude_response);
+        let metric_value = expb_metric_override.or(claude_metric_value);
         let is_better =
             expb_keep_override.unwrap_or_else(|| parse_improved_response(&claude_response));
 
@@ -1595,7 +1602,7 @@ async fn run_expb_experiment(
     run: &AutoresearchRun,
     server: &crate::models::BenchmarkServer,
     branch: &str,
-) -> Result<(String, bool), AppError> {
+) -> Result<(String, bool, Option<f64>), AppError> {
     let ethrex_repo_path = run
         .ethrex_repo_path
         .as_deref()
@@ -1698,7 +1705,7 @@ async fn run_expb_experiment(
         if result.keep { "KEEP" } else { "DISCARD" }
     ));
 
-    Ok((summary, result.keep))
+    Ok((summary, result.keep, mgas))
 }
 
 /// Run a single setup/utility SSH command on the benchmark server and return
