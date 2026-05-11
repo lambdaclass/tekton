@@ -50,7 +50,7 @@ test.describe('Navigation', () => {
     await expect(adminPage).toHaveURL('/tasks');
 
     // Click Previews in sidebar
-    await sidebar.getByRole('link', { name: 'Previews' }).click();
+    await sidebar.getByRole('link', { name: 'Previews', exact: true }).click();
     await expect(adminPage).toHaveURL('/previews');
 
     // Click Settings in sidebar

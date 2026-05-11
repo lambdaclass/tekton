@@ -152,8 +152,8 @@ pub async fn list_policies(
     let policies = sqlx::query_as::<_, RepoPolicy>(
         "SELECT id, repo, protected_branches, allowed_tools, network_egress, \
          max_cost_usd, require_approval_above_usd, created_by, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at \
          FROM repo_policies ORDER BY repo",
     )
     .fetch_all(&state.db)
@@ -197,8 +197,8 @@ pub async fn create_policy(
     let policy = sqlx::query_as::<_, RepoPolicy>(
         "SELECT id, repo, protected_branches, allowed_tools, network_egress, \
          max_cost_usd, require_approval_above_usd, created_by, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at \
          FROM repo_policies WHERE repo = $1",
     )
     .bind(&req.repo)
@@ -262,8 +262,8 @@ pub async fn update_policy(
         "UPDATE repo_policies SET {} WHERE id = $1 \
          RETURNING id, repo, protected_branches, allowed_tools, network_egress, \
          max_cost_usd, require_approval_above_usd, created_by, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at",
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at",
         sets.join(", ")
     );
 
@@ -345,8 +345,8 @@ pub async fn delete_policy(
 
 const ORG_POLICY_COLUMNS: &str = "id, org, protected_branches, allowed_tools, network_egress, \
      max_cost_usd, require_approval_above_usd, created_by, \
-     TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-     TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at";
+     TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+     TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at";
 
 /// GET /api/admin/org-policies
 pub async fn list_org_policies(
@@ -540,8 +540,8 @@ pub async fn load_policy_for_repo(db: &PgPool, repo: &str) -> Result<Option<Repo
     let policy = sqlx::query_as::<_, RepoPolicy>(
         "SELECT id, repo, protected_branches, allowed_tools, network_egress, \
          max_cost_usd, require_approval_above_usd, created_by, \
-         TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at \
+         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
+         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at \
          FROM repo_policies WHERE repo = $1",
     )
     .bind(repo)

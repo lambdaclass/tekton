@@ -76,7 +76,7 @@ test.describe('Responsive - Tablet viewport', () => {
   test('audit log filters render at tablet width', async ({ adminPage: page }) => {
     await page.goto('/audit');
 
-    await expect(page.getByText('Event Type')).toBeVisible();
+    await expect(page.locator('label', { hasText: 'Event Type' })).toBeVisible();
     await expect(page.getByPlaceholder('Filter by actor...')).toBeVisible();
     await expect(page.getByPlaceholder('Filter by target...')).toBeVisible();
   });
@@ -97,7 +97,7 @@ test.describe('Responsive - Desktop viewport', () => {
 
     const sidebar = page.locator('[data-sidebar="sidebar"]').first();
     await expect(sidebar.getByRole('link', { name: 'Home' })).toBeVisible();
-    await expect(sidebar.getByRole('link', { name: 'Previews' })).toBeVisible();
+    await expect(sidebar.getByRole('link', { name: 'Previews', exact: true })).toBeVisible();
     await expect(sidebar.getByRole('link', { name: 'Tasks' })).toBeVisible();
     await expect(sidebar.getByRole('link', { name: 'Settings' })).toBeVisible();
   });
