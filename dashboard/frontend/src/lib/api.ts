@@ -217,6 +217,15 @@ export const setUserRepos = (login: string, repos: string[]) =>
     method: 'PUT',
     body: JSON.stringify({ repos }),
   });
+export const adminDeleteTask = (id: string, deleteBranch?: boolean) =>
+  apiFetch<{ ok: boolean }>(`/api/admin/tasks/${id}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ delete_branch: deleteBranch ?? false }),
+  });
+
+export const listOrphanedPreviews = () =>
+  apiFetch<Preview[]>('/api/admin/cleanup/orphaned-previews');
+
 export const listSecrets = (repo?: string) => {
   const qs = repo ? `?repo=${encodeURIComponent(repo)}` : '';
   return apiFetch<{ id: number; repo: string; name: string; created_by: string | null; created_at: string }[]>(

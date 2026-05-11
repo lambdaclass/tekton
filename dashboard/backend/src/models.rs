@@ -113,6 +113,12 @@ pub struct UpdateTaskNameRequest {
     pub name: String,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct DeleteTaskRequest {
+    #[serde(default)]
+    pub delete_branch: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct LinkPrRequest {
     pub pr_url: String,

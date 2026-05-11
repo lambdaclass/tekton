@@ -220,6 +220,17 @@ pub async fn update_preview(
     .await
 }
 
+/// Delete a remote git branch. Best-effort — callers should ignore errors.
+pub async fn delete_remote_branch(
+    repo: &str,
+    branch: &str,
+    github_token: &str,
+) -> Result<(), AppError> {
+    let url = format!("https://x-access-token:{github_token}@github.com/{repo}.git");
+    run_cmd("git", &["push", &url, "--delete", branch]).await?;
+    Ok(())
+}
+
 // ── Agent operations ──
 
 pub async fn create_agent(config: &Config, name: &str) -> Result<String, AppError> {

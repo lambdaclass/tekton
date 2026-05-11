@@ -170,6 +170,12 @@ async fn main() -> anyhow::Result<()> {
             "/admin/intake/issues/{id}/status",
             patch(intake_admin::update_issue_status),
         )
+        // Admin: Cleanup
+        .route("/admin/tasks/{id}", delete(tasks::admin_delete_task))
+        .route(
+            "/admin/cleanup/orphaned-previews",
+            get(previews::list_orphaned_previews),
+        )
         // Admin: Audit Log
         .route("/admin/audit-log", get(audit::list_audit_log))
         // Settings
