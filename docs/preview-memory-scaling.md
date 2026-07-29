@@ -38,10 +38,6 @@ heuristic picks rather than shedding a preview. Getting past that ceiling means 
 per-preview cost, bounding concurrent work, and giving the kernel somewhere to put idle
 pages. All three are below.
 
-Deployment specifics are kept abstract on purpose: the repos that consume these previews
-are private, so they are described by shape (a JS monorepo, an Elixir release) rather
-than by name.
-
 ## Why the host died rather than degrading
 
 1. **Nothing bounds concurrency.** `preview-webhook/src/index.ts:139` responds 202 and
