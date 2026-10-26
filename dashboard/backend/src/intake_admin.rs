@@ -63,7 +63,7 @@ pub async fn create_source(
     let poll_interval_secs = req.poll_interval_secs.unwrap_or(300);
     let max_concurrent_tasks = req.max_concurrent_tasks.unwrap_or(3);
     let max_tasks_per_poll = req.max_tasks_per_poll.unwrap_or(5);
-    let auto_create_pr = req.auto_create_pr.unwrap_or(false);
+    let auto_create_pr = req.auto_create_pr.unwrap_or(true);
 
     let source = sqlx::query_as::<_, IntakeSource>(&format!(
         "INSERT INTO intake_sources \

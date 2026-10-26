@@ -412,14 +412,17 @@ pub(crate) async fn spawn_task_internal(
 
     let git_id = get_git_identity(&db, &created_by).await?;
 
-    let preview_slug = format!("t-{short_id}");
-    let preview_url = format!("https://{preview_slug}.{}", config.preview_domain);
-    sqlx::query("UPDATE tasks SET preview_slug = $1, preview_url = $2 WHERE id = $3")
-        .bind(&preview_slug)
-        .bind(&preview_url)
-        .bind(&id)
-        .execute(&db)
-        .await?;
+    // Intake sources with auto_create_pr off never get a preview, so don't advertise one.
+    if intake_auto_create_pr(&db, &id).await? != Some(false) {
+        let preview_slug = format!("t-{short_id}");
+        let preview_url = format!("https://{preview_slug}.{}", config.preview_domain);
+        sqlx::query("UPDATE tasks SET preview_slug = $1, preview_url = $2 WHERE id = $3")
+            .bind(&preview_slug)
+            .bind(&preview_url)
+            .bind(&id)
+            .execute(&db)
+            .await?;
+    }
 
     let (tx, _) = broadcast::channel(1024);
     task_channels.insert(id.clone(), tx.clone());
@@ -769,9 +772,12 @@ async fn run_task_pipeline(
         &format!("[STEP] Pushed branch '{branch_name}' to GitHub"),
     );
 
+    let auto_create_pr = intake_auto_create_pr(db, task_id).await?;
+    let deliver = auto_create_pr != Some(false);
+
     // Prewarm preview: create it on the feature branch so it's already on the right
     // branch when the agent finishes. Runs in background while Claude works.
-    {
+    if deliver {
         let config2 = config.clone();
         let repo2 = repo.to_string();
         let branch2 = branch_name.clone();
@@ -854,6 +860,15 @@ async fn run_task_pipeline(
             effective_prompt =
                 format!("REPO POLICY CONSTRAINTS:\n{policy_block}\n\n{effective_prompt}");
         }
+    }
+
+    // A PR Claude opens from another branch can't be matched to the task, and would be
+    // duplicated by the auto-opened one.
+    if auto_create_pr == Some(true) {
+        effective_prompt.push_str(
+            "\n\nWork on the currently checked-out branch. Do not create other branches or \
+             open pull requests; the pipeline pushes your changes and opens the PR.",
+        );
     }
 
     update_task_status(db, task_id, "running_claude", None).await?;
@@ -940,12 +955,14 @@ async fn run_task_pipeline(
 
     // Step 3b: Commit any changes (if Claude asked a question and made none, that's fine —
     // the user will see the question in chat and respond via the follow-up loop)
-    let _ = commit_changes_in_agent(&agent_name, prompt, tx.clone()).await?;
+    if deliver {
+        let _ = commit_changes_in_agent(&agent_name, prompt, tx.clone()).await?;
+    }
 
     // Step 3c: Push changes and update preview
-    let mut preview_created = true;
+    let mut preview_created = deliver;
     let mut branch_pushed = false;
-    let pushed = push_and_preview(
+    let outcome = push_and_preview(
         ctx,
         &agent_name,
         &branch_name,
@@ -954,8 +971,9 @@ async fn run_task_pipeline(
         &tx,
     )
     .await?;
-    if pushed {
+    if outcome.branch_has_commits() {
         save_system_message(db, task_id, "Changes pushed and preview updated ✓").await?;
+        maybe_auto_open_pr(ctx, created_by, &tx).await;
     }
 
     // Step 4: Follow-up loop
@@ -984,14 +1002,18 @@ async fn run_task_pipeline(
         .await;
 
     // Done
-    let preview_url = format!("https://t-{short_id}.{}", config.preview_domain);
     update_task_status(db, task_id, "completed", None).await?;
-    log_and_send(
-        db,
-        task_id,
-        &tx,
-        &format!("[DONE] Preview available at {preview_url}"),
-    );
+    if preview_created {
+        let preview_url = format!("https://t-{short_id}.{}", config.preview_domain);
+        log_and_send(
+            db,
+            task_id,
+            &tx,
+            &format!("[DONE] Preview available at {preview_url}"),
+        );
+    } else {
+        log_and_send(db, task_id, &tx, "[DONE] Task completed.");
+    }
 
     Ok(())
 }
@@ -1690,10 +1712,12 @@ async fn follow_up_loop(
         }
         increment_token_usage(db, task_id, &result.usage).await;
 
-        let _ = commit_changes_in_agent(agent_name, &combined_parts[0], tx.clone()).await?;
+        if should_deliver(db, task_id).await? {
+            let _ = commit_changes_in_agent(agent_name, &combined_parts[0], tx.clone()).await?;
+        }
 
         // Push and update preview
-        let pushed = push_and_preview(
+        let outcome = push_and_preview(
             ctx,
             agent_name,
             branch_name,
@@ -1702,8 +1726,9 @@ async fn follow_up_loop(
             tx,
         )
         .await?;
-        if pushed {
+        if outcome.branch_has_commits() {
             save_system_message(db, task_id, "Changes pushed and preview updated ✓").await?;
+            maybe_auto_open_pr(ctx, created_by, tx).await;
         }
 
         update_task_status(db, task_id, "awaiting_followup", None).await?;
@@ -1934,6 +1959,33 @@ async fn github_create_commit(
     Ok(oid)
 }
 
+/// `None` for manual tasks; `Some(auto_create_pr)` for intake tasks. An intake task whose
+/// source was deleted resolves to `Some(false)` so it never starts pushing.
+fn resolve_auto_create_pr(source_type: Option<&str>, source_flag: Option<bool>) -> Option<bool> {
+    match source_type {
+        Some(t) if t.starts_with("intake_") => Some(source_flag.unwrap_or(false)),
+        _ => None,
+    }
+}
+
+async fn intake_auto_create_pr(db: &PgPool, task_id: &str) -> Result<Option<bool>, AppError> {
+    let row: Option<(Option<String>, Option<bool>)> = sqlx::query_as(
+        "SELECT t.source_type, s.auto_create_pr FROM tasks t \
+         LEFT JOIN intake_issues i ON i.id = t.intake_issue_id \
+         LEFT JOIN intake_sources s ON s.id = i.source_id \
+         WHERE t.id = $1",
+    )
+    .bind(task_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.and_then(|(source_type, flag)| resolve_auto_create_pr(source_type.as_deref(), flag)))
+}
+
+/// Whether the pipeline commits, pushes and previews Claude's changes for this task.
+async fn should_deliver(db: &PgPool, task_id: &str) -> Result<bool, AppError> {
+    Ok(intake_auto_create_pr(db, task_id).await? != Some(false))
+}
+
 /// Sync the agent's local repo to match the remote branch after an API push.
 /// Uses explicit refspec because the repo is cloned with --single-branch.
 async fn sync_agent_to_remote(agent_name: &str, branch_name: &str) -> Result<(), AppError> {
@@ -1945,6 +1997,50 @@ async fn sync_agent_to_remote(agent_name: &str, branch_name: &str) -> Result<(),
     Ok(())
 }
 
+/// Fetch the task branch from GitHub into the agent repo and return its head commit,
+/// or `None` if it couldn't be fetched (e.g. the branch doesn't exist yet).
+async fn fetch_remote_branch(agent_name: &str, branch_name: &str) -> Option<String> {
+    let escaped = branch_name.replace('\'', "'\\''");
+    let cmd = format!(
+        "cd /home/agent/repo && git fetch -q origin '+{escaped}:refs/remotes/origin/{escaped}' && git rev-parse 'refs/remotes/origin/{escaped}'"
+    );
+    let output = shell::agent_exec_capture(agent_name, &cmd).await.ok()?;
+    let oid = output.trim();
+    (!oid.is_empty()).then(|| oid.to_string())
+}
+
+/// Whether the fetched task branch has commits that aren't on the base branch.
+async fn remote_branch_ahead_of_base(
+    agent_name: &str,
+    branch_name: &str,
+    base_branch: &str,
+) -> bool {
+    let cmd = format!(
+        "cd /home/agent/repo && git rev-list --count 'origin/{base_branch}..refs/remotes/origin/{branch_name}'"
+    );
+    shell::agent_exec_capture(agent_name, &cmd)
+        .await
+        .ok()
+        .and_then(|out| out.trim().parse::<u64>().ok())
+        .is_some_and(|n| n > 0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PushOutcome {
+    /// The task's intake source has auto_create_pr off; delivery is left to the agent.
+    Disabled,
+    NoChanges,
+    Pushed,
+    /// Nothing left to push because the agent already pushed its commits to the branch.
+    AgentPushed,
+}
+
+impl PushOutcome {
+    fn branch_has_commits(self) -> bool {
+        matches!(self, PushOutcome::Pushed | PushOutcome::AgentPushed)
+    }
+}
+
 async fn push_and_preview(
     ctx: &PipelineCtx<'_>,
     agent_name: &str,
@@ -1952,18 +2048,30 @@ async fn push_and_preview(
     branch_pushed: &mut bool,
     preview_created: &mut bool,
     tx: &broadcast::Sender<String>,
-) -> Result<bool, AppError> {
+) -> Result<PushOutcome, AppError> {
     let &PipelineCtx {
-        config,
         db,
         task_id,
-        short_id,
         repo,
         base_branch,
         git_id,
+        ..
     } = ctx;
-    // Determine base_ref for diff
-    let base_ref = if *branch_pushed {
+
+    if !should_deliver(db, task_id).await? {
+        log_and_send(
+            db,
+            task_id,
+            tx,
+            "[STEP] Auto-push disabled for this intake source; leaving changes to the agent.",
+        );
+        return Ok(PushOutcome::Disabled);
+    }
+
+    // Diff against the branch as it is on GitHub right now: the agent may have pushed to it
+    // itself, and a stale ref makes createCommitOnBranch fail with STALE_DATA.
+    let remote_head = fetch_remote_branch(agent_name, branch_name).await;
+    let base_ref = if remote_head.is_some() || *branch_pushed {
         format!("origin/{branch_name}")
     } else {
         format!("origin/{base_branch}")
@@ -1975,8 +2083,22 @@ async fn push_and_preview(
     let file_changes = collect_file_changes(agent_name, &base_ref).await?;
 
     if file_changes.additions.is_empty() && file_changes.deletions.is_empty() {
+        if !*branch_pushed
+            && remote_head.is_some()
+            && remote_branch_ahead_of_base(agent_name, branch_name, base_branch).await
+        {
+            log_and_send(
+                db,
+                task_id,
+                tx,
+                "[STEP] The agent already pushed its changes to the branch.",
+            );
+            *branch_pushed = true;
+            update_task_preview(ctx, branch_name, preview_created, tx).await?;
+            return Ok(PushOutcome::AgentPushed);
+        }
         log_and_send(db, task_id, tx, "[WARN] No file changes to push.");
-        return Ok(false);
+        return Ok(PushOutcome::NoChanges);
     }
 
     save_system_message(db, task_id, "Deploying changes to preview...").await?;
@@ -1993,7 +2115,9 @@ async fn push_and_preview(
     );
 
     // On first push: get base SHA and create the branch on GitHub
-    let expected_oid = if !*branch_pushed {
+    let expected_oid = if let Some(oid) = remote_head {
+        oid
+    } else if !*branch_pushed {
         let base_sha = shell::agent_exec_capture(
             agent_name,
             &format!("cd /home/agent/repo && git rev-parse '{base_ref}'"),
@@ -2052,7 +2176,27 @@ async fn push_and_preview(
     sync_agent_to_remote(agent_name, branch_name).await?;
     *branch_pushed = true;
 
-    // Preview
+    update_task_preview(ctx, branch_name, preview_created, tx).await?;
+    Ok(PushOutcome::Pushed)
+}
+
+/// Create the task's preview on its branch, or update it if it already exists, then take a
+/// screenshot in the background.
+async fn update_task_preview(
+    ctx: &PipelineCtx<'_>,
+    branch_name: &str,
+    preview_created: &mut bool,
+    tx: &broadcast::Sender<String>,
+) -> Result<(), AppError> {
+    let &PipelineCtx {
+        config,
+        db,
+        task_id,
+        short_id,
+        repo,
+        git_id,
+        ..
+    } = ctx;
     let preview_slug = format!("t-{short_id}");
 
     if !*preview_created {
@@ -2108,7 +2252,7 @@ async fn push_and_preview(
         .await;
     });
 
-    Ok(true)
+    Ok(())
 }
 
 async fn take_screenshot(
@@ -3407,7 +3551,35 @@ pub async fn create_pr(
     )
     .await?;
 
-    let task = sqlx::query_as::<_, Task>(
+    let task = fetch_task(&state.db, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Task not found".into()))?;
+
+    if task.pr_url.is_some() {
+        return Err(AppError::BadRequest(
+            "PR already exists for this task".into(),
+        ));
+    }
+
+    let git_id = get_git_identity(&state.db, &user.0.sub).await?;
+    open_pr_for_task(
+        &state.db,
+        &state.config.secrets_encryption_key,
+        &git_id,
+        &task,
+        &user.0.sub,
+    )
+    .await?;
+
+    let updated_task = fetch_task(&state.db, &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Task not found".into()))?;
+
+    Ok(Json(updated_task))
+}
+
+async fn fetch_task(db: &PgPool, id: &str) -> Result<Option<Task>, AppError> {
+    Ok(sqlx::query_as::<_, Task>(
         "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
          preview_slug, preview_url, error_message, \
          TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
@@ -3417,46 +3589,94 @@ pub async fn create_pr(
          intake_issue_id, source_type \
          FROM tasks WHERE id = $1"
     )
-    .bind(&id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound("Task not found".into()))?;
+    .bind(id)
+    .fetch_optional(db)
+    .await?)
+}
 
-    if task.pr_url.is_some() {
-        return Err(AppError::BadRequest(
-            "PR already exists for this task".into(),
-        ));
+#[derive(Debug, PartialEq)]
+enum PrCreateRejection {
+    AlreadyExists,
+    NoCommits,
+    Other,
+}
+
+fn classify_pr_create_error(status: u16, body: &str) -> PrCreateRejection {
+    if status != 422 {
+        return PrCreateRejection::Other;
     }
+    if body.contains("A pull request already exists") {
+        PrCreateRejection::AlreadyExists
+    } else if body.contains("No commits between") {
+        PrCreateRejection::NoCommits
+    } else {
+        PrCreateRejection::Other
+    }
+}
 
+/// Find the open PR whose head is `branch_name` in `repo`.
+async fn find_open_pr_for_branch(
+    token: &str,
+    repo: &str,
+    branch_name: &str,
+) -> Result<Option<serde_json::Value>, AppError> {
+    let owner = repo.split('/').next().unwrap_or(repo);
+    let resp = reqwest::Client::new()
+        .get(format!("https://api.github.com/repos/{repo}/pulls"))
+        .query(&[
+            ("head", format!("{owner}:{branch_name}")),
+            ("state", "open".to_string()),
+        ])
+        .header("Authorization", format!("token {token}"))
+        .header("User-Agent", "tekton-dashboard")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("GitHub API request failed: {e}")))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!(
+            "GitHub API returned {status}: {text}"
+        )));
+    }
+    let prs: Vec<serde_json::Value> = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to parse PR list: {e}")))?;
+    Ok(prs.into_iter().next())
+}
+
+/// Open a PR for the task's branch as `acting_user` and record it on the task. If GitHub
+/// reports that the branch already has a PR (e.g. the agent opened one), that PR is recorded.
+async fn open_pr_for_task(
+    db: &PgPool,
+    encryption_key: &str,
+    git_id: &GitIdentity,
+    task: &Task,
+    acting_user: &str,
+) -> Result<(String, i32), AppError> {
     let branch_name = task
         .branch_name
         .as_deref()
         .ok_or_else(|| AppError::BadRequest("Task has no branch".into()))?;
 
-    let git_id = get_git_identity(&state.db, &user.0.sub).await?;
-
     // Build PR title from task name or prompt
     let title = task
         .name
         .as_deref()
-        .unwrap_or_else(|| &task.prompt)
+        .unwrap_or(&task.prompt)
         .chars()
         .take(72)
         .collect::<String>();
 
     // Build PR body: gather context and ask Claude to write the description
-    let mut body = generate_pr_body(
-        &state.db,
-        &state.config.secrets_encryption_key,
-        &git_id.token,
-        &task,
-        &user.0.sub,
-    )
-    .await
-    .unwrap_or_else(|e| {
-        tracing::warn!("Failed to generate PR body via Claude: {e}, using fallback");
-        format!("## Task\n\n{}", task.prompt)
-    });
+    let mut body = generate_pr_body(db, encryption_key, &git_id.token, task, acting_user)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("Failed to generate PR body via Claude: {e}, using fallback");
+            format!("## Task\n\n{}", task.prompt)
+        });
 
     // Append preview URL if one exists for this task
     if let Some(ref url) = task.preview_url {
@@ -3480,55 +3700,142 @@ pub async fn create_pr(
         .await
         .map_err(|e| AppError::Internal(format!("GitHub API request failed: {e}")))?;
 
-    if !resp.status().is_success() {
+    let (pr_data, existing): (serde_json::Value, bool) = if resp.status().is_success() {
+        let data = resp
+            .json()
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to parse PR response: {e}")))?;
+        (data, false)
+    } else {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        return Err(AppError::Internal(format!(
-            "GitHub API returned {status}: {text}"
-        )));
-    }
-
-    let pr_data: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to parse PR response: {e}")))?;
+        match classify_pr_create_error(status.as_u16(), &text) {
+            PrCreateRejection::AlreadyExists => {
+                let pr = find_open_pr_for_branch(&git_id.token, &task.repo, branch_name)
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::Internal(format!("GitHub API returned {status}: {text}"))
+                    })?;
+                (pr, true)
+            }
+            PrCreateRejection::NoCommits => {
+                return Err(AppError::BadRequest("Branch has no changes yet".into()));
+            }
+            PrCreateRejection::Other => {
+                return Err(AppError::Internal(format!(
+                    "GitHub API returned {status}: {text}"
+                )));
+            }
+        }
+    };
 
     let pr_url = pr_data["html_url"].as_str().unwrap_or("").to_string();
     let pr_number = pr_data["number"].as_i64().unwrap_or(0) as i32;
 
-    sqlx::query("UPDATE tasks SET pr_url = $1, pr_number = $2, updated_at = NOW() WHERE id = $3")
-        .bind(&pr_url)
-        .bind(pr_number)
-        .bind(&id)
-        .execute(&state.db)
-        .await?;
+    // Only the first writer records the PR (the Create PR button can race the auto-PR).
+    let updated = sqlx::query(
+        "UPDATE tasks SET pr_url = $1, pr_number = $2, updated_at = NOW() \
+         WHERE id = $3 AND pr_url IS NULL",
+    )
+    .bind(&pr_url)
+    .bind(pr_number)
+    .bind(&task.id)
+    .execute(db)
+    .await?;
+    if updated.rows_affected() == 0 {
+        return Err(AppError::BadRequest(
+            "PR already exists for this task".into(),
+        ));
+    }
 
     // Audit: task.pr_created
     crate::audit::log_event(
-        &state.db,
+        db,
         "task.pr_created",
-        &user.0.sub,
-        Some(&id),
-        serde_json::json!({ "pr_url": &pr_url, "pr_number": pr_number }),
+        acting_user,
+        Some(&task.id),
+        serde_json::json!({ "pr_url": &pr_url, "pr_number": pr_number, "existing": existing }),
         None,
     )
     .await;
 
-    let updated_task = sqlx::query_as::<_, Task>(
-        "SELECT id, prompt, repo, base_branch, branch_name, agent_name, status, \
-         preview_slug, preview_url, error_message, \
-         TO_CHAR(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
-         parent_task_id, created_by, screenshot_url, image_url, \
-         total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
-         intake_issue_id, source_type \
-         FROM tasks WHERE id = $1"
-    )
-    .bind(&id)
-    .fetch_one(&state.db)
-    .await?;
+    Ok((pr_url, pr_number))
+}
 
-    Ok(Json(updated_task))
+/// For intake sources with auto_create_pr on, open the task's PR in the background once its
+/// branch has commits. Failures are reported on the task but never fail it.
+async fn maybe_auto_open_pr(
+    ctx: &PipelineCtx<'_>,
+    acting_user: &str,
+    tx: &broadcast::Sender<String>,
+) {
+    let &PipelineCtx {
+        config,
+        db,
+        task_id,
+        git_id,
+        ..
+    } = ctx;
+    match intake_auto_create_pr(db, task_id).await {
+        Ok(Some(true)) => {}
+        Ok(_) => return,
+        Err(e) => {
+            tracing::warn!("Could not resolve auto_create_pr for task {task_id}: {e}");
+            return;
+        }
+    }
+    let task = match fetch_task(db, task_id).await {
+        Ok(Some(task)) if task.pr_url.is_none() => task,
+        Ok(_) => return,
+        Err(e) => {
+            tracing::warn!("Could not load task {task_id} for auto PR: {e}");
+            return;
+        }
+    };
+
+    let db = db.clone();
+    let encryption_key = config.secrets_encryption_key.clone();
+    let git_id = git_id.clone();
+    let acting_user = acting_user.to_string();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        log_and_send(&db, &task.id, &tx, "[STEP] Opening pull request...");
+        match open_pr_for_task(&db, &encryption_key, &git_id, &task, &acting_user).await {
+            Ok((pr_url, _)) => {
+                log_and_send(
+                    &db,
+                    &task.id,
+                    &tx,
+                    &format!("[STEP] Pull request: {pr_url}"),
+                );
+                let _ =
+                    save_system_message(&db, &task.id, &format!("Pull request: {pr_url}")).await;
+            }
+            // No commits yet, or a PR was recorded in the meantime: nothing to do.
+            Err(AppError::BadRequest(msg)) => {
+                log_and_send(
+                    &db,
+                    &task.id,
+                    &tx,
+                    &format!("[STEP] Skipped auto PR: {msg}"),
+                );
+            }
+            Err(e) => {
+                log_and_send(
+                    &db,
+                    &task.id,
+                    &tx,
+                    &format!("[WARN] Auto PR creation failed: {e}"),
+                );
+                let _ = save_system_message(
+                    &db,
+                    &task.id,
+                    &format!("Automatic PR creation failed: {e}. Use Create PR to retry."),
+                )
+                .await;
+            }
+        }
+    });
 }
 
 pub async fn link_pr(
@@ -3605,4 +3912,50 @@ pub async fn get_task_logs(
     .fetch_all(&state.db)
     .await?;
     Ok(Json(logs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_create_pr_resolution() {
+        assert_eq!(resolve_auto_create_pr(None, None), None);
+        assert_eq!(resolve_auto_create_pr(Some("manual"), Some(true)), None);
+        assert_eq!(
+            resolve_auto_create_pr(Some("intake_github"), Some(true)),
+            Some(true)
+        );
+        assert_eq!(
+            resolve_auto_create_pr(Some("intake_github"), Some(false)),
+            Some(false)
+        );
+        // Source deleted: never start pushing
+        assert_eq!(
+            resolve_auto_create_pr(Some("intake_github"), None),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn pr_create_error_classification() {
+        let exists = r#"{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","message":"A pull request already exists for lambdaclass:task-1."}]}"#;
+        let no_commits = r#"{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","message":"No commits between main and task-1"}]}"#;
+        assert_eq!(
+            classify_pr_create_error(422, exists),
+            PrCreateRejection::AlreadyExists
+        );
+        assert_eq!(
+            classify_pr_create_error(422, no_commits),
+            PrCreateRejection::NoCommits
+        );
+        assert_eq!(
+            classify_pr_create_error(422, "{}"),
+            PrCreateRejection::Other
+        );
+        assert_eq!(
+            classify_pr_create_error(403, exists),
+            PrCreateRejection::Other
+        );
+    }
 }
