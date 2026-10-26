@@ -1232,6 +1232,7 @@ interface IntakeFormState {
   poll_interval_secs: number;
   max_concurrent_tasks: number;
   prompt_template: string;
+  auto_create_pr: boolean;
 }
 
 const DEFAULT_PROMPT_TEMPLATE = `Implement the following based on this issue:
@@ -1254,6 +1255,7 @@ const INITIAL_INTAKE_FORM: IntakeFormState = {
   poll_interval_secs: 300,
   max_concurrent_tasks: 3,
   prompt_template: DEFAULT_PROMPT_TEMPLATE,
+  auto_create_pr: true,
 };
 
 function IntakeSourceDialog({
@@ -1426,6 +1428,33 @@ function IntakeSourceDialog({
               rows={6}
             />
           </div>
+          <label className="flex cursor-pointer items-start gap-3 rounded-md border px-4 py-3 hover:bg-muted/50">
+            <input
+              id="intake-auto-create-pr"
+              type="checkbox"
+              checked={form.auto_create_pr}
+              onChange={(e) => setForm((s) => ({ ...s, auto_create_pr: e.target.checked }))}
+              className="mt-0.5"
+            />
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-1.5 text-sm font-medium">
+                Push changes and open a PR automatically
+                <Tooltip>
+                  <TooltipTrigger asChild onClick={(e) => e.preventDefault()}>
+                    <Info className="h-4 w-4 text-muted-foreground cursor-help" />
+                  </TooltipTrigger>
+                  <TooltipContent side="right" className="max-w-xs text-left">
+                    If the repo tells the agent to open PRs itself (e.g. in its CLAUDE.md), add this to
+                    the prompt template to avoid a duplicate PR: "Work on the currently checked-out
+                    branch. Do not create other branches or open pull requests."
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+              <div className="text-xs text-muted-foreground">
+                When off, the agent's reply is the result; nothing is pushed unless the agent does it.
+              </div>
+            </div>
+          </label>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
@@ -1507,6 +1536,7 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
       poll_interval_secs: s.poll_interval_secs,
       max_concurrent_tasks: s.max_concurrent_tasks,
       prompt_template: s.prompt_template ?? DEFAULT_PROMPT_TEMPLATE,
+      auto_create_pr: s.auto_create_pr,
     });
   };
 
@@ -1524,6 +1554,7 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
       run_as_user: editForm.run_as_user,
       poll_interval_secs: editForm.poll_interval_secs,
       max_concurrent_tasks: editForm.max_concurrent_tasks,
+      auto_create_pr: editForm.auto_create_pr,
     };
     updateMutation.mutate({ id: editSource.id, data });
   };
@@ -1541,6 +1572,7 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
       run_as_user: newSource.run_as_user,
       poll_interval_secs: newSource.poll_interval_secs,
       max_concurrent_tasks: newSource.max_concurrent_tasks,
+      auto_create_pr: newSource.auto_create_pr,
     });
   };
 

@@ -344,6 +344,11 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
             .execute(pool)
             .await;
 
+    // New sources push and open a PR by default; existing rows keep their stored value
+    let _ = sqlx::query("ALTER TABLE intake_sources ALTER COLUMN auto_create_pr SET DEFAULT true")
+        .execute(pool)
+        .await;
+
     // Add prompt column and migrate status defaults for existing installs
     for col_sql in &[
         "ALTER TABLE intake_issues ADD COLUMN IF NOT EXISTS prompt TEXT",

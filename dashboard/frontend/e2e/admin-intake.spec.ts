@@ -90,6 +90,31 @@ test.describe('Admin - Intake Sources section', () => {
     await expect(githubRow.getByText('On', { exact: true })).toBeVisible({ timeout: 5000 });
   });
 
+  test('auto PR setting persists through edit', async ({ adminPage: page }) => {
+    await page.goto('/admin');
+
+    const section = page.locator('[class*="card"]').filter({ hasText: 'Intake Sources' });
+    const githubRow = section.locator('tr').filter({ hasText: SOURCES.github.name });
+    const dialog = page.getByRole('dialog');
+    const checkbox = dialog.getByRole('checkbox', { name: /Push changes and open a PR automatically/ });
+
+    // Seeded sources use the column default (on) — turn it off and save
+    await githubRow.getByTitle('Edit').click();
+    await expect(checkbox).toBeChecked();
+    await checkbox.uncheck();
+    await dialog.getByRole('button', { name: 'Save Changes' }).click();
+    await expect(dialog).not.toBeVisible();
+
+    // Reopen: the setting stuck
+    await githubRow.getByTitle('Edit').click();
+    await expect(checkbox).not.toBeChecked();
+
+    // Restore for test isolation
+    await checkbox.check();
+    await dialog.getByRole('button', { name: 'Save Changes' }).click();
+    await expect(dialog).not.toBeVisible();
+  });
+
   test('Test Poll dialog opens and shows Run button', async ({ adminPage: page }) => {
     await page.goto('/admin');
 
