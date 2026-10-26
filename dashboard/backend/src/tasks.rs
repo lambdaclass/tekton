@@ -862,15 +862,6 @@ async fn run_task_pipeline(
         }
     }
 
-    // A PR Claude opens from another branch can't be matched to the task, and would be
-    // duplicated by the auto-opened one.
-    if auto_create_pr == Some(true) {
-        effective_prompt.push_str(
-            "\n\nWork on the currently checked-out branch. Do not create other branches or \
-             open pull requests; the pipeline pushes your changes and opens the PR.",
-        );
-    }
-
     update_task_status(db, task_id, "running_claude", None).await?;
     // Log which tools are blocked before running Claude so it's visible in the agent logs
     if let Some(ref pol) = policy {
