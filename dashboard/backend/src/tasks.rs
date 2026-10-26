@@ -1952,7 +1952,7 @@ async fn github_create_commit(
 
 /// `None` for manual tasks; `Some(auto_create_pr)` for intake tasks. An intake task whose
 /// source was deleted resolves to `Some(false)` so it never starts pushing.
-fn resolve_auto_create_pr(source_type: Option<&str>, source_flag: Option<bool>) -> Option<bool> {
+fn resolve_auto_create_pr(source_type: Option<String>, source_flag: Option<bool>) -> Option<bool> {
     match source_type {
         Some(t) if t.starts_with("intake_") => Some(source_flag.unwrap_or(false)),
         _ => None,
@@ -1960,7 +1960,7 @@ fn resolve_auto_create_pr(source_type: Option<&str>, source_flag: Option<bool>) 
 }
 
 async fn intake_auto_create_pr(db: &PgPool, task_id: &str) -> Result<Option<bool>, AppError> {
-    let row: Option<(Option<String>, Option<bool>)> = sqlx::query_as(
+    Ok(sqlx::query_as::<_, (Option<String>, Option<bool>)>(
         "SELECT t.source_type, s.auto_create_pr FROM tasks t \
          LEFT JOIN intake_issues i ON i.id = t.intake_issue_id \
          LEFT JOIN intake_sources s ON s.id = i.source_id \
@@ -1968,8 +1968,8 @@ async fn intake_auto_create_pr(db: &PgPool, task_id: &str) -> Result<Option<bool
     )
     .bind(task_id)
     .fetch_optional(db)
-    .await?;
-    Ok(row.and_then(|(source_type, flag)| resolve_auto_create_pr(source_type.as_deref(), flag)))
+    .await?
+    .and_then(|(source_type, flag)| resolve_auto_create_pr(source_type, flag)))
 }
 
 /// Whether the pipeline commits, pushes and previews Claude's changes for this task.
@@ -3912,18 +3912,21 @@ mod tests {
     #[test]
     fn auto_create_pr_resolution() {
         assert_eq!(resolve_auto_create_pr(None, None), None);
-        assert_eq!(resolve_auto_create_pr(Some("manual"), Some(true)), None);
         assert_eq!(
-            resolve_auto_create_pr(Some("intake_github"), Some(true)),
+            resolve_auto_create_pr(Some("manual".into()), Some(true)),
+            None
+        );
+        assert_eq!(
+            resolve_auto_create_pr(Some("intake_github".into()), Some(true)),
             Some(true)
         );
         assert_eq!(
-            resolve_auto_create_pr(Some("intake_github"), Some(false)),
+            resolve_auto_create_pr(Some("intake_github".into()), Some(false)),
             Some(false)
         );
         // Source deleted: never start pushing
         assert_eq!(
-            resolve_auto_create_pr(Some("intake_github"), None),
+            resolve_auto_create_pr(Some("intake_github".into()), None),
             Some(false)
         );
     }
