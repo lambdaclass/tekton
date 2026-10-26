@@ -2000,6 +2000,37 @@ async fn fetch_remote_branch(agent_name: &str, branch_name: &str) -> Option<Stri
     (!oid.is_empty()).then(|| oid.to_string())
 }
 
+/// Rebase the agent's local branch onto `remote_head` unless it already contains it, and
+/// return whether a rebase happened. Pushes upload every file that differs from the remote
+/// branch, so commits someone else added there (a reviewer's fix, GitHub's "Update branch")
+/// would otherwise be silently reverted.
+async fn rebase_onto_remote_head(agent_name: &str, remote_head: &str) -> Result<bool, AppError> {
+    let ancestry = shell::agent_exec_capture(
+        agent_name,
+        &format!(
+            "cd /home/agent/repo && if git merge-base --is-ancestor {remote_head} HEAD; then echo contained; else echo diverged; fi"
+        ),
+    )
+    .await?;
+    if ancestry.trim_end().ends_with("contained") {
+        return Ok(false);
+    }
+
+    shell::agent_exec_capture(
+        agent_name,
+        &format!(
+            "cd /home/agent/repo && git rebase --autostash {remote_head} || {{ git rebase --abort; exit 1; }}"
+        ),
+    )
+    .await
+    .map_err(|e| {
+        AppError::Internal(format!(
+            "The task branch has commits that conflict with Claude's changes; resolve them on the branch and ask Claude to continue. ({e})"
+        ))
+    })?;
+    Ok(true)
+}
+
 /// Whether the fetched task branch has commits that aren't on the base branch.
 async fn remote_branch_ahead_of_base(
     agent_name: &str,
@@ -2062,6 +2093,16 @@ async fn push_and_preview(
     // Diff against the branch as it is on GitHub right now: the agent may have pushed to it
     // itself, and a stale ref makes createCommitOnBranch fail with STALE_DATA.
     let remote_head = fetch_remote_branch(agent_name, branch_name).await;
+    if let Some(oid) = &remote_head {
+        if rebase_onto_remote_head(agent_name, oid).await? {
+            log_and_send(
+                db,
+                task_id,
+                tx,
+                "[STEP] Rebased onto new commits on the task branch.",
+            );
+        }
+    }
     let base_ref = if remote_head.is_some() || *branch_pushed {
         format!("origin/{branch_name}")
     } else {
