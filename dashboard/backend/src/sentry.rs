@@ -204,7 +204,7 @@ fn scrub(text: &str) -> String {
         })
 }
 
-/// Keep a URL's shape but not its IDs or slugs: `/venues/la-esquina/orders/91` → `/venues/:slug/orders/:id`.
+/// Keep a URL's shape but not its IDs or slugs: `/venues/main-street/orders/91` → `/venues/:slug/orders/:id`.
 fn template_url(url: &str) -> String {
     let Ok(parsed) = reqwest::Url::parse(url) else {
         return scrub(url);
@@ -607,10 +607,10 @@ mod tests {
     fn issue() -> SentryApiIssue {
         serde_json::from_value(json!({
             "id": "4242",
-            "shortId": "VERTEX-ELIXIR-47",
+            "shortId": "BACKEND-47",
             "title": "FunctionClauseError: no function clause matching in auth_headers/1",
             "permalink": "https://sentry.io/organizations/acme/issues/4242/",
-            "project": { "slug": "vertex-elixir" },
+            "project": { "slug": "backend" },
             "level": "error",
             "count": "17",
             "userCount": 4,
@@ -624,14 +624,14 @@ mod tests {
     fn title_ends_with_short_id_and_is_bounded() {
         assert_eq!(
             build_issue_title(&issue()),
-            "FunctionClauseError: no function clause matching in auth_headers/1 (VERTEX-ELIXIR-47)"
+            "FunctionClauseError: no function clause matching in auth_headers/1 (BACKEND-47)"
         );
 
         let mut long = issue();
         long.title = "word ".repeat(200);
         let title = build_issue_title(&long);
         assert_eq!(title.chars().count(), MAX_TITLE_CHARS);
-        assert!(title.ends_with("… (VERTEX-ELIXIR-47)"));
+        assert!(title.ends_with("… (BACKEND-47)"));
     }
 
     #[test]
@@ -649,7 +649,7 @@ mod tests {
     #[test]
     fn template_url_hides_ids_and_slugs() {
         assert_eq!(
-            template_url("https://app.example.com/api/v1/venues/la-esquina/orders/91?x=1"),
+            template_url("https://app.example.com/api/v1/venues/main-street/orders/91?x=1"),
             "https://app.example.com/api/v1/venues/:slug/orders/:id"
         );
         assert_eq!(
@@ -665,7 +665,7 @@ mod tests {
             "tags": [
                 { "key": "environment", "value": "production" },
                 { "key": "release", "value": "api@1.4.2" },
-                { "key": "url", "value": "https://app.example.com/venues/la-esquina" }
+                { "key": "url", "value": "https://app.example.com/venues/main-street" }
             ],
             "entries": [
                 {
@@ -676,7 +676,7 @@ mod tests {
                         "mechanism": { "handled": false },
                         "stacktrace": { "frames": [
                             { "filename": "lib/router.ex", "function": "call/2", "lineNo": 10 },
-                            { "module": "Pedidosya.Client", "function": "auth_headers/1", "lineNo": 42 }
+                            { "module": "Payments.Client", "function": "auth_headers/1", "lineNo": 42 }
                         ]}
                     }]}
                 },
@@ -693,13 +693,13 @@ mod tests {
 
         let body = build_issue_body(&issue(), Some(&event));
         assert!(body.starts_with(
-            "**Sentry:** [VERTEX-ELIXIR-47](https://sentry.io/organizations/acme/issues/4242/) · `error` · \
+            "**Sentry:** [BACKEND-47](https://sentry.io/organizations/acme/issues/4242/) · `error` · \
              17 events, 4 users · first seen 2026-10-26, last seen 2026-10-26"
         ));
         assert!(body.contains("`FunctionClauseError` (unhandled)"));
         assert!(body.contains("no match for [email]"));
         assert!(!body.contains("jane.doe"));
-        assert!(body.contains("lib/router.ex:10 in call/2\nPedidosya.Client:42 in auth_headers/1"));
+        assert!(body.contains("lib/router.ex:10 in call/2\nPayments.Client:42 in auth_headers/1"));
         assert!(body.contains("| date | 2026-10-26T11:00:00Z |"));
         assert!(body.contains("| environment | `production` |"));
         assert!(body.contains("| url | `https://app.example.com/venues/:slug` |"));

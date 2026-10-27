@@ -2004,7 +2004,7 @@ function SentrySourceDialog({
         <form onSubmit={onSubmit} className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="sentry-name">Name</Label>
-            <Input id="sentry-name" placeholder="Vertex production" required {...field('name')} />
+            <Input id="sentry-name" placeholder="Production errors" required {...field('name')} />
           </div>
           <div className="space-y-2">
             <Label htmlFor="sentry-org">Sentry Org</Label>
