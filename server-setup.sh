@@ -356,7 +356,6 @@ cp "$TMPDIR/agent-config.nix" /etc/nixos/agent-config.nix
 cp "$SERVER_CONFIG/preview.sh" /etc/nixos/preview.sh
 cp "$SERVER_CONFIG/agent.sh" /etc/nixos/agent.sh
 cp "$SERVER_CONFIG/flake.nix" /etc/nixos/flake.nix
-cp "$SERVER_CONFIG/monitoring.nix" /etc/nixos/monitoring.nix
 success "All NixOS configs installed."
 
 # =============================================================================

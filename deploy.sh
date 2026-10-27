@@ -140,7 +140,7 @@ deploy_nix() {
     # preview-config.nix and *-preview-config.nix are repo-side templates, not deployed to the server
     $SSH "
         cd ${REMOTE_SRC}/server-config && \
-        for f in agent.sh preview.sh flake.nix monitoring.nix; do
+        for f in agent.sh preview.sh flake.nix; do
             if [ -f \"\$f\" ]; then
                 cp \"\$f\" /etc/nixos/\"\$f\"
             fi

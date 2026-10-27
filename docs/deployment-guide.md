@@ -214,7 +214,7 @@ After making changes to the codebase, use `deploy.sh` to update the server. It p
 
 - **Never scp `configuration.nix` or `agent-config.nix` directly** — the local copies have placeholder values. Either edit on the server or use `server-setup.sh` for a full reconfigure.
 - The deploy script automatically skips both template files.
-- **Server metrics (Prometheus + node_exporter) live in `server-config/monitoring.nix`**, which has no host-specific values, so `deploy.sh nix` ships it like `flake.nix`. The dashboard's Server page reads from `PROMETHEUS_URL` (default `http://127.0.0.1:9090`).
+- **Server metrics (Prometheus + node_exporter) live in `configuration.nix`**, so `deploy.sh nix` won't roll them out. On an existing server, copy the `services.prometheus` block into `/etc/nixos/configuration.nix` and run `nixos-rebuild switch`. The dashboard's Server page reads from `PROMETHEUS_URL` (default `http://127.0.0.1:9090`).
 - First Rust build on a fresh server takes a while (downloading crates). Subsequent builds are fast.
 
 ### Claude OAuth token refresh
