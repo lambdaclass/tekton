@@ -214,6 +214,7 @@ After making changes to the codebase, use `deploy.sh` to update the server. It p
 
 - **Never scp `configuration.nix` or `agent-config.nix` directly** — the local copies have placeholder values. Either edit on the server or use `server-setup.sh` for a full reconfigure.
 - The deploy script automatically skips both template files.
+- **Server metrics (Prometheus + node_exporter) live in `configuration.nix`**, so `deploy.sh nix` won't roll them out. On an existing server, copy the `services.prometheus` block into `/etc/nixos/configuration.nix` and run `nixos-rebuild switch`. The dashboard's Server page reads from `PROMETHEUS_URL` (default `http://127.0.0.1:9090`).
 - First Rust build on a fresh server takes a while (downloading crates). Subsequent builds are fast.
 
 ### Claude OAuth token refresh
@@ -403,6 +404,7 @@ Template files in the repo have placeholder values that `server-setup.sh` substi
 | Webhook not receiving events | `systemctl status preview-webhook` and check GitHub webhook deliveries. |
 | Preview returns 502 | App is still building. Check `preview logs <slug> --follow`. Some builds (e.g. Elixir) take 10-15 minutes. |
 | Container fails to start | `journalctl -u container@<name>` on host. |
+| Server page says Prometheus is not reachable | `systemctl status prometheus prometheus-node-exporter`. Check `curl -s localhost:9090/-/ready` on the host. |
 
 ### Authentication issues
 

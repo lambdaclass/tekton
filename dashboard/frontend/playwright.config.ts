@@ -50,6 +50,8 @@ export default defineConfig({
       STATIC_DIR: process.env.STATIC_DIR || "../frontend/dist",
       SECRETS_ENCRYPTION_KEY: "test-encryption-key-32chars-ok!",
       PREVIEW_DOMAIN: "preview.test.dev",
+      // Closed port: no Prometheus in tests, so the Server page shows its unavailable state.
+      PROMETHEUS_URL: "http://127.0.0.1:1",
       TEST_MODE: "true",
     },
   },

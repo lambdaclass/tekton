@@ -21,6 +21,7 @@ pub struct Config {
     pub intake_enabled: bool,
     pub intake_max_global_concurrent: i32,
     pub github_webhook_secret: String,
+    pub prometheus_url: String,
 }
 
 impl Config {
@@ -60,6 +61,8 @@ impl Config {
                 .unwrap_or(10),
             github_webhook_secret: env::var("GITHUB_WEBHOOK_SECRET")
                 .unwrap_or_else(|_| String::new()),
+            prometheus_url: env::var("PROMETHEUS_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:9090".into()),
         })
     }
 }

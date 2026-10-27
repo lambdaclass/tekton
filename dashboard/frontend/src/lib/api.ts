@@ -394,6 +394,22 @@ export const getTopRepos = (days?: number) => {
   return apiFetch<TopRepoRow[]>(`/api/metrics/top-repos${qs}`);
 };
 
+// Server metrics (admin only, backed by Prometheus)
+export type ServerMetricsRange = '1h' | '6h' | '24h' | '7d' | '30d';
+/** [unix seconds, value] */
+export type MetricPoint = [number, number];
+export interface ServerMetrics {
+  range: ServerMetricsRange;
+  start: number;
+  end: number;
+  step: number;
+  memory: { used: MetricPoint[]; total: number | null };
+  disk: { used: MetricPoint[]; total: number | null };
+  network: { rx: MetricPoint[]; tx: MetricPoint[] };
+}
+export const getServerMetrics = (range: ServerMetricsRange) =>
+  apiFetch<ServerMetrics>(`/api/admin/server-metrics?range=${range}`);
+
 // Audit log
 export interface AuditLogEntry {
   id: number;

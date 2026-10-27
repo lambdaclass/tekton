@@ -66,6 +66,7 @@ test.describe('Navigation', () => {
     await adminPage.goto('/');
     await expect(adminPage.getByRole('link', { name: 'Admin' })).toBeVisible();
     await expect(adminPage.getByRole('link', { name: 'Cost' })).toBeVisible();
+    await expect(adminPage.getByRole('link', { name: 'Server' })).toBeVisible();
     await expect(adminPage.getByRole('link', { name: 'Audit Log' })).toBeVisible();
   });
 
@@ -73,6 +74,7 @@ test.describe('Navigation', () => {
     await memberPage.goto('/');
     await expect(memberPage.getByRole('link', { name: 'Admin' })).toHaveCount(0);
     await expect(memberPage.getByRole('link', { name: 'Cost' })).toHaveCount(0);
+    await expect(memberPage.getByRole('link', { name: 'Server' })).toHaveCount(0);
     await expect(memberPage.getByRole('link', { name: 'Audit Log' })).toHaveCount(0);
   });
 
