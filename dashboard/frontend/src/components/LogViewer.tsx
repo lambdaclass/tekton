@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { connectTaskOutput, connectPreviewLogs } from '@/lib/api';
+import { connectTaskOutput, connectPreviewLogs, connectAutoresearchOutput } from '@/lib/api';
 import '@xterm/xterm/css/xterm.css';
 
 const ERROR_LINE_RE = /\b(error|exception|fatal|panic|traceback|critical)\b/i;
@@ -34,13 +34,23 @@ interface LogViewerProps {
   taskId?: string;
   /** For preview logs: creates its own WS via connectPreviewLogs */
   previewSlug?: string;
+  /** For autoresearch run logs */
+  autoresearchRunId?: string;
+  /** For autoresearch: current run status, used to disable WS auto-reconnect
+   *  on terminal states (otherwise the backend's post-cleanup channel removal
+   *  causes an endless reconnect → re-replay → terminal-clear loop). */
+  autoresearchRunStatus?: string;
   /** For preview logs: external WS (no DB history) */
   ws?: WebSocket | null;
   onConnectionChange?: (connected: boolean) => void;
 }
 
-export default function LogViewer({ taskId, previewSlug, ws, onConnectionChange }: LogViewerProps) {
+export default function LogViewer({ taskId, previewSlug, autoresearchRunId, autoresearchRunStatus, ws, onConnectionChange }: LogViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // Read inside the WS close handler so we don't tear down + recreate the
+  // socket every time the parent re-renders with a fresh status.
+  const autoresearchRunStatusRef = useRef(autoresearchRunStatus);
+  autoresearchRunStatusRef.current = autoresearchRunStatus;
 
   // Mode 1: Self-managed WS for task logs with auto-reconnect
   useEffect(() => {
@@ -142,6 +152,60 @@ export default function LogViewer({ taskId, previewSlug, ws, onConnectionChange 
       term.dispose();
     };
   }, [previewSlug, taskId]);
+
+  // Mode: Self-managed WS for autoresearch run logs with auto-reconnect
+  useEffect(() => {
+    if (!containerRef.current || !autoresearchRunId || taskId || previewSlug) return;
+
+    const term = new Terminal(TERM_OPTIONS);
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(containerRef.current);
+    fit.fit();
+
+    let disposed = false;
+    let currentSocket: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function connect() {
+      if (disposed) return;
+
+      const socket = connectAutoresearchOutput(autoresearchRunId!);
+      currentSocket = socket;
+
+      socket.addEventListener('open', () => {
+        term.clear();
+        onConnectionChange?.(true);
+      });
+      socket.addEventListener('message', (ev) => {
+        writeLine(term, ev.data);
+      });
+      socket.addEventListener('close', () => {
+        onConnectionChange?.(false);
+        if (disposed) return;
+        // If the run has finished, the backend's channel will be gone and
+        // every reconnect just replays the DB history and closes again,
+        // wiping any text selection. Stop reconnecting on terminal states.
+        const status = autoresearchRunStatusRef.current;
+        const isTerminal = status === 'completed' || status === 'failed' || status === 'stopped';
+        if (isTerminal) return;
+        reconnectTimer = setTimeout(connect, 3000);
+      });
+    }
+
+    connect();
+
+    const onResize = () => fit.fit();
+    window.addEventListener('resize', onResize);
+
+    return () => {
+      disposed = true;
+      window.removeEventListener('resize', onResize);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      currentSocket?.close();
+      term.dispose();
+    };
+  }, [autoresearchRunId, taskId, previewSlug]);
 
   // Mode 3: External WS for preview logs (legacy)
   const termRef = useRef<Terminal | null>(null);

@@ -281,6 +281,161 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
+    // Create benchmark_servers table for autoresearch
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS benchmark_servers (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            hostname TEXT NOT NULL,
+            ssh_user TEXT NOT NULL DEFAULT 'root',
+            ssh_key_path TEXT,
+            hardware_description TEXT,
+            status TEXT NOT NULL DEFAULT 'unprovisioned',
+            setup_log TEXT,
+            error_message TEXT,
+            created_by TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Create autoresearch_runs table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS autoresearch_runs (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            repo TEXT NOT NULL,
+            base_branch TEXT NOT NULL DEFAULT 'main',
+            branch_name TEXT,
+            agent_name TEXT,
+            benchmark_server_id BIGINT REFERENCES benchmark_servers(id),
+            benchmark_command TEXT NOT NULL,
+            objective TEXT,
+            metric_regex TEXT,
+            optimization_direction TEXT,
+            target_files TEXT,
+            frozen_files TEXT,
+            max_experiments INTEGER,
+            time_budget_minutes INTEGER,
+            status TEXT NOT NULL DEFAULT 'pending',
+            baseline_metric DOUBLE PRECISION,
+            best_metric DOUBLE PRECISION,
+            total_experiments INTEGER NOT NULL DEFAULT 0,
+            accepted_experiments INTEGER NOT NULL DEFAULT 0,
+            total_cost_usd DOUBLE PRECISION DEFAULT 0,
+            error_message TEXT,
+            created_by TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            pr_url TEXT,
+            pr_number INTEGER
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Add pr_url column to experiments if missing (for upgrades)
+    let _ =
+        sqlx::query("ALTER TABLE autoresearch_experiments ADD COLUMN IF NOT EXISTS pr_url TEXT")
+            .execute(pool)
+            .await;
+
+    // Add objective column if missing (for upgrades)
+    let _ = sqlx::query("ALTER TABLE autoresearch_runs ADD COLUMN IF NOT EXISTS objective TEXT")
+        .execute(pool)
+        .await;
+    // Make metric_regex nullable (for upgrades)
+    let _ = sqlx::query("ALTER TABLE autoresearch_runs ALTER COLUMN metric_regex DROP NOT NULL")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query(
+        "ALTER TABLE autoresearch_runs ALTER COLUMN optimization_direction DROP NOT NULL",
+    )
+    .execute(pool)
+    .await;
+
+    // EXPB benchmark support. A run is either a classic shell-command benchmark
+    // (benchmark_type='shell') or an EXPB benchmark (benchmark_type='expb')
+    // which drives the upstream benchmarks tooling over SSH through the
+    // tiered fast → gigablocks → slow gate. We store per-tier baseline metrics
+    // on the run (as JSONB) and per-experiment metrics as their own columns.
+    for col_sql in &[
+        // Run shape
+        "ALTER TABLE autoresearch_runs ADD COLUMN IF NOT EXISTS benchmark_type TEXT NOT NULL DEFAULT 'shell'",
+        "ALTER TABLE autoresearch_runs ADD COLUMN IF NOT EXISTS ethrex_repo_path TEXT",
+        "ALTER TABLE autoresearch_runs ADD COLUMN IF NOT EXISTS benchmarks_repo_path TEXT",
+        "ALTER TABLE autoresearch_runs ADD COLUMN IF NOT EXISTS expb_baseline_metrics JSONB",
+        // benchmark_command is only required for shell runs; EXPB runs leave it null
+        "ALTER TABLE autoresearch_runs ALTER COLUMN benchmark_command DROP NOT NULL",
+        // Drop first-draft HTTP-era columns so they don't linger as confusing nulls
+        "ALTER TABLE autoresearch_runs DROP COLUMN IF EXISTS expb_repo_path",
+        "ALTER TABLE autoresearch_runs DROP COLUMN IF EXISTS fast_baseline_run_id",
+        "ALTER TABLE autoresearch_runs DROP COLUMN IF EXISTS gigablocks_baseline_run_id",
+        "ALTER TABLE autoresearch_runs DROP COLUMN IF EXISTS slow_baseline_run_id",
+        // Per-experiment metrics
+        "ALTER TABLE autoresearch_experiments ADD COLUMN IF NOT EXISTS mgas_avg DOUBLE PRECISION",
+        "ALTER TABLE autoresearch_experiments ADD COLUMN IF NOT EXISTS latency_avg_ms DOUBLE PRECISION",
+        "ALTER TABLE autoresearch_experiments ADD COLUMN IF NOT EXISTS latency_p50_ms DOUBLE PRECISION",
+        "ALTER TABLE autoresearch_experiments ADD COLUMN IF NOT EXISTS latency_p95_ms DOUBLE PRECISION",
+        "ALTER TABLE autoresearch_experiments ADD COLUMN IF NOT EXISTS latency_p99_ms DOUBLE PRECISION",
+        "ALTER TABLE autoresearch_experiments ADD COLUMN IF NOT EXISTS expb_tier_reached TEXT",
+        "ALTER TABLE autoresearch_experiments DROP COLUMN IF EXISTS expb_run_ids",
+        // Per-server EXPB fields. No HTTP API URL any more.
+        "ALTER TABLE benchmark_servers DROP COLUMN IF EXISTS expb_api_url",
+    ] {
+        let _ = sqlx::query(col_sql).execute(pool).await;
+    }
+
+    // Create autoresearch_experiments table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS autoresearch_experiments (
+            id BIGSERIAL PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES autoresearch_runs(id),
+            experiment_number INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'running',
+            diff TEXT,
+            metric_value DOUBLE PRECISION,
+            metric_raw_output TEXT,
+            accepted BOOLEAN,
+            hypothesis TEXT,
+            claude_response TEXT,
+            input_tokens BIGINT DEFAULT 0,
+            output_tokens BIGINT DEFAULT 0,
+            cost_usd DOUBLE PRECISION DEFAULT 0,
+            duration_seconds INTEGER,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Create autoresearch_messages table (user suggestions during a run)
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS autoresearch_messages (
+            id BIGSERIAL PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            sender TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Create autoresearch_logs table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS autoresearch_logs (
+            id BIGSERIAL PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            line TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     // Add intake columns to tasks table
     for col_sql in &[
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS intake_issue_id BIGINT",

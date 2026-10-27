@@ -560,3 +560,154 @@ export function connectTaskOutput(id: string): WebSocket {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   return new WebSocket(`${proto}//${location.host}/api/ws/tasks/${id}`);
 }
+
+// ── Benchmark Servers ──
+
+export interface BenchmarkServer {
+  id: number;
+  name: string;
+  hostname: string;
+  ssh_user: string;
+  ssh_key_path: string | null;
+  hardware_description: string | null;
+  status: string;
+  setup_log: string | null;
+  error_message: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// Admin
+export const listBenchmarkServers = () =>
+  apiFetch<BenchmarkServer[]>('/api/admin/benchmark-servers');
+export const createBenchmarkServer = (data: { name: string; hostname: string; ssh_user?: string; ssh_key_path?: string; hardware_description?: string }) =>
+  apiFetch<BenchmarkServer>('/api/admin/benchmark-servers', { method: 'POST', body: JSON.stringify(data) });
+export const updateBenchmarkServer = (id: number, data: { name?: string; hostname?: string; ssh_user?: string; ssh_key_path?: string; hardware_description?: string }) =>
+  apiFetch<BenchmarkServer>(`/api/admin/benchmark-servers/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+export const deleteBenchmarkServer = (id: number) =>
+  apiFetch<{ deleted: boolean }>(`/api/admin/benchmark-servers/${id}`, { method: 'DELETE' });
+export const setupBenchmarkServer = (id: number) =>
+  apiFetch<BenchmarkServer>(`/api/admin/benchmark-servers/${id}/setup`, { method: 'POST' });
+export const getBenchmarkServerSetupLog = (id: number) =>
+  apiFetch<{ setup_log: string | null; error_message: string | null; status: string }>(`/api/admin/benchmark-servers/${id}/setup-log`);
+
+// Non-admin: list available servers for autoresearch runs
+export const listAvailableBenchmarkServers = () =>
+  apiFetch<BenchmarkServer[]>('/api/autoresearch/benchmark-servers');
+
+// ── Autoresearch Runs ──
+
+export interface AutoresearchRun {
+  id: string;
+  name: string | null;
+  repo: string;
+  base_branch: string;
+  branch_name: string | null;
+  agent_name: string | null;
+  benchmark_server_id: number | null;
+  benchmark_command: string | null;
+  benchmark_type: string;
+  ethrex_repo_path: string | null;
+  benchmarks_repo_path: string | null;
+  expb_baseline_metrics: Record<string, Record<string, number | null>> | null;
+  objective: string | null;
+  metric_regex: string | null;
+  optimization_direction: string | null;
+  target_files: string | null;
+  frozen_files: string | null;
+  max_experiments: number | null;
+  time_budget_minutes: number | null;
+  status: string;
+  baseline_metric: number | null;
+  best_metric: number | null;
+  total_experiments: number;
+  accepted_experiments: number;
+  total_cost_usd: number | null;
+  error_message: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  pr_url: string | null;
+  pr_number: number | null;
+}
+
+export interface AutoresearchExperiment {
+  id: number;
+  run_id: string;
+  experiment_number: number;
+  status: string;
+  diff: string | null;
+  metric_value: number | null;
+  metric_raw_output: string | null;
+  accepted: boolean | null;
+  hypothesis: string | null;
+  claude_response: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cost_usd: number | null;
+  duration_seconds: number | null;
+  pr_url: string | null;
+  created_at: string;
+  mgas_avg: number | null;
+  latency_avg_ms: number | null;
+  latency_p50_ms: number | null;
+  latency_p95_ms: number | null;
+  latency_p99_ms: number | null;
+  expb_tier_reached: string | null;
+}
+
+export interface AutoresearchStats {
+  improvement_pct: number;
+  experiments_per_hour: number;
+  accept_rate: number;
+  est_remaining_minutes: number | null;
+}
+
+export const listAutoresearchRuns = () =>
+  apiFetch<AutoresearchRun[]>('/api/autoresearch/runs');
+export const createAutoresearchRun = (data: {
+  repo: string;
+  base_branch?: string;
+  benchmark_type?: 'shell' | 'expb';
+  benchmark_command?: string;
+  ethrex_repo_path?: string;
+  benchmarks_repo_path?: string;
+  objective: string;
+  metric_regex?: string;
+  optimization_direction?: string;
+  target_files?: string;
+  frozen_files?: string;
+  max_experiments?: number;
+  time_budget_minutes?: number;
+  benchmark_server_id?: number;
+}) => apiFetch<AutoresearchRun>('/api/autoresearch/runs', { method: 'POST', body: JSON.stringify(data) });
+export const getAutoresearchRun = (id: string) =>
+  apiFetch<AutoresearchRun>(`/api/autoresearch/runs/${id}`);
+export const listAutoresearchExperiments = (id: string) =>
+  apiFetch<AutoresearchExperiment[]>(`/api/autoresearch/runs/${id}/experiments`);
+export const stopAutoresearchRun = (id: string) =>
+  apiFetch<{ status: string }>(`/api/autoresearch/runs/${id}/stop`, { method: 'POST' });
+export const getAutoresearchStats = (id: string) =>
+  apiFetch<AutoresearchStats>(`/api/autoresearch/runs/${id}/stats`);
+export const createAutoresearchPR = (id: string) =>
+  apiFetch<AutoresearchRun>(`/api/autoresearch/runs/${id}/create-pr`, { method: 'POST' });
+
+export interface AutoresearchMessage {
+  id: number;
+  run_id: string;
+  sender: string;
+  content: string;
+  created_at: string;
+}
+export const listAutoresearchMessages = (id: string) =>
+  apiFetch<AutoresearchMessage[]>(`/api/autoresearch/runs/${id}/messages`);
+export const sendAutoresearchMessage = (id: string, content: string) =>
+  apiFetch<AutoresearchMessage>(`/api/autoresearch/runs/${id}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  });
+export function connectAutoresearchOutput(id: string): WebSocket {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return new WebSocket(`${proto}//${location.host}/api/ws/autoresearch/${id}`);
+}

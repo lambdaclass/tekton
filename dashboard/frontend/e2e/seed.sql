@@ -157,6 +157,86 @@ CREATE TABLE IF NOT EXISTS global_ai_config (
     updated_by TEXT
 );
 
+CREATE TABLE IF NOT EXISTS benchmark_servers (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    hostname TEXT NOT NULL,
+    ssh_user TEXT NOT NULL DEFAULT 'root',
+    ssh_key_path TEXT,
+    hardware_description TEXT,
+    status TEXT NOT NULL DEFAULT 'unprovisioned',
+    setup_log TEXT,
+    error_message TEXT,
+    created_by TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS autoresearch_runs (
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    repo TEXT NOT NULL,
+    base_branch TEXT NOT NULL DEFAULT 'main',
+    branch_name TEXT,
+    agent_name TEXT,
+    benchmark_server_id BIGINT REFERENCES benchmark_servers(id),
+    benchmark_command TEXT,
+    benchmark_type TEXT NOT NULL DEFAULT 'shell',
+    ethrex_repo_path TEXT,
+    benchmarks_repo_path TEXT,
+    expb_baseline_metrics JSONB,
+    objective TEXT,
+    metric_regex TEXT,
+    optimization_direction TEXT,
+    target_files TEXT,
+    frozen_files TEXT,
+    max_experiments INTEGER,
+    time_budget_minutes INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending',
+    baseline_metric DOUBLE PRECISION,
+    best_metric DOUBLE PRECISION,
+    total_experiments INTEGER NOT NULL DEFAULT 0,
+    accepted_experiments INTEGER NOT NULL DEFAULT 0,
+    total_cost_usd DOUBLE PRECISION DEFAULT 0,
+    error_message TEXT,
+    created_by TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    pr_url TEXT,
+    pr_number INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS autoresearch_experiments (
+    id BIGSERIAL PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES autoresearch_runs(id),
+    experiment_number INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    diff TEXT,
+    metric_value DOUBLE PRECISION,
+    metric_raw_output TEXT,
+    accepted BOOLEAN,
+    hypothesis TEXT,
+    claude_response TEXT,
+    input_tokens BIGINT DEFAULT 0,
+    output_tokens BIGINT DEFAULT 0,
+    cost_usd DOUBLE PRECISION DEFAULT 0,
+    duration_seconds INTEGER,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    mgas_avg DOUBLE PRECISION,
+    latency_avg_ms DOUBLE PRECISION,
+    latency_p50_ms DOUBLE PRECISION,
+    latency_p95_ms DOUBLE PRECISION,
+    latency_p99_ms DOUBLE PRECISION,
+    expb_tier_reached TEXT
+);
+
+CREATE TABLE IF NOT EXISTS autoresearch_logs (
+    id BIGSERIAL PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    line TEXT NOT NULL
+);
+
 -- ============================================================
 -- Seed: Users
 -- ============================================================
@@ -365,6 +445,42 @@ VALUES
     ('testmember', 'testorg/testrepo'),
     ('testmember', 'testorg/frontend'),
     ('testviewer', 'testorg/testrepo');
+
+-- ============================================================
+-- Seed: Autoresearch runs + experiments
+-- ============================================================
+
+INSERT INTO autoresearch_runs
+    (id, name, repo, base_branch, branch_name, benchmark_command, objective,
+     target_files, max_experiments, status,
+     baseline_metric, best_metric, total_experiments, accepted_experiments,
+     total_cost_usd, created_by, created_at, updated_at)
+VALUES
+    ('ar-completed-1', 'Optimize sort perf', 'testorg/testrepo', 'main',
+     'autoresearch/ar-compl', 'python benchmark.py', 'Optimize sort algorithm performance',
+     'src/sort.py', 10, 'completed',
+     42.5, 51.3, 5, 3, 2.50, 'testadmin',
+     NOW() - INTERVAL '1 day', NOW() - INTERVAL '6 hours'),
+    ('ar-running-1', 'Speed up parser', 'testorg/testrepo', 'main',
+     'autoresearch/ar-runni', 'make bench', 'Improve parser throughput',
+     'src/parser.rs', 20, 'running',
+     150.0, 132.5, 8, 2, 1.80, 'testadmin',
+     NOW() - INTERVAL '2 hours', NOW() - INTERVAL '5 minutes');
+
+INSERT INTO autoresearch_experiments
+    (run_id, experiment_number, status, diff, metric_value, accepted,
+     claude_response, duration_seconds, created_at)
+VALUES
+    ('ar-completed-1', 1, 'accepted', 'diff --git a/src/sort.py\n+optimized', 45.0, true,
+     'Switched to a more efficient comparison function', 120, NOW() - INTERVAL '22 hours'),
+    ('ar-completed-1', 2, 'rejected', 'diff --git a/src/sort.py\n+parallel', 41.2, false,
+     'Attempted parallel sorting but overhead was too high', 130, NOW() - INTERVAL '20 hours'),
+    ('ar-completed-1', 3, 'accepted', 'diff --git a/src/sort.py\n+cache', 48.7, true,
+     'Added memoization for repeated comparisons', 115, NOW() - INTERVAL '18 hours'),
+    ('ar-completed-1', 4, 'rejected', 'diff --git a/src/sort.py\n+introspective', 47.1, false,
+     'Tried introspective sort but marginal improvement', 125, NOW() - INTERVAL '16 hours'),
+    ('ar-completed-1', 5, 'accepted', 'diff --git a/src/sort.py\n+final', 51.3, true,
+     'Optimized inner loop with SIMD-friendly operations', 140, NOW() - INTERVAL '14 hours');
 
 -- ============================================================
 -- Intake: Add columns to tasks table
