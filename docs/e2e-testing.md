@@ -446,7 +446,7 @@ All specs share one database, seeded once in global setup, and CI runs them on 4
 2. **Narrow to the rows you need before asserting.** Apply the page's filter (target, actor, event type) so writes from other specs can't push your rows out of view.
 3. **Run it alone** if the test really has to own a whole table, for example asserting an exact count or an empty state. `test.describe.serial` isn't enough for this, because other files still run alongside. Put the spec in its own Playwright project with `workers: 1` that runs after the parallel ones, or seed a dedicated table or row set that nothing else touches.
 
-Don't make a test pass by asserting on less, such as dropping the check for the specific row. That hides the collision without fixing it.
+Only loosen an assertion when the specific row was never what the test was about. For example, "renders audit log entries in table" now accepts any event row instead of `auth.login`. If the test is about that row, loosening it hides the collision without fixing it.
 
 To reproduce CI ordering locally, run with CI's settings:
 
