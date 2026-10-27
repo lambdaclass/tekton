@@ -17,6 +17,7 @@
       modules = [
         { nixpkgs.pkgs = pkgs; }
         ./configuration.nix
+        ./monitoring.nix
       ];
     };
 
