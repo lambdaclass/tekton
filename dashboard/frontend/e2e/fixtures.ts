@@ -53,6 +53,10 @@ export const TEST_IDS = {
       issueSync3Title: 'Sync test issue 3',
     },
   },
+  sentry: {
+    source: { name: 'Prod Errors', org: 'testorg-sentry', repo: 'testorg/testrepo' },
+    issue: { shortId: 'BACKEND-1A', title: 'KeyError: user_id', github: '#950' },
+  },
 } as const;
 
 type TestFixtures = {

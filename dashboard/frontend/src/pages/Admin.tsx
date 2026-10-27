@@ -24,8 +24,15 @@ import {
   listIntakeIssues,
   listIntakeLogs,
   testPollSource,
+  listSentrySources,
+  createSentrySource,
+  updateSentrySource,
+  deleteSentrySource,
+  toggleSentrySource,
+  listSentryIssues,
+  testSentrySource,
 } from '@/lib/api';
-import type { PolicyPreset, IntakeSource } from '@/lib/api';
+import type { PolicyPreset, IntakeSource, SentrySource, SentrySourceInput } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -40,7 +47,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
-import { Users, KeyRound, Shield, Building, Trash2, Plus, X, Settings, Zap, Eye, ScrollText, FlaskConical, Pencil, Info } from 'lucide-react';
+import { Users, KeyRound, Shield, Building, Trash2, Plus, X, Settings, Zap, Eye, ScrollText, FlaskConical, Pencil, Info, Bug } from 'lucide-react';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Navigate } from 'react-router-dom';
@@ -63,6 +70,7 @@ export default function Admin() {
       <PoliciesSection queryClient={queryClient} />
       <OrgPoliciesSection queryClient={queryClient} />
       <IntakeSourcesSection queryClient={queryClient} />
+      <SentrySourcesSection queryClient={queryClient} />
     </div>
   );
 }
@@ -1910,6 +1918,440 @@ function IntakeLogsDialog({ sourceId, onClose }: { sourceId: number; onClose: ()
                         <span className="text-muted-foreground">-</span>
                       )}
                     </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Close</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+interface SentryFormState {
+  name: string;
+  sentry_org: string;
+  sentry_projects: string;
+  environments: string;
+  auth_token: string;
+  target_repo: string;
+  labels: string;
+  run_as_user: string;
+}
+
+const INITIAL_SENTRY_FORM: SentryFormState = {
+  name: '',
+  sentry_org: '',
+  sentry_projects: '',
+  environments: 'production',
+  auth_token: '',
+  target_repo: '',
+  labels: 'Sentry Alert',
+  run_as_user: '',
+};
+
+const splitList = (value: string) => value.split(',').map((v) => v.trim()).filter(Boolean);
+
+function sentryFormToInput(form: SentryFormState): SentrySourceInput {
+  return {
+    name: form.name,
+    sentry_org: form.sentry_org,
+    sentry_projects: splitList(form.sentry_projects),
+    environments: splitList(form.environments),
+    auth_token: form.auth_token || undefined,
+    target_repo: form.target_repo,
+    labels: splitList(form.labels),
+    run_as_user: form.run_as_user,
+  };
+}
+
+function SentrySourceDialog({
+  mode,
+  open,
+  onOpenChange,
+  form,
+  setForm,
+  onSubmit,
+  mutation,
+}: {
+  mode: 'create' | 'edit';
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  form: SentryFormState;
+  setForm: React.Dispatch<React.SetStateAction<SentryFormState>>;
+  onSubmit: (e: React.FormEvent) => void;
+  mutation: { isPending: boolean; isError: boolean; error: Error | null };
+}) {
+  const isCreate = mode === 'create';
+  const field = (key: keyof SentryFormState) => ({
+    value: form[key],
+    onChange: (e: React.ChangeEvent<HTMLInputElement>) => setForm((s) => ({ ...s, [key]: e.target.value })),
+  });
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{isCreate ? 'Add Sentry Source' : 'Edit Sentry Source'}</DialogTitle>
+          <DialogDescription>
+            New unresolved Sentry issues become GitHub issues with these labels. Point a GitHub intake
+            source at the same labels to feed them into intake.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="sentry-name">Name</Label>
+            <Input id="sentry-name" placeholder="Vertex production" required {...field('name')} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="sentry-org">Sentry Org</Label>
+            <Input id="sentry-org" placeholder="my-org" required {...field('sentry_org')} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="sentry-projects">Projects (comma-separated, empty for all)</Label>
+            <Input id="sentry-projects" placeholder="backend, frontend" {...field('sentry_projects')} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="sentry-environments">Environments (comma-separated, empty for all)</Label>
+            <Input id="sentry-environments" placeholder="production" {...field('environments')} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="sentry-token">Auth Token</Label>
+            <Input
+              id="sentry-token"
+              type="password"
+              autoComplete="off"
+              placeholder={isCreate ? 'Read access to issues and events' : 'Leave empty to keep the current token'}
+              required={isCreate}
+              {...field('auth_token')}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="sentry-repo">Target Repo</Label>
+            <Input id="sentry-repo" placeholder="owner/repo" required {...field('target_repo')} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="sentry-labels">GitHub Labels (comma-separated)</Label>
+            <Input id="sentry-labels" placeholder="Sentry Alert" {...field('labels')} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="sentry-user">Run As User</Label>
+            <Input id="sentry-user" placeholder="username" required {...field('run_as_user')} />
+            <p className="text-xs text-muted-foreground">Issues are opened with this user's GitHub token.</p>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={mutation.isPending}>
+              {mutation.isPending
+                ? (isCreate ? 'Creating...' : 'Saving...')
+                : (isCreate ? 'Create Source' : 'Save Changes')}
+            </Button>
+          </DialogFooter>
+          {mutation.isError && (
+            <p className="text-destructive text-sm">{(mutation.error as Error).message}</p>
+          )}
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function SentrySourcesSection({ queryClient }: { queryClient: ReturnType<typeof useQueryClient> }) {
+  const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMe });
+  const [showAdd, setShowAdd] = useState(false);
+  const [newSource, setNewSource] = useState<SentryFormState>({ ...INITIAL_SENTRY_FORM });
+  const [editSource, setEditSource] = useState<SentrySource | null>(null);
+  const [editForm, setEditForm] = useState<SentryFormState>({ ...INITIAL_SENTRY_FORM });
+  const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [testSourceId, setTestSourceId] = useState<number | null>(null);
+  const [issuesSourceId, setIssuesSourceId] = useState<number | null>(null);
+
+  const { data: sources, isLoading } = useQuery({
+    queryKey: ['admin-sentry-sources'],
+    queryFn: listSentrySources,
+  });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['admin-sentry-sources'] });
+
+  const createMutation = useMutation({
+    mutationFn: createSentrySource,
+    onSuccess: () => {
+      invalidate();
+      setShowAdd(false);
+    },
+  });
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: number; data: SentrySourceInput }) => updateSentrySource(id, data),
+    onSuccess: () => {
+      invalidate();
+      setEditSource(null);
+    },
+  });
+  const deleteMutation = useMutation({
+    mutationFn: deleteSentrySource,
+    onSuccess: () => {
+      invalidate();
+      setDeleteId(null);
+    },
+  });
+  const toggleMutation = useMutation({ mutationFn: toggleSentrySource, onSuccess: invalidate });
+
+  const openEdit = (s: SentrySource) => {
+    setEditSource(s);
+    setEditForm({
+      name: s.name,
+      sentry_org: s.sentry_org,
+      sentry_projects: s.sentry_projects.join(', '),
+      environments: s.environments.join(', '),
+      auth_token: '',
+      target_repo: s.target_repo,
+      labels: s.labels.join(', '),
+      run_as_user: s.run_as_user,
+    });
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <CardTitle className="flex items-center gap-2">
+            <Bug className="size-5" />
+            Sentry Sources
+          </CardTitle>
+          <Button size="sm" onClick={() => { setNewSource({ ...INITIAL_SENTRY_FORM, run_as_user: me?.login ?? '' }); setShowAdd(true); }}>
+            <Plus className="size-4 mr-1" />
+            Add Sentry Source
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <p className="text-muted-foreground text-sm">Loading Sentry sources...</p>
+        ) : !sources?.length ? (
+          <p className="text-muted-foreground text-sm">No Sentry sources configured.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
+                  <th className="pb-2 pr-4 font-medium">Name</th>
+                  <th className="pb-2 pr-4 font-medium">Sentry</th>
+                  <th className="pb-2 pr-4 font-medium">Target Repo</th>
+                  <th className="pb-2 pr-4 font-medium">Labels</th>
+                  <th className="pb-2 pr-4 font-medium">Enabled</th>
+                  <th className="pb-2 pr-4 font-medium">Last Poll</th>
+                  <th className="pb-2 font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sources.map((s) => (
+                  <tr key={s.id} className="border-b border-border/50 hover:bg-secondary/40 transition-colors duration-100">
+                    <td className="py-2 pr-4 font-mono">{s.name}</td>
+                    <td className="py-2 pr-4 font-mono text-xs">
+                      {s.sentry_org}/{s.sentry_projects.length ? s.sentry_projects.join(', ') : '*'}
+                      {s.environments.length > 0 && (
+                        <span className="text-muted-foreground"> ({s.environments.join(', ')})</span>
+                      )}
+                    </td>
+                    <td className="py-2 pr-4 font-mono">{s.target_repo}</td>
+                    <td className="py-2 pr-4">
+                      <div className="flex flex-wrap gap-1">
+                        {s.labels.map((l) => (
+                          <Badge key={l} variant="secondary" className="text-xs">{l}</Badge>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="py-2 pr-4">
+                      <Badge
+                        variant={s.enabled ? 'default' : 'outline'}
+                        className="cursor-pointer"
+                        onClick={() => toggleMutation.mutate(s.id)}
+                      >
+                        {s.enabled ? 'On' : 'Off'}
+                      </Badge>
+                    </td>
+                    <td className="py-2 pr-4 text-xs">
+                      {s.last_polled_at ? new Date(s.last_polled_at).toLocaleString() : 'Never'}
+                      {s.last_error && (
+                        <p className="text-destructive max-w-xs truncate" title={s.last_error}>{s.last_error}</p>
+                      )}
+                    </td>
+                    <td className="py-2">
+                      <div className="flex gap-1">
+                        <Button variant="ghost" size="sm" onClick={() => openEdit(s)} title="Edit">
+                          <Pencil className="size-4" />
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => setTestSourceId(s.id)} title="Test Poll">
+                          <FlaskConical className="size-4" />
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => setIssuesSourceId(s.id)} title="View Issues">
+                          <Eye className="size-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setDeleteId(s.id)}
+                          className="text-destructive hover:text-destructive"
+                          title="Delete"
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <SentrySourceDialog
+          mode="create"
+          open={showAdd}
+          onOpenChange={setShowAdd}
+          form={newSource}
+          setForm={setNewSource}
+          onSubmit={(e) => { e.preventDefault(); createMutation.mutate(sentryFormToInput(newSource)); }}
+          mutation={createMutation}
+        />
+
+        <SentrySourceDialog
+          mode="edit"
+          open={editSource !== null}
+          onOpenChange={(open) => { if (!open) setEditSource(null); }}
+          form={editForm}
+          setForm={setEditForm}
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (editSource) updateMutation.mutate({ id: editSource.id, data: sentryFormToInput(editForm) });
+          }}
+          mutation={updateMutation}
+        />
+
+        <Dialog open={deleteId !== null} onOpenChange={(open) => { if (!open) setDeleteId(null); }}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Delete Sentry Source</DialogTitle>
+              <DialogDescription>
+                GitHub issues already opened stay open. This action cannot be undone.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDeleteId(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => deleteId !== null && deleteMutation.mutate(deleteId)}
+                disabled={deleteMutation.isPending}
+              >
+                {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {testSourceId !== null && (
+          <SentryTestDialog sourceId={testSourceId} onClose={() => setTestSourceId(null)} />
+        )}
+        {issuesSourceId !== null && (
+          <SentryIssuesDialog sourceId={issuesSourceId} onClose={() => setIssuesSourceId(null)} />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function SentryTestDialog({ sourceId, onClose }: { sourceId: number; onClose: () => void }) {
+  const testMutation = useMutation({ mutationFn: () => testSentrySource(sourceId) });
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Test Poll</DialogTitle>
+          <DialogDescription>
+            Dry run: the Sentry issues that would get a GitHub issue. Nothing is created.
+          </DialogDescription>
+        </DialogHeader>
+        {!testMutation.data && !testMutation.isPending && !testMutation.isError && (
+          <Button onClick={() => testMutation.mutate()}>Run Test Poll</Button>
+        )}
+        {testMutation.isPending && <p className="text-muted-foreground text-sm">Polling...</p>}
+        {testMutation.isError && (
+          <p className="text-destructive text-sm">{(testMutation.error as Error).message}</p>
+        )}
+        {testMutation.data && (
+          testMutation.data.length === 0 ? (
+            <p className="text-muted-foreground text-sm">No new Sentry issues since this source was created.</p>
+          ) : (
+            <ul className="space-y-2 text-sm">
+              {testMutation.data.map((issue) => (
+                <li key={issue.url} className="flex items-start gap-2">
+                  <Badge variant="secondary" className="text-xs shrink-0">{issue.project}</Badge>
+                  <a href={issue.url} target="_blank" rel="noopener noreferrer" className="text-primary underline">
+                    {issue.title}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Close</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function SentryIssuesDialog({ sourceId, onClose }: { sourceId: number; onClose: () => void }) {
+  const { data: issues, isLoading } = useQuery({
+    queryKey: ['admin-sentry-issues', sourceId],
+    queryFn: () => listSentryIssues(sourceId),
+  });
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Opened Issues</DialogTitle>
+          <DialogDescription>GitHub issues opened from this Sentry source.</DialogDescription>
+        </DialogHeader>
+        {isLoading ? (
+          <p className="text-muted-foreground text-sm">Loading...</p>
+        ) : !issues?.length ? (
+          <p className="text-muted-foreground text-sm">No issues opened yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
+                  <th className="pb-2 pr-4 font-medium">Sentry</th>
+                  <th className="pb-2 pr-4 font-medium">Title</th>
+                  <th className="pb-2 pr-4 font-medium">GitHub</th>
+                  <th className="pb-2 font-medium">Opened</th>
+                </tr>
+              </thead>
+              <tbody>
+                {issues.map((issue) => (
+                  <tr key={issue.id} className="border-b border-border/50">
+                    <td className="py-2 pr-4 font-mono text-xs">
+                      <a href={issue.sentry_url} target="_blank" rel="noopener noreferrer" className="text-primary underline">
+                        {issue.sentry_short_id}
+                      </a>
+                    </td>
+                    <td className="py-2 pr-4">{issue.title}</td>
+                    <td className="py-2 pr-4">
+                      <a href={issue.github_issue_url} target="_blank" rel="noopener noreferrer" className="text-primary underline">
+                        #{issue.github_issue_number}
+                      </a>
+                    </td>
+                    <td className="py-2 text-xs">{new Date(issue.created_at).toLocaleDateString()}</td>
                   </tr>
                 ))}
               </tbody>
