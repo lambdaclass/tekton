@@ -12,6 +12,8 @@ mod policies;
 mod previews;
 mod public_config;
 mod secrets;
+mod sentry;
+mod sentry_admin;
 mod settings;
 mod shell;
 mod tasks;
@@ -166,6 +168,24 @@ async fn main() -> anyhow::Result<()> {
         )
         // Admin: Intake Issues (all sources)
         .route("/admin/intake/issues", get(intake_admin::list_all_issues))
+        .route("/admin/sentry/sources", get(sentry_admin::list_sources))
+        .route("/admin/sentry/sources", post(sentry_admin::create_source))
+        .route(
+            "/admin/sentry/sources/{id}",
+            put(sentry_admin::update_source).delete(sentry_admin::delete_source),
+        )
+        .route(
+            "/admin/sentry/sources/{id}/toggle",
+            post(sentry_admin::toggle_source),
+        )
+        .route(
+            "/admin/sentry/sources/{id}/issues",
+            get(sentry_admin::list_source_issues),
+        )
+        .route(
+            "/admin/sentry/sources/{id}/test",
+            post(sentry_admin::test_poll_source),
+        )
         .route(
             "/admin/intake/issues/{id}/status",
             patch(intake_admin::update_issue_status),

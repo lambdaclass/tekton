@@ -95,7 +95,7 @@ pub async fn fetch_github_issues(
     Ok(issues)
 }
 
-fn parse_owner_repo(target_repo: &str) -> Result<(String, String), AppError> {
+pub fn parse_owner_repo(target_repo: &str) -> Result<(String, String), AppError> {
     let parts: Vec<&str> = target_repo.split('/').collect();
     if parts.len() != 2 {
         return Err(AppError::BadRequest(format!(
@@ -153,6 +153,9 @@ pub async fn start_intake_daemon(config: Arc<Config>, db: PgPool, task_channels:
             }
             if let Err(e) = poll_all_sources(&config, &db).await {
                 tracing::error!("Intake poll cycle failed: {e}");
+            }
+            if let Err(e) = crate::sentry::poll_due_sentry_sources(&config, &db).await {
+                tracing::error!("Sentry poll cycle failed: {e}");
             }
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         }

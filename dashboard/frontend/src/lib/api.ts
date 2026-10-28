@@ -538,6 +538,62 @@ export const updateIntakeIssueStatus = (id: number, status: string) =>
     body: JSON.stringify({ status }),
   });
 
+// Sentry Sources (Sentry errors → GitHub issues that intake picks up)
+export interface SentrySource {
+  id: number;
+  name: string;
+  enabled: boolean;
+  sentry_org: string;
+  sentry_projects: string[];
+  environments: string[];
+  has_token: boolean;
+  target_repo: string;
+  labels: string[];
+  run_as_user: string;
+  last_polled_at: string | null;
+  last_error: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SentryIssue {
+  id: number;
+  source_id: number;
+  sentry_issue_id: string;
+  sentry_short_id: string;
+  sentry_url: string;
+  title: string;
+  github_issue_number: number;
+  github_issue_url: string;
+  created_at: string;
+}
+
+export interface SentrySourceInput {
+  name: string;
+  sentry_org: string;
+  sentry_projects: string[];
+  environments: string[];
+  auth_token?: string;
+  target_repo: string;
+  labels: string[];
+  run_as_user: string;
+}
+
+export const listSentrySources = () => apiFetch<SentrySource[]>('/api/admin/sentry/sources');
+export const createSentrySource = (data: SentrySourceInput) =>
+  apiFetch<SentrySource>('/api/admin/sentry/sources', { method: 'POST', body: JSON.stringify(data) });
+export const updateSentrySource = (id: number, data: SentrySourceInput) =>
+  apiFetch<SentrySource>(`/api/admin/sentry/sources/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+export const deleteSentrySource = (id: number) =>
+  apiFetch<{ deleted: boolean }>(`/api/admin/sentry/sources/${id}`, { method: 'DELETE' });
+export const toggleSentrySource = (id: number) =>
+  apiFetch<SentrySource>(`/api/admin/sentry/sources/${id}/toggle`, { method: 'POST' });
+export const listSentryIssues = (sourceId: number) =>
+  apiFetch<SentryIssue[]>(`/api/admin/sentry/sources/${sourceId}/issues`);
+export const testSentrySource = (id: number) =>
+  apiFetch<{ title: string; url: string; project: string }[]>(`/api/admin/sentry/sources/${id}/test`, { method: 'POST' });
+
 // Webhooks
 export interface RepoWebhookInfo {
   full_name: string;

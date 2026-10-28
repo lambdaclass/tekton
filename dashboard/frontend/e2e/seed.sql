@@ -490,3 +490,47 @@ UPDATE tasks SET source_type = 'intake_github', intake_issue_id = 3 WHERE id = '
 UPDATE tasks SET source_type = 'intake_github', intake_issue_id = 4 WHERE id = 'task-completed-1';
 UPDATE tasks SET source_type = 'intake_github', intake_issue_id = 5 WHERE id = 'task-completed-2';
 UPDATE tasks SET source_type = 'intake_github', intake_issue_id = 6 WHERE id = 'task-failed-1';
+
+-- ============================================================
+-- Sentry: tables and seed (admin-sentry.spec.ts)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS sentry_sources (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT true,
+    sentry_org TEXT NOT NULL,
+    sentry_projects TEXT[] NOT NULL DEFAULT '{}',
+    environments TEXT[] NOT NULL DEFAULT '{production}',
+    auth_token_encrypted TEXT NOT NULL,
+    target_repo TEXT NOT NULL,
+    labels TEXT[] NOT NULL DEFAULT '{Sentry Alert}',
+    run_as_user TEXT NOT NULL,
+    last_polled_at TIMESTAMPTZ,
+    last_error TEXT,
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS sentry_issues (
+    id BIGSERIAL PRIMARY KEY,
+    source_id BIGINT NOT NULL REFERENCES sentry_sources(id) ON DELETE CASCADE,
+    sentry_issue_id TEXT NOT NULL,
+    sentry_short_id TEXT NOT NULL,
+    sentry_url TEXT NOT NULL,
+    title TEXT NOT NULL,
+    github_issue_number INTEGER NOT NULL,
+    github_issue_url TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(source_id, sentry_issue_id)
+);
+
+-- The token is never decrypted in tests (the poller is off), so any value works
+INSERT INTO sentry_sources (name, sentry_org, sentry_projects, environments, auth_token_encrypted, target_repo, run_as_user, last_polled_at, last_error, created_by)
+VALUES
+    ('Prod Errors', 'testorg-sentry', '{backend,web}', '{production}', 'not-a-real-token', 'testorg/testrepo', 'testadmin', NOW() - INTERVAL '3 minutes', 'Sentry API returned 401 Unauthorized', 'testadmin');
+
+INSERT INTO sentry_issues (source_id, sentry_issue_id, sentry_short_id, sentry_url, title, github_issue_number, github_issue_url)
+VALUES
+    (1, '5001', 'BACKEND-1A', 'https://sentry.io/organizations/testorg-sentry/issues/5001/', 'KeyError: user_id', 950, 'https://github.com/testorg/testrepo/issues/950');

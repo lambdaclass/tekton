@@ -27,8 +27,8 @@ test.describe('Audit Log', () => {
     await expect(page.getByRole('columnheader', { name: 'Target' })).toBeVisible();
     await expect(page.getByRole('columnheader', { name: 'Detail' })).toBeVisible();
 
-    // Seeded entry data
-    await expect(page.getByText('auth.login').first()).toBeVisible();
+    // Any entry: admin specs write audit events that can push the seeded ones off page 1
+    await expect(page.getByRole('cell', { name: /^[a-z_]+\.[a-z_]+$/ }).first()).toBeVisible();
     await expect(page.getByRole('cell', { name: 'testadmin' }).first()).toBeVisible();
   });
 
@@ -59,6 +59,8 @@ test.describe('Audit Log', () => {
 
   test('task target is a clickable link', async ({ adminPage: page }) => {
     await page.goto('/audit');
+    // Filter so the seeded rows aren't pushed off page 1 by audit events from parallel specs
+    await page.getByPlaceholder('Filter by target...').fill('task-completed-1');
 
     const targetLink = page.getByRole('link', { name: 'task-completed-1' }).first();
     await expect(targetLink).toBeVisible();
