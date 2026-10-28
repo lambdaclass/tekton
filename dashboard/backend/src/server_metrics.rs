@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::auth::AdminUser;
 use crate::error::AppError;
 
-/// Excludes loopback and the per-container `ve-*` veths: container traffic is
-/// NATed out through the physical NIC, so counting veths too would double it.
-const NET_DEVICES: &str = r#"device!~"lo|ve-.+""#;
+/// Physical NICs only. Container `ve-*` traffic is NATed out through the NIC and
+/// tunnels like tailscale0 are re-sent over it encrypted, so counting them would double it.
+const NET_DEVICES: &str = r#"device=~"en.+|eth.+""#;
 
 #[derive(Deserialize)]
 pub struct ServerMetricsQuery {
@@ -143,7 +143,11 @@ pub async fn server_metrics(
     // coarse ranges don't skip traffic between samples.
     let rate_window = step.max(60);
 
-    let client = reqwest::Client::new();
+    // Without a timeout a Prometheus that accepts but never answers hangs the page.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| AppError::Internal(e.to_string()))?;
     let base = state.config.prometheus_url.trim_end_matches('/');
     let q = |query: String| {
         let client = &client;
