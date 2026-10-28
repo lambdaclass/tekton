@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getMe, logout, listTasks } from '@/lib/api';
-import { LayoutDashboard, Container, BrainCircuit, LogOut, Shield, SlidersHorizontal, DollarSign, ScrollText, Sun, Moon, Kanban, Webhook, BarChart3 } from 'lucide-react';
+import { LayoutDashboard, Container, BrainCircuit, LogOut, Shield, SlidersHorizontal, DollarSign, ScrollText, Sun, Moon, Kanban, Webhook, BarChart3, Server } from 'lucide-react';
 import { useTheme } from '@/hooks/use-theme';
 import { Toaster, toast } from 'sonner';
 import CommandPalette from '@/components/CommandPalette';
@@ -250,6 +250,18 @@ export default function Layout() {
                     <SidebarMenuItem>
                       <SidebarMenuButton
                         asChild
+                        isActive={isActive('/server')}
+                        tooltip="Server"
+                      >
+                        <Link to="/server">
+                          <Server />
+                          <span>Server</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                    <SidebarMenuItem>
+                      <SidebarMenuButton
+                        asChild
                         isActive={isActive('/audit')}
                         tooltip="Audit Log"
                       >
@@ -318,7 +330,7 @@ export default function Layout() {
             <SidebarTrigger className="-ml-1" />
             <Separator orientation="vertical" className="mr-2 h-4" />
             <span className="text-sm text-muted-foreground">
-              {NAV_ITEMS.find((n) => isActive(n.to))?.label ?? (isActive('/admin') ? 'Admin' : isActive('/cost') ? 'Cost' : isActive('/audit') ? 'Audit Log' : isActive('/intake') ? 'Intake Board' : '')}
+              {NAV_ITEMS.find((n) => isActive(n.to))?.label ?? (isActive('/admin') ? 'Admin' : isActive('/cost') ? 'Cost' : isActive('/server') ? 'Server' : isActive('/audit') ? 'Audit Log' : isActive('/intake') ? 'Intake Board' : '')}
             </span>
           </header>
           <main className="flex-1 p-6 page-enter" key={location.pathname}>

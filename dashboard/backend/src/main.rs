@@ -12,6 +12,7 @@ mod policies;
 mod previews;
 mod public_config;
 mod secrets;
+mod server_metrics;
 mod settings;
 mod shell;
 mod tasks;
@@ -170,6 +171,8 @@ async fn main() -> anyhow::Result<()> {
             "/admin/intake/issues/{id}/status",
             patch(intake_admin::update_issue_status),
         )
+        // Admin: Server metrics (Prometheus)
+        .route("/admin/server-metrics", get(server_metrics::server_metrics))
         // Admin: Audit Log
         .route("/admin/audit-log", get(audit::list_audit_log))
         // Settings

@@ -12,6 +12,7 @@ import CostDashboard from './pages/CostDashboard';
 import AuditLog from './pages/AuditLog';
 import IntakeBoard from './pages/IntakeBoard';
 import Metrics from './pages/Metrics';
+import ServerStatus from './pages/ServerStatus';
 
 export default function App() {
   return (
@@ -26,6 +27,7 @@ export default function App() {
         <Route path="/metrics" element={<Metrics />} />
         <Route path="/cost" element={<CostDashboard />} />
         <Route path="/audit" element={<AuditLog />} />
+        <Route path="/server" element={<ServerStatus />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/intake" element={<IntakeBoard />} />
         <Route path="/webhooks" element={<Webhooks />} />
