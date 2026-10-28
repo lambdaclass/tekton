@@ -19,7 +19,7 @@ import { ImagePlus, X, ChevronLeft, ChevronRight, Search, BrainCircuit, LayoutGr
 type ViewMode = 'card' | 'list';
 const VIEW_STORAGE_KEY = 'tekton-task-view';
 
-const STATUS_OPTIONS = ['all', 'pending', 'creating_agent', 'cloning', 'running_claude', 'pushing', 'creating_preview', 'awaiting_followup', 'completed', 'failed'];
+const STATUS_OPTIONS = ['all', 'pending', 'creating_agent', 'cloning', 'running_claude', 'pushing', 'creating_preview', 'awaiting_followup', 'push_failed', 'completed', 'failed'];
 
 function SkeletonCard() {
   return (

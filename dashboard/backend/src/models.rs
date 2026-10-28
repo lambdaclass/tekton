@@ -96,6 +96,7 @@ pub struct Task {
     pub compute_seconds: Option<i32>,
     pub intake_issue_id: Option<i64>,
     pub source_type: Option<String>,
+    pub agent_retained_until: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

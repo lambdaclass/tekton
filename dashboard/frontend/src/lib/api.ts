@@ -34,6 +34,8 @@ export interface Task {
   name: string | null;
   pr_url: string | null;
   pr_number: number | null;
+  /** Set while a finished or push_failed task's container is kept; null once destroyed. */
+  agent_retained_until: string | null;
 }
 
 export interface TaskMessage {
@@ -175,6 +177,21 @@ export const sendTaskMessage = (id: string, content: string, image_urls?: string
   });
 export const reopenTask = (id: string) =>
   apiFetch<Task>(`/api/tasks/${id}/reopen`, { method: 'POST' });
+export const discardTaskAgent = (id: string) =>
+  apiFetch<{ ok: boolean }>(`/api/tasks/${id}/discard-agent`, { method: 'POST' });
+
+export interface AgentContainer {
+  name: string;
+  task_id: string | null;
+  task_name: string | null;
+  task_status: string | null;
+  retained_until: string | null;
+}
+export const listAgentContainers = () => apiFetch<AgentContainer[]>('/api/admin/agents');
+export const destroyAgentContainer = (name: string) =>
+  apiFetch<{ ok: boolean }>(`/api/admin/agents/${encodeURIComponent(name)}/destroy`, {
+    method: 'POST',
+  });
 export const listTaskActions = (id: string) =>
   apiFetch<TaskAction[]>(`/api/tasks/${id}/actions`);
 export const createPR = (id: string) =>
