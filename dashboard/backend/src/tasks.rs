@@ -1226,7 +1226,8 @@ async fn run_claude_continue(
 
 /// Record one Claude invocation — its actions, policy violations, token usage and chat
 /// text — whether it succeeded or failed, so usage streamed before a failure isn't lost.
-/// Call exactly once per invocation. Returns the invocation's error, if any.
+/// Call exactly once per invocation. Returns the invocation's error, if any — never a
+/// bookkeeping error, since callers treat Err as "Claude failed" and may re-run it.
 async fn record_claude_run(
     db: &PgPool,
     task_id: &str,
@@ -1243,16 +1244,10 @@ async fn record_claude_run(
         check_policy_violations(db, task_id, &output.actions, pol, tx).await;
     }
     increment_token_usage(db, task_id, &output.usage).await;
-    let saved = save_claude_response_as_message(db, task_id, &output.text).await;
-    match error {
-        None => saved,
-        Some(e) => {
-            if let Err(save_err) = saved {
-                tracing::warn!("Failed to save partial Claude response for {task_id}: {save_err}");
-            }
-            Err(e)
-        }
+    if let Err(save_err) = save_claude_response_as_message(db, task_id, &output.text).await {
+        tracing::warn!("Failed to save Claude response for {task_id}: {save_err}");
     }
+    error.map_or(Ok(()), Err)
 }
 
 /// Save Claude's text response as a chat message so it appears in the UI.
@@ -1582,7 +1577,8 @@ async fn follow_up_loop(
 
     // While the last push is failing the task stays push_failed, until a push succeeds or the
     // container's retention runs out.
-    let mut push_failed_deadline = load_push_failed_deadline(db, task_id).await?;
+    let mut push_failed_deadline =
+        load_push_failed_deadline(db, task_id, config.agent_retention_push_failed_hours).await?;
     if push_failed_deadline.is_none() {
         update_task_status(db, task_id, "awaiting_followup", None).await?;
     }
@@ -1758,21 +1754,33 @@ async fn follow_up_loop(
     }
 }
 
-/// When the task is push_failed, the instant its container's retention runs out.
+async fn latest_message_id(db: &PgPool, task_id: &str) -> Result<i64, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM task_messages WHERE task_id = $1")
+            .bind(task_id)
+            .fetch_one(db)
+            .await?,
+    )
+}
+
+/// When the task is push_failed, the instant its container's retention runs out. A missing
+/// retention (its UPDATE failed) gets a full window rather than expiring at once.
 async fn load_push_failed_deadline(
     db: &PgPool,
     task_id: &str,
+    retention_hours: i64,
 ) -> Result<Option<std::time::Instant>, AppError> {
-    let remaining: Option<Option<f64>> = sqlx::query_scalar(
-        "SELECT EXTRACT(EPOCH FROM agent_retained_until - NOW())::FLOAT8 \
+    let remaining: Option<f64> = sqlx::query_scalar(
+        "SELECT EXTRACT(EPOCH FROM COALESCE(agent_retained_until, \
+         NOW() + ($2::FLOAT8 * INTERVAL '1 hour')) - NOW())::FLOAT8 \
          FROM tasks WHERE id = $1 AND status = 'push_failed'",
     )
     .bind(task_id)
+    .bind(retention_hours as f64)
     .fetch_optional(db)
     .await?;
-    Ok(remaining.map(|secs| {
-        std::time::Instant::now() + std::time::Duration::from_secs_f64(secs.unwrap_or(0.0).max(0.0))
-    }))
+    Ok(remaining
+        .map(|secs| std::time::Instant::now() + std::time::Duration::from_secs_f64(secs.max(0.0))))
 }
 
 /// Push the agent's changes. A failed push doesn't end the task: the error goes to the chat,
@@ -3218,7 +3226,9 @@ async fn run_reopen_pipeline(
         }
     }
 
-    // Step 3: Go straight into follow-up loop
+    // Step 3: Go straight into follow-up loop, skipping messages from before the reopen so
+    // an old __done__ or follow-up isn't replayed
+    let max_msg_id = latest_message_id(db, task_id).await?;
     // branch_pushed starts as true since the branch already exists on GitHub
     let mut branch_pushed = true;
     let mut preview_created = had_preview;
@@ -3230,7 +3240,7 @@ async fn run_reopen_pipeline(
         &mut preview_created,
         created_by,
         &tx,
-        0,
+        max_msg_id,
     )
     .await?;
 
@@ -3323,11 +3333,7 @@ async fn recover_to_followup(
     }
 
     // Skip all messages that existed before recovery so we don't replay them
-    let max_msg_id: i64 =
-        sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM task_messages WHERE task_id = $1")
-            .bind(task_id)
-            .fetch_one(db)
-            .await?;
+    let max_msg_id = latest_message_id(db, task_id).await?;
 
     // Enter follow-up loop — branch already pushed, preview may already exist
     let mut branch_pushed = true;
@@ -3503,8 +3509,14 @@ pub async fn recover_interrupted_tasks(
                     "Dashboard restarted while Claude was working. Send a follow-up message to continue the conversation.",
                 ).await;
 
-                // Transition to awaiting_followup so the user can resume
-                let _ = update_task_status(&db, &task.id, "awaiting_followup", None).await;
+                // Transition back so the user can resume. Retention on a running task means
+                // its last push failed, so it goes back to push_failed to keep the deadline.
+                let resume_status = if task.agent_retained_until.is_some() {
+                    "push_failed"
+                } else {
+                    "awaiting_followup"
+                };
+                let _ = update_task_status(&db, &task.id, resume_status, None).await;
 
                 let short_id = task.id[..6].to_string();
                 let had_preview = task.preview_url.is_some();
@@ -3519,9 +3531,7 @@ pub async fn recover_interrupted_tasks(
                     created_by.clone(),
                 );
                 tokio::spawn(async move {
-                    tracing::info!(
-                        "Recovering running_claude task {task_id} (→ awaiting_followup)"
-                    );
+                    tracing::info!("Recovering running_claude task {task_id} (→ {resume_status})");
                     let ctx = PipelineCtx {
                         config: &cfg,
                         db: &db2,
