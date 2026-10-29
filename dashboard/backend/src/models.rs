@@ -436,3 +436,63 @@ pub struct IntakePollLog {
     pub error_message: Option<String>,
     pub duration_ms: Option<i32>,
 }
+
+// ── Sentry Sources ──
+
+/// Never carries the auth token; `has_token` only says whether one is stored.
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct SentrySource {
+    pub id: i64,
+    pub name: String,
+    pub enabled: bool,
+    pub sentry_org: String,
+    pub sentry_projects: Vec<String>,
+    pub environments: Vec<String>,
+    pub has_token: bool,
+    pub target_repo: String,
+    pub labels: Vec<String>,
+    pub run_as_user: String,
+    pub last_polled_at: Option<String>,
+    pub last_error: Option<String>,
+    pub created_by: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateSentrySourceRequest {
+    pub name: String,
+    pub sentry_org: String,
+    pub sentry_projects: Vec<String>,
+    pub environments: Option<Vec<String>>,
+    pub auth_token: String,
+    pub target_repo: String,
+    pub labels: Option<Vec<String>>,
+    pub run_as_user: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateSentrySourceRequest {
+    pub name: Option<String>,
+    pub sentry_org: Option<String>,
+    pub sentry_projects: Option<Vec<String>>,
+    pub environments: Option<Vec<String>>,
+    /// Empty or absent keeps the stored token
+    pub auth_token: Option<String>,
+    pub target_repo: Option<String>,
+    pub labels: Option<Vec<String>>,
+    pub run_as_user: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct SentryIssue {
+    pub id: i64,
+    pub source_id: i64,
+    pub sentry_issue_id: String,
+    pub sentry_short_id: String,
+    pub sentry_url: String,
+    pub title: String,
+    pub github_issue_number: i32,
+    pub github_issue_url: String,
+    pub created_at: String,
+}

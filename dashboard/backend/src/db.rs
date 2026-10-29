@@ -381,5 +381,47 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
+    // Create sentry_sources table: Sentry projects polled to open GitHub issues
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS sentry_sources (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            enabled BOOLEAN NOT NULL DEFAULT true,
+            sentry_org TEXT NOT NULL,
+            sentry_projects TEXT[] NOT NULL DEFAULT '{}',
+            environments TEXT[] NOT NULL DEFAULT '{production}',
+            auth_token_encrypted TEXT NOT NULL,
+            target_repo TEXT NOT NULL,
+            labels TEXT[] NOT NULL DEFAULT '{Sentry Alert}',
+            run_as_user TEXT NOT NULL,
+            last_polled_at TIMESTAMPTZ,
+            last_error TEXT,
+            created_by TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // One row per Sentry issue that already has a GitHub issue; the UNIQUE
+    // constraint is what keeps a Sentry issue from being filed twice
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS sentry_issues (
+            id BIGSERIAL PRIMARY KEY,
+            source_id BIGINT NOT NULL REFERENCES sentry_sources(id) ON DELETE CASCADE,
+            sentry_issue_id TEXT NOT NULL,
+            sentry_short_id TEXT NOT NULL,
+            sentry_url TEXT NOT NULL,
+            title TEXT NOT NULL,
+            github_issue_number INTEGER NOT NULL,
+            github_issue_url TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(source_id, sentry_issue_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }

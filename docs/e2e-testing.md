@@ -164,6 +164,8 @@ page.locator('#task-title-input')
 
 Use `test.describe.serial` only for CRUD flows where test order matters (create -> verify -> delete). Default to `test.describe` for everything else — tests run fully parallel.
 
+`serial` only orders tests within one `describe`. Other spec files still run at the same time against the same database, so it doesn't protect a test from data written elsewhere. See [Shared state across parallel specs](#shared-state-across-parallel-specs).
+
 ```ts
 // Use serial when tests depend on prior test state
 test.describe.serial('Task CRUD', () => {
@@ -431,3 +433,23 @@ await expect(dialog.getByText('Auth module throws NPE when token is expired.')).
 ```
 
 **Rule of thumb:** If the text is short or generic (`'Created'`, `'On'`, `'Error'`), always scope it — via a parent locator, a role, or a CSS selector. Prefer `getByRole` when the element has an obvious ARIA role (`heading`, `button`, `columnheader`, `cell`).
+
+### Shared state across parallel specs
+
+All specs share one database, seeded once in global setup, and CI runs them on 4 workers. A test that reads a table other specs write to can't assume what else is in it: row counts, row order and what lands on page 1 depend on which specs ran first. These failures usually don't show up locally, because test order changes with the worker count.
+
+**Example:** `audit-log.spec.ts` expected the seeded `task-completed-1` rows on page 1 of the audit log (50 per page). Every admin spec writes audit events (create, edit, toggle, delete), so once enough of them ran first, those rows moved to page 2. The test failed on every retry in CI and passed locally.
+
+**Fix,** in order of preference:
+
+1. **Create your own data and find it by something unique.** Give it a name only your test uses, then locate it with a filter or a scoped locator (`section.locator('tr').filter({ hasText: 'Staging Errors' })`), never by position.
+2. **Narrow to the rows you need before asserting.** Apply the page's filter (target, actor, event type) so writes from other specs can't push your rows out of view.
+3. **Run it alone** if the test really has to own a whole table, for example asserting an exact count or an empty state. `test.describe.serial` isn't enough for this, because other files still run alongside. Put the spec in its own Playwright project with `workers: 1` that runs after the parallel ones, or seed a dedicated table or row set that nothing else touches.
+
+Only loosen an assertion when the specific row was never what the test was about. For example, "renders audit log entries in table" now accepts any event row instead of `auth.login`. If the test is about that row, loosening it hides the collision without fixing it.
+
+To reproduce CI ordering locally, run with CI's settings:
+
+```bash
+CI=true npx playwright test --project=chromium
+```
