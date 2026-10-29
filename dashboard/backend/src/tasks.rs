@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+use crate::agents;
 use crate::auth::{self, AuthUser, MemberUser};
 use crate::config::Config;
 use crate::error::AppError;
@@ -256,7 +257,8 @@ pub async fn list_tasks(
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
-         intake_issue_id, source_type \
+         intake_issue_id, source_type, \
+         TO_CHAR(agent_retained_until, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as agent_retained_until \
          FROM tasks {where_clause} ORDER BY created_at DESC LIMIT ${bind_idx} OFFSET ${next_idx}",
         bind_idx = bind_idx,
         next_idx = bind_idx + 1,
@@ -296,7 +298,8 @@ pub async fn get_task(
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
-         intake_issue_id, source_type \
+         intake_issue_id, source_type, \
+         TO_CHAR(agent_retained_until, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as agent_retained_until \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -333,7 +336,8 @@ pub async fn get_subtasks(
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
-         intake_issue_id, source_type \
+         intake_issue_id, source_type, \
+         TO_CHAR(agent_retained_until, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as agent_retained_until \
          FROM tasks WHERE parent_task_id = $1 ORDER BY created_at ASC"
     )
     .bind(&id)
@@ -403,7 +407,8 @@ pub(crate) async fn spawn_task_internal(
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
-         intake_issue_id, source_type \
+         intake_issue_id, source_type, \
+         TO_CHAR(agent_retained_until, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as agent_retained_until \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -443,17 +448,8 @@ pub(crate) async fn spawn_task_internal(
         let result = run_task_pipeline(&ctx, &prompt, None, None, &created_by, tx.clone()).await;
 
         if let Err(e) = &result {
-            let _ = update_task_status(&db, &task_id, "failed", Some(&e.to_string())).await;
+            agents::fail_task(&config, &db, &task_id, &e.to_string()).await;
             let _ = tx.send(format!("[ERROR] Task failed: {e}"));
-            if let Ok(Some(name)) = sqlx::query_scalar::<_, Option<String>>(
-                "SELECT agent_name FROM tasks WHERE id = $1",
-            )
-            .bind(&task_id)
-            .fetch_one(&db)
-            .await
-            {
-                let _ = shell::destroy_agent(&config, &name).await;
-            }
         }
 
         let channels2 = channels;
@@ -554,7 +550,8 @@ pub async fn create_task(
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
-         intake_issue_id, source_type \
+         intake_issue_id, source_type, \
+         TO_CHAR(agent_retained_until, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as agent_retained_until \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -611,18 +608,8 @@ pub async fn create_task(
         .await;
 
         if let Err(e) = &result {
-            let _ = update_task_status(&db, &task_id, "failed", Some(&e.to_string())).await;
+            agents::fail_task(&config, &db, &task_id, &e.to_string()).await;
             let _ = tx.send(format!("[ERROR] Task failed: {e}"));
-            // Clean up agent container on failure
-            if let Ok(Some(name)) = sqlx::query_scalar::<_, Option<String>>(
-                "SELECT agent_name FROM tasks WHERE id = $1",
-            )
-            .bind(&task_id)
-            .fetch_one(&db)
-            .await
-            {
-                let _ = shell::destroy_agent(&config, &name).await;
-            }
         }
 
         // Clean up channel after a delay so late WS subscribers can still read
@@ -879,7 +866,7 @@ async fn run_task_pipeline(
         }
     }
     log_and_send(db, task_id, &tx, "[STEP] Running Claude...");
-    let result = match run_claude_streaming(
+    let run = run_claude_streaming(
         db,
         &config.secrets_encryption_key,
         created_by,
@@ -888,46 +875,22 @@ async fn run_task_pipeline(
         tx.clone(),
         policy.as_ref(),
     )
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            // If a policy with denied tools is active, the CLI may exit non-zero because
-            // it cannot fulfil the request. Don't fail the task — notify the user and
-            // fall through to the follow-up loop so they can try a different prompt.
-            if let Some(ref pol) = policy {
-                let denied = get_denied_tools(pol);
-                if !denied.is_empty() {
-                    let msg = format!(
-                        "Claude could not complete the request — the repo policy blocks these tools: {}.",
-                        denied.join(", ")
-                    );
-                    log_and_send(db, task_id, &tx, &format!("[POLICY] {msg}"));
-                    save_system_message(db, task_id, &msg).await?;
-                    // Skip to commit/push/follow-up loop with an empty result
-                    shell::ClaudeStreamResult {
-                        text: String::new(),
-                        actions: Vec::new(),
-                        usage: shell::TokenUsage {
-                            input_tokens: 0,
-                            output_tokens: 0,
-                            cost_usd: 0.0,
-                        },
-                    }
-                } else {
-                    return Err(e);
-                }
-            } else {
-                return Err(e);
-            }
+    .await;
+    if let Err(e) = record_claude_run(db, task_id, run, policy.as_ref(), &tx).await {
+        // If a policy with denied tools is active, the CLI may exit non-zero because
+        // it cannot fulfil the request. Don't fail the task — notify the user and
+        // fall through to the follow-up loop so they can try a different prompt.
+        let denied = policy.as_ref().map(get_denied_tools).unwrap_or_default();
+        if denied.is_empty() {
+            return Err(e);
         }
-    };
-    save_claude_response_as_message(db, task_id, &result.text).await?;
-    persist_actions(db, task_id, &result.actions).await;
-    if let Some(ref pol) = policy {
-        check_policy_violations(db, task_id, &result.actions, pol, &tx).await;
+        let msg = format!(
+            "Claude could not complete the request — the repo policy blocks these tools: {}.",
+            denied.join(", ")
+        );
+        log_and_send(db, task_id, &tx, &format!("[POLICY] {msg}"));
+        save_system_message(db, task_id, &msg).await?;
     }
-    increment_token_usage(db, task_id, &result.usage).await;
 
     // Check cost limit after initial run — just log a warning, follow-ups will be
     // individually rejected by the check inside the follow-up loop.
@@ -953,22 +916,20 @@ async fn run_task_pipeline(
     // Step 3c: Push changes and update preview
     let mut preview_created = deliver;
     let mut branch_pushed = false;
-    let outcome = push_and_preview(
+    push_or_hold(
         ctx,
         &agent_name,
         &branch_name,
         &mut branch_pushed,
         &mut preview_created,
+        created_by,
         &tx,
+        None,
     )
     .await?;
-    if outcome.branch_has_commits() {
-        save_system_message(db, task_id, "Changes pushed and preview updated ✓").await?;
-        maybe_auto_open_pr(ctx, created_by, &tx).await;
-    }
 
     // Step 4: Follow-up loop
-    follow_up_loop(
+    let outcome = follow_up_loop(
         ctx,
         &agent_name,
         &branch_name,
@@ -981,8 +942,7 @@ async fn run_task_pipeline(
     .await?;
 
     // Step 5: Destroy agent container
-    log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
-    let _ = shell::destroy_agent(config, &agent_name).await;
+    let completed = finish_task(ctx, &agent_name, outcome, &tx).await?;
 
     // Record compute time (wall-clock seconds from agent creation to destruction)
     let compute_secs = pipeline_start.elapsed().as_secs() as i32;
@@ -992,8 +952,9 @@ async fn run_task_pipeline(
         .execute(db)
         .await;
 
-    // Done
-    update_task_status(db, task_id, "completed", None).await?;
+    if !completed {
+        return Ok(());
+    }
     if preview_created {
         let preview_url = format!("https://t-{short_id}.{}", config.preview_domain);
         log_and_send(
@@ -1228,8 +1189,10 @@ async fn run_claude_streaming(
     prompt: &str,
     tx: broadcast::Sender<String>,
     policy: Option<&crate::models::RepoPolicy>,
-) -> Result<shell::ClaudeStreamResult, AppError> {
-    let (auth_env, model_flag) = build_claude_auth_env(db, encryption_key, created_by).await?;
+) -> shell::ClaudeRun {
+    let (auth_env, model_flag) = build_claude_auth_env(db, encryption_key, created_by)
+        .await
+        .map_err(shell::ClaudeStreamError::before_start)?;
     let disallowed_flag = build_disallowed_tools_flag(policy);
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
@@ -1247,8 +1210,10 @@ async fn run_claude_continue(
     prompt: &str,
     tx: broadcast::Sender<String>,
     policy: Option<&crate::models::RepoPolicy>,
-) -> Result<shell::ClaudeStreamResult, AppError> {
-    let (auth_env, model_flag) = build_claude_auth_env(db, encryption_key, created_by).await?;
+) -> shell::ClaudeRun {
+    let (auth_env, model_flag) = build_claude_auth_env(db, encryption_key, created_by)
+        .await
+        .map_err(shell::ClaudeStreamError::before_start)?;
     let disallowed_flag = build_disallowed_tools_flag(policy);
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
@@ -1257,6 +1222,32 @@ async fn run_claude_continue(
          {model_flag} {disallowed_flag} --continue -p '{escaped_prompt}'"
     );
     shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
+}
+
+/// Record one Claude invocation — its actions, policy violations, token usage and chat
+/// text — whether it succeeded or failed, so usage streamed before a failure isn't lost.
+/// Call exactly once per invocation. Returns the invocation's error, if any — never a
+/// bookkeeping error, since callers treat Err as "Claude failed" and may re-run it.
+async fn record_claude_run(
+    db: &PgPool,
+    task_id: &str,
+    run: shell::ClaudeRun,
+    policy: Option<&crate::models::RepoPolicy>,
+    tx: &broadcast::Sender<String>,
+) -> Result<(), AppError> {
+    let (output, error) = match run {
+        Ok(output) => (output, None),
+        Err(e) => (e.partial, Some(e.error)),
+    };
+    persist_actions(db, task_id, &output.actions).await;
+    if let Some(pol) = policy {
+        check_policy_violations(db, task_id, &output.actions, pol, tx).await;
+    }
+    increment_token_usage(db, task_id, &output.usage).await;
+    if let Err(save_err) = save_claude_response_as_message(db, task_id, &output.text).await {
+        tracing::warn!("Failed to save Claude response for {task_id}: {save_err}");
+    }
+    error.map_or(Ok(()), Err)
 }
 
 /// Save Claude's text response as a chat message so it appears in the UI.
@@ -1279,7 +1270,11 @@ async fn save_claude_response_as_message(
 }
 
 /// Save a system/status message to the chat so it appears inline in the UI.
-async fn save_system_message(db: &PgPool, task_id: &str, content: &str) -> Result<(), AppError> {
+pub(crate) async fn save_system_message(
+    db: &PgPool,
+    task_id: &str,
+    content: &str,
+) -> Result<(), AppError> {
     sqlx::query("INSERT INTO task_messages (task_id, sender, content) VALUES ($1, 'system', $2)")
         .bind(task_id)
         .bind(content)
@@ -1510,9 +1505,14 @@ async fn commit_changes_in_agent(
     Ok(true)
 }
 
+/// Sent as a chat message to push the agent's current changes again without running Claude.
+const RETRY_PUSH: &str = "__retry_push__";
+
 #[derive(PartialEq)]
 enum FollowUpOutcome {
     Done,
+    /// The task ended while its last push was still failing, so the work never reached GitHub.
+    Undelivered(String),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1575,7 +1575,13 @@ async fn follow_up_loop(
         false
     };
 
-    update_task_status(db, task_id, "awaiting_followup", None).await?;
+    // While the last push is failing the task stays push_failed, until a push succeeds or the
+    // container's retention runs out.
+    let mut push_failed_deadline =
+        load_push_failed_deadline(db, task_id, config.agent_retention_push_failed_hours).await?;
+    if push_failed_deadline.is_none() {
+        update_task_status(db, task_id, "awaiting_followup", None).await?;
+    }
     let _ = tx.send(
         "[STATUS] Waiting for follow-up messages (click 'Mark Done' to finish)...".to_string(),
     );
@@ -1596,6 +1602,13 @@ async fn follow_up_loop(
         .await?;
 
         if new_messages.is_empty() {
+            if push_failed_deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                return Ok(FollowUpOutcome::Undelivered(
+                    "The push kept failing until the container's retention ran out, so the \
+                     changes were not delivered."
+                        .into(),
+                ));
+            }
             // Sleep 3s before checking again (reduced from 10s)
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             continue;
@@ -1607,7 +1620,35 @@ async fn follow_up_loop(
         // Check for __done__ in any message
         if new_messages.iter().any(|m| m.content.trim() == "__done__") {
             let _ = tx.send("[STATUS] Received '__done__', finishing up.".to_string());
+            if push_failed_deadline.is_some() {
+                return Ok(FollowUpOutcome::Undelivered(
+                    "Marked done while the last push was still failing, so the changes were \
+                     not delivered."
+                        .into(),
+                ));
+            }
             return Ok(FollowUpOutcome::Done);
+        }
+
+        // A follow-up message pushes anyway, so retry requests only matter on their own.
+        let new_messages: Vec<TaskMessage> = new_messages
+            .into_iter()
+            .filter(|m| m.content.trim() != RETRY_PUSH)
+            .collect();
+        if new_messages.is_empty() {
+            let _ = tx.send("[STATUS] Retrying push...".to_string());
+            push_failed_deadline = push_or_hold(
+                ctx,
+                agent_name,
+                branch_name,
+                branch_pushed,
+                preview_created,
+                created_by,
+                tx,
+                push_failed_deadline,
+            )
+            .await?;
+            continue;
         }
 
         // Reload policy from DB each iteration so changes (add/remove/edit) take effect immediately
@@ -1646,7 +1687,6 @@ async fn follow_up_loop(
                         "Cost limit reached — this follow-up was blocked by policy.",
                     )
                     .await?;
-                    update_task_status(db, task_id, "awaiting_followup", None).await?;
                     continue;
                 }
             }
@@ -1657,7 +1697,7 @@ async fn follow_up_loop(
         update_task_status(db, task_id, "running_claude", None).await?;
         let _ = tx.send("[FOLLOWUP] Running Claude with follow-up...".to_string());
 
-        let result = match run_claude_continue(
+        let run = run_claude_continue(
             db,
             &config.secrets_encryption_key,
             created_by,
@@ -1666,65 +1706,178 @@ async fn follow_up_loop(
             tx.clone(),
             policy.as_ref(),
         )
-        .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                // Fallback: if --continue fails, use fresh session with full context
-                let _ = tx.send(format!(
-                    "[WARN] --continue failed ({e}), falling back to fresh session..."
-                ));
-                let original_prompt =
-                    sqlx::query_scalar::<_, String>("SELECT prompt FROM tasks WHERE id = $1")
-                        .bind(task_id)
-                        .fetch_one(db)
-                        .await?;
-                let context_prompt = build_followup_prompt(
-                    &original_prompt,
-                    &conversation_history,
-                    &combined_prompt,
-                );
-                run_claude_streaming(
-                    db,
-                    &config.secrets_encryption_key,
-                    created_by,
-                    agent_name,
-                    &context_prompt,
-                    tx.clone(),
-                    policy.as_ref(),
-                )
-                .await?
-            }
-        };
-        save_claude_response_as_message(db, task_id, &result.text).await?;
-        persist_actions(db, task_id, &result.actions).await;
-        if let Some(ref pol) = policy {
-            check_policy_violations(db, task_id, &result.actions, pol, tx).await;
+        .await;
+        if let Err(e) = record_claude_run(db, task_id, run, policy.as_ref(), tx).await {
+            // Fallback: if --continue fails, use fresh session with full context.
+            // The failed attempt's usage was already recorded above.
+            let _ = tx.send(format!(
+                "[WARN] --continue failed ({e}), falling back to fresh session..."
+            ));
+            let original_prompt =
+                sqlx::query_scalar::<_, String>("SELECT prompt FROM tasks WHERE id = $1")
+                    .bind(task_id)
+                    .fetch_one(db)
+                    .await?;
+            let context_prompt =
+                build_followup_prompt(&original_prompt, &conversation_history, &combined_prompt);
+            let run = run_claude_streaming(
+                db,
+                &config.secrets_encryption_key,
+                created_by,
+                agent_name,
+                &context_prompt,
+                tx.clone(),
+                policy.as_ref(),
+            )
+            .await;
+            record_claude_run(db, task_id, run, policy.as_ref(), tx).await?;
         }
-        increment_token_usage(db, task_id, &result.usage).await;
 
         if should_deliver(db, task_id).await? {
             let _ = commit_changes_in_agent(agent_name, &combined_parts[0], tx.clone()).await?;
         }
 
         // Push and update preview
-        let outcome = push_and_preview(
+        push_failed_deadline = push_or_hold(
             ctx,
             agent_name,
             branch_name,
             branch_pushed,
             preview_created,
+            created_by,
             tx,
+            push_failed_deadline,
         )
         .await?;
-        if outcome.branch_has_commits() {
-            save_system_message(db, task_id, "Changes pushed and preview updated ✓").await?;
-            maybe_auto_open_pr(ctx, created_by, tx).await;
-        }
-
-        update_task_status(db, task_id, "awaiting_followup", None).await?;
         let _ = tx.send("[STATUS] Waiting for more follow-up messages...".to_string());
         // Loop immediately — check for more messages right away (no sleep before next check)
+    }
+}
+
+async fn latest_message_id(db: &PgPool, task_id: &str) -> Result<i64, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM task_messages WHERE task_id = $1")
+            .bind(task_id)
+            .fetch_one(db)
+            .await?,
+    )
+}
+
+/// When the task is push_failed, the instant its container's retention runs out. A missing
+/// retention (its UPDATE failed) gets a full window rather than expiring at once.
+async fn load_push_failed_deadline(
+    db: &PgPool,
+    task_id: &str,
+    retention_hours: i64,
+) -> Result<Option<std::time::Instant>, AppError> {
+    let remaining: Option<f64> = sqlx::query_scalar(
+        "SELECT EXTRACT(EPOCH FROM COALESCE(agent_retained_until, \
+         NOW() + ($2::FLOAT8 * INTERVAL '1 hour')) - NOW())::FLOAT8 \
+         FROM tasks WHERE id = $1 AND status = 'push_failed'",
+    )
+    .bind(task_id)
+    .bind(retention_hours as f64)
+    .fetch_optional(db)
+    .await?;
+    Ok(remaining
+        .map(|secs| std::time::Instant::now() + std::time::Duration::from_secs_f64(secs.max(0.0))))
+}
+
+/// Push the agent's changes. A failed push doesn't end the task: the error goes to the chat,
+/// the task moves to push_failed and its container is kept, so a retry or a follow-up can
+/// deliver the work. Returns the push_failed deadline, which is None once a push succeeds.
+#[allow(clippy::too_many_arguments)]
+async fn push_or_hold(
+    ctx: &PipelineCtx<'_>,
+    agent_name: &str,
+    branch_name: &str,
+    branch_pushed: &mut bool,
+    preview_created: &mut bool,
+    created_by: &str,
+    tx: &broadcast::Sender<String>,
+    push_failed_deadline: Option<std::time::Instant>,
+) -> Result<Option<std::time::Instant>, AppError> {
+    let &PipelineCtx {
+        config,
+        db,
+        task_id,
+        ..
+    } = ctx;
+    match push_and_preview(
+        ctx,
+        agent_name,
+        branch_name,
+        branch_pushed,
+        preview_created,
+        tx,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            if outcome.branch_has_commits() {
+                save_system_message(db, task_id, "Changes pushed and preview updated ✓").await?;
+                maybe_auto_open_pr(ctx, created_by, tx).await;
+            }
+            if push_failed_deadline.is_some() {
+                agents::clear_retention(db, task_id).await;
+            }
+            update_task_status(db, task_id, "awaiting_followup", None).await?;
+            Ok(None)
+        }
+        Err(e) => {
+            log_and_send(db, task_id, tx, &format!("[ERROR] Push failed: {e}"));
+            let hours = config.agent_retention_push_failed_hours;
+            save_system_message(
+                db,
+                task_id,
+                &format!(
+                    "Push failed: {e}\n\nThe agent's changes are still in its container, kept \
+                     for {hours}h. Click Retry push or send a follow-up to try again."
+                ),
+            )
+            .await?;
+            update_task_status(db, task_id, "push_failed", Some(&e.to_string())).await?;
+            // The retention window counts from the first failure, not the latest retry.
+            if let Some(deadline) = push_failed_deadline {
+                return Ok(Some(deadline));
+            }
+            agents::retain(db, task_id, hours).await;
+            Ok(Some(
+                std::time::Instant::now() + std::time::Duration::from_secs(hours as u64 * 3600),
+            ))
+        }
+    }
+}
+
+/// Tear down after the follow-up loop: snapshot and destroy the container, then record the
+/// final status. Returns whether the task completed.
+async fn finish_task(
+    ctx: &PipelineCtx<'_>,
+    agent_name: &str,
+    outcome: FollowUpOutcome,
+    tx: &broadcast::Sender<String>,
+) -> Result<bool, AppError> {
+    let &PipelineCtx {
+        config,
+        db,
+        task_id,
+        base_branch,
+        ..
+    } = ctx;
+    log_and_send(db, task_id, tx, "[STEP] Destroying agent container...");
+    agents::snapshot_and_destroy(config, db, task_id, agent_name, base_branch).await;
+    match outcome {
+        FollowUpOutcome::Done => {
+            update_task_status(db, task_id, "completed", None).await?;
+            Ok(true)
+        }
+        FollowUpOutcome::Undelivered(reason) => {
+            let msg = format!("{reason} A snapshot of the agent's work was saved on the server.");
+            save_system_message(db, task_id, &msg).await?;
+            update_task_status(db, task_id, "failed", Some(&msg)).await?;
+            log_and_send(db, task_id, tx, &format!("[DONE] {msg}"));
+            Ok(false)
+        }
     }
 }
 
@@ -1938,7 +2091,10 @@ async fn github_create_commit(
         .map_err(|e| AppError::Internal(format!("Failed to parse GraphQL response: {e}")))?;
 
     if let Some(errors) = resp_json.get("errors") {
-        return Err(AppError::Internal(format!("GraphQL errors: {errors}")));
+        let hint = graphql_error_hint(errors, file_changes);
+        return Err(AppError::Internal(format!(
+            "GraphQL errors: {errors}{hint}"
+        )));
     }
 
     let oid = resp_json
@@ -1948,6 +2104,31 @@ async fn github_create_commit(
         .to_string();
 
     Ok(oid)
+}
+
+/// GitHub reports a FORBIDDEN createCommitOnBranch without saying which permission is missing;
+/// name the usual suspects.
+fn graphql_error_hint(errors: &serde_json::Value, file_changes: &FileChanges) -> &'static str {
+    let forbidden = errors.as_array().is_some_and(|errs| {
+        errs.iter()
+            .any(|e| e.get("type").and_then(|t| t.as_str()) == Some("FORBIDDEN"))
+    });
+    if !forbidden {
+        return "";
+    }
+    let touches_workflows = file_changes
+        .additions
+        .iter()
+        .map(|a| &a.path)
+        .chain(file_changes.deletions.iter().map(|d| &d.path))
+        .any(|p| p.starts_with(".github/workflows/"));
+    if touches_workflows {
+        "\nHint: this push changes files under .github/workflows/, which needs a token with the \
+         `workflow` scope (or Workflows write permission)."
+    } else {
+        "\nHint: FORBIDDEN usually means the token lacks Contents write permission on this \
+         repository."
+    }
 }
 
 /// `None` for manual tasks; `Some(auto_create_pr)` for intake tasks. An intake task whose
@@ -2621,7 +2802,7 @@ fn log_and_send(db: &PgPool, task_id: &str, tx: &broadcast::Sender<String>, msg:
     });
 }
 
-async fn update_task_status(
+pub(crate) async fn update_task_status(
     db: &PgPool,
     task_id: &str,
     status: &str,
@@ -2705,7 +2886,8 @@ pub async fn reopen_task(
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
-         intake_issue_id, source_type \
+         intake_issue_id, source_type, \
+         TO_CHAR(agent_retained_until, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as agent_retained_until \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2730,8 +2912,9 @@ pub async fn reopen_task(
     // Get the reopening user's git identity
     let git_id = get_git_identity(&state.db, &user.0.sub).await?;
 
-    // Reset status and error
+    // Reset status and error. A kept container is live again, so stop its retention countdown.
     update_task_status(&state.db, &id, "creating_agent", None).await?;
+    agents::clear_retention(&state.db, &id).await;
 
     // Audit: task.reopened
     crate::audit::log_event(
@@ -2773,17 +2956,8 @@ pub async fn reopen_task(
         let result = run_reopen_pipeline(&ctx, &branch, has_preview, &created_by, tx.clone()).await;
 
         if let Err(e) = &result {
-            let _ = update_task_status(&db, &task_id, "failed", Some(&e.to_string())).await;
+            agents::fail_task(&config, &db, &task_id, &e.to_string()).await;
             let _ = tx.send(format!("[ERROR] Reopen failed: {e}"));
-            if let Ok(Some(name)) = sqlx::query_scalar::<_, Option<String>>(
-                "SELECT agent_name FROM tasks WHERE id = $1",
-            )
-            .bind(&task_id)
-            .fetch_one(&db)
-            .await
-            {
-                let _ = shell::destroy_agent(&config, &name).await;
-            }
         }
 
         let channels2 = channels;
@@ -2801,7 +2975,8 @@ pub async fn reopen_task(
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
-         intake_issue_id, source_type \
+         intake_issue_id, source_type, \
+         TO_CHAR(agent_retained_until, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as agent_retained_until \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2831,7 +3006,8 @@ pub async fn get_task_diff(
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
-         intake_issue_id, source_type \
+         intake_issue_id, source_type, \
+         TO_CHAR(agent_retained_until, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as agent_retained_until \
          FROM tasks WHERE id = $1",
     )
     .bind(&id)
@@ -2883,7 +3059,8 @@ pub async fn update_task_name(
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
-         intake_issue_id, source_type \
+         intake_issue_id, source_type, \
+         TO_CHAR(agent_retained_until, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as agent_retained_until \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2915,7 +3092,8 @@ pub async fn update_task_name(
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
-         intake_issue_id, source_type \
+         intake_issue_id, source_type, \
+         TO_CHAR(agent_retained_until, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as agent_retained_until \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -2964,6 +3142,8 @@ async fn run_reopen_pipeline(
             &format!("[STEP] Reusing existing agent container '{name}'..."),
         );
         update_task_field(db, task_id, "agent_name", &name).await?;
+        // It holds the previous work: a failure from here on must keep it, not destroy it.
+        update_task_status(db, task_id, "awaiting_followup", None).await?;
         name
     } else {
         // Step 1: Create agent container
@@ -3046,11 +3226,13 @@ async fn run_reopen_pipeline(
         }
     }
 
-    // Step 3: Go straight into follow-up loop
+    // Step 3: Go straight into follow-up loop, skipping messages from before the reopen so
+    // an old __done__ or follow-up isn't replayed
+    let max_msg_id = latest_message_id(db, task_id).await?;
     // branch_pushed starts as true since the branch already exists on GitHub
     let mut branch_pushed = true;
     let mut preview_created = had_preview;
-    follow_up_loop(
+    let outcome = follow_up_loop(
         ctx,
         &agent_name,
         branch_name,
@@ -3058,16 +3240,14 @@ async fn run_reopen_pipeline(
         &mut preview_created,
         created_by,
         &tx,
-        0,
+        max_msg_id,
     )
     .await?;
 
     // Step 4: Destroy agent container
-    log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
-    let _ = shell::destroy_agent(config, &agent_name).await;
-
-    update_task_status(db, task_id, "completed", None).await?;
-    log_and_send(db, task_id, &tx, "[DONE] Task completed.");
+    if finish_task(ctx, &agent_name, outcome, &tx).await? {
+        log_and_send(db, task_id, &tx, "[DONE] Task completed.");
+    }
 
     Ok(())
 }
@@ -3085,7 +3265,7 @@ async fn recover_to_followup(
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
     let &PipelineCtx {
-        config,
+        config: _,
         db,
         task_id,
         short_id: _,
@@ -3153,16 +3333,12 @@ async fn recover_to_followup(
     }
 
     // Skip all messages that existed before recovery so we don't replay them
-    let max_msg_id: i64 =
-        sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM task_messages WHERE task_id = $1")
-            .bind(task_id)
-            .fetch_one(db)
-            .await?;
+    let max_msg_id = latest_message_id(db, task_id).await?;
 
     // Enter follow-up loop — branch already pushed, preview may already exist
     let mut branch_pushed = true;
     let mut preview_created = had_preview;
-    follow_up_loop(
+    let outcome = follow_up_loop(
         ctx,
         &agent_name,
         branch_name,
@@ -3175,11 +3351,9 @@ async fn recover_to_followup(
     .await?;
 
     // Destroy agent container after follow-up loop completes
-    log_and_send(db, task_id, &tx, "[STEP] Destroying agent container...");
-    let _ = shell::destroy_agent(config, &agent_name).await;
-
-    update_task_status(db, task_id, "completed", None).await?;
-    log_and_send(db, task_id, &tx, "[DONE] Task completed.");
+    if finish_task(ctx, &agent_name, outcome, &tx).await? {
+        log_and_send(db, task_id, &tx, "[DONE] Task completed.");
+    }
 
     Ok(())
 }
@@ -3196,7 +3370,8 @@ pub async fn recover_interrupted_tasks(
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
-         intake_issue_id, source_type \
+         intake_issue_id, source_type, \
+         TO_CHAR(agent_retained_until, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as agent_retained_until \
          FROM tasks WHERE status NOT IN ('completed', 'failed')",
     )
     .fetch_all(&db)
@@ -3216,7 +3391,7 @@ pub async fn recover_interrupted_tasks(
 
     for task in tasks {
         match task.status.as_str() {
-            "awaiting_followup" => {
+            "awaiting_followup" | "push_failed" => {
                 let Some(branch_name) = task.branch_name.clone() else {
                     let _ = update_task_status(
                         &db,
@@ -3263,7 +3438,7 @@ pub async fn recover_interrupted_tasks(
                     created_by.clone(),
                 );
                 tokio::spawn(async move {
-                    tracing::info!("Recovering awaiting_followup task {task_id}");
+                    tracing::info!("Recovering idle task {task_id}");
                     let ctx = PipelineCtx {
                         config: &cfg,
                         db: &db2,
@@ -3282,13 +3457,8 @@ pub async fn recover_interrupted_tasks(
                     )
                     .await;
                     if let Err(e) = result {
-                        let _ = update_task_status(
-                            &db2,
-                            &task_id,
-                            "failed",
-                            Some(&format!("Recovery failed: {e}")),
-                        )
-                        .await;
+                        agents::fail_task(&cfg, &db2, &task_id, &format!("Recovery failed: {e}"))
+                            .await;
                         let _ = tx.send(format!("[ERROR] Recovery failed: {e}"));
                     }
                     tokio::spawn(async move {
@@ -3339,8 +3509,14 @@ pub async fn recover_interrupted_tasks(
                     "Dashboard restarted while Claude was working. Send a follow-up message to continue the conversation.",
                 ).await;
 
-                // Transition to awaiting_followup so the user can resume
-                let _ = update_task_status(&db, &task.id, "awaiting_followup", None).await;
+                // Transition back so the user can resume. Retention on a running task means
+                // its last push failed, so it goes back to push_failed to keep the deadline.
+                let resume_status = if task.agent_retained_until.is_some() {
+                    "push_failed"
+                } else {
+                    "awaiting_followup"
+                };
+                let _ = update_task_status(&db, &task.id, resume_status, None).await;
 
                 let short_id = task.id[..6].to_string();
                 let had_preview = task.preview_url.is_some();
@@ -3355,9 +3531,7 @@ pub async fn recover_interrupted_tasks(
                     created_by.clone(),
                 );
                 tokio::spawn(async move {
-                    tracing::info!(
-                        "Recovering running_claude task {task_id} (→ awaiting_followup)"
-                    );
+                    tracing::info!("Recovering running_claude task {task_id} (→ {resume_status})");
                     let ctx = PipelineCtx {
                         config: &cfg,
                         db: &db2,
@@ -3376,13 +3550,8 @@ pub async fn recover_interrupted_tasks(
                     )
                     .await;
                     if let Err(e) = result {
-                        let _ = update_task_status(
-                            &db2,
-                            &task_id,
-                            "failed",
-                            Some(&format!("Recovery failed: {e}")),
-                        )
-                        .await;
+                        agents::fail_task(&cfg, &db2, &task_id, &format!("Recovery failed: {e}"))
+                            .await;
                         let _ = tx.send(format!("[ERROR] Recovery failed: {e}"));
                     }
                     tokio::spawn(async move {
@@ -3401,7 +3570,24 @@ pub async fn recover_interrupted_tasks(
                 )
                 .await;
             }
-            "creating_agent" | "cloning" | "pushing" | "creating_preview" => {
+            "pushing" | "creating_preview" => {
+                tracing::info!(
+                    "Task {} was interrupted during '{}', marking failed",
+                    task.id,
+                    task.status
+                );
+                agents::fail_task(
+                    &config,
+                    &db,
+                    &task.id,
+                    &format!(
+                        "Interrupted by dashboard restart during {}. Use Reopen to continue.",
+                        task.status
+                    ),
+                )
+                .await;
+            }
+            "creating_agent" | "cloning" => {
                 tracing::info!(
                     "Task {} was interrupted during '{}', marking failed",
                     task.id,
@@ -3618,7 +3804,8 @@ async fn fetch_task(db: &PgPool, id: &str) -> Result<Option<Task>, AppError> {
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
-         intake_issue_id, source_type \
+         intake_issue_id, source_type, \
+         TO_CHAR(agent_retained_until, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as agent_retained_until \
          FROM tasks WHERE id = $1"
     )
     .bind(id)
@@ -3912,7 +4099,8 @@ pub async fn link_pr(
          TO_CHAR(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as updated_at, \
          parent_task_id, created_by, screenshot_url, image_url, \
          total_input_tokens, total_output_tokens, total_cost_usd, name, pr_url, pr_number, compute_seconds, \
-         intake_issue_id, source_type \
+         intake_issue_id, source_type, \
+         TO_CHAR(agent_retained_until, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as agent_retained_until \
          FROM tasks WHERE id = $1"
     )
     .bind(&id)
@@ -3992,5 +4180,24 @@ mod tests {
             classify_pr_create_error(403, exists),
             PrCreateRejection::Other
         );
+    }
+
+    #[test]
+    fn graphql_forbidden_hints() {
+        let forbidden = serde_json::json!([{ "type": "FORBIDDEN", "message": "no" }]);
+        let changes = |path: &str| FileChanges {
+            additions: vec![FileAddition {
+                path: path.into(),
+                contents: String::new(),
+            }],
+            deletions: vec![],
+        };
+        assert!(
+            graphql_error_hint(&forbidden, &changes(".github/workflows/ci.yml"))
+                .contains("`workflow` scope")
+        );
+        assert!(graphql_error_hint(&forbidden, &changes("src/main.rs")).contains("Contents write"));
+        let stale = serde_json::json!([{ "type": "STALE_DATA", "message": "no" }]);
+        assert_eq!(graphql_error_hint(&stale, &changes("src/main.rs")), "");
     }
 }

@@ -1,3 +1,4 @@
+mod agents;
 mod audit;
 mod auth;
 mod config;
@@ -85,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/tasks/{id}/messages", get(tasks::list_messages))
         .route("/tasks/{id}/messages", post(tasks::send_message))
         .route("/tasks/{id}/reopen", post(tasks::reopen_task))
+        .route("/tasks/{id}/discard-agent", post(agents::discard_agent))
         .route("/tasks/{id}/name", patch(tasks::update_task_name))
         .route("/tasks/{id}/actions", get(tasks::list_actions))
         .route("/tasks/{id}/diff", get(tasks::get_task_diff))
@@ -190,6 +192,12 @@ async fn main() -> anyhow::Result<()> {
             "/admin/intake/issues/{id}/status",
             patch(intake_admin::update_issue_status),
         )
+        // Admin: Agent containers
+        .route("/admin/agents", get(agents::list_agents))
+        .route(
+            "/admin/agents/{name}/destroy",
+            post(agents::admin_destroy_agent),
+        )
         // Admin: Audit Log
         .route("/admin/audit-log", get(audit::list_audit_log))
         // Settings
@@ -252,6 +260,9 @@ async fn main() -> anyhow::Result<()> {
         state.task_channels.clone(),
     )
     .await;
+
+    // Destroy expired and leftover agent containers, prune old snapshots
+    agents::spawn_reaper(state.config.clone(), state.db.clone());
 
     // Start the intake daemon (polls external issue trackers)
     intake::start_intake_daemon(

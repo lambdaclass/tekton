@@ -133,8 +133,8 @@ export default function Layout() {
           const label = task?.name || id.slice(0, 8);
           if (status === 'completed') {
             toast.success(`Task ${label} completed`);
-          } else if (status === 'failed') {
-            toast.error(`Task ${label} failed`);
+          } else if (status === 'failed' || status === 'push_failed') {
+            toast.error(`Task ${label} ${status === 'failed' ? 'failed' : 'could not push'}`);
           }
         }
       }

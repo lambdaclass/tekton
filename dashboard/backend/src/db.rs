@@ -285,6 +285,8 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     for col_sql in &[
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS intake_issue_id BIGINT",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS source_type TEXT DEFAULT 'manual'",
+        // Set while a finished or push_failed task's container is kept around; NULL once destroyed.
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS agent_retained_until TIMESTAMPTZ",
     ] {
         let _ = sqlx::query(col_sql).execute(pool).await;
     }

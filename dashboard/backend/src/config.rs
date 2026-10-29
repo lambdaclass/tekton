@@ -21,6 +21,13 @@ pub struct Config {
     pub intake_enabled: bool,
     pub intake_max_global_concurrent: i32,
     pub github_webhook_secret: String,
+    /// How long a failed task's container is kept when the agent had already started working.
+    pub agent_retention_failed_hours: i64,
+    /// How long a task whose push failed keeps its container waiting for a retry.
+    pub agent_retention_push_failed_hours: i64,
+    /// Where agent work is saved (git bundle + diff) before a container is destroyed.
+    pub snapshot_dir: String,
+    pub snapshot_retention_days: u64,
 }
 
 impl Config {
@@ -60,6 +67,20 @@ impl Config {
                 .unwrap_or(10),
             github_webhook_secret: env::var("GITHUB_WEBHOOK_SECRET")
                 .unwrap_or_else(|_| String::new()),
+            agent_retention_failed_hours: env::var("AGENT_RETENTION_FAILED_HOURS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(24),
+            agent_retention_push_failed_hours: env::var("AGENT_RETENTION_PUSH_FAILED_HOURS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(168),
+            snapshot_dir: env::var("SNAPSHOT_DIR")
+                .unwrap_or_else(|_| "/var/lib/claude-agents/snapshots".into()),
+            snapshot_retention_days: env::var("SNAPSHOT_RETENTION_DAYS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(14),
         })
     }
 }

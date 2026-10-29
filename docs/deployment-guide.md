@@ -349,6 +349,11 @@ ALLOWED_REPOS=yourorg/repo1,yourorg/repo2
 PREVIEW_BIN=/run/current-system/sw/bin/preview
 AGENT_BIN=/run/current-system/sw/bin/agent
 STATIC_DIR=/opt/dashboard/static
+# Optional: agent container retention (defaults shown)
+AGENT_RETENTION_FAILED_HOURS=24
+AGENT_RETENTION_PUSH_FAILED_HOURS=168
+SNAPSHOT_DIR=/var/lib/claude-agents/snapshots
+SNAPSHOT_RETENTION_DAYS=14
 ```
 
 **`/var/secrets/preview.env`:**
@@ -438,6 +443,36 @@ systemctl reload caddy
 # If the preview used database = "host":
 sudo -u postgres psql -c "DROP DATABASE IF EXISTS preview_<slug_underscored>;"
 sudo -u postgres psql -c "DROP USER IF EXISTS preview_<slug_underscored>;"
+```
+
+### Agent containers and snapshots
+
+A task's agent container is kept after the task stops if it may still hold undelivered work:
+
+- **Push failed** (`push_failed`): kept for `AGENT_RETENTION_PUSH_FAILED_HOURS`. Retry push or a follow-up message tries again.
+- **Failed after the agent started working**: kept for `AGENT_RETENTION_FAILED_HOURS`. Reopen continues in the same container.
+
+Before any container is destroyed, the dashboard saves the agent's work to `SNAPSHOT_DIR/<task_id>/<unix time>/`:
+
+- `commits.bundle`: the commits ahead of the base branch (missing if there were none)
+- `commits.txt`: their one-line log
+- `uncommitted.diff`: uncommitted and untracked changes, as a binary diff
+
+Every 15 minutes the dashboard destroys containers whose retention has run out, destroys `task-*` containers whose task finished more than an hour ago, and deletes snapshots older than `SNAPSHOT_RETENTION_DAYS`.
+
+To free space sooner, use **Discard container** on the task page, or the **Agent containers** section of the Admin page. Both save a snapshot first. To do it by hand on the server:
+
+```bash
+agent list
+agent destroy task-abc123   # no snapshot is taken this way
+```
+
+To recover work from a snapshot into a clone of the repo:
+
+```bash
+git fetch /var/lib/claude-agents/snapshots/<task_id>/<time>/commits.bundle HEAD:recovered
+git checkout recovered
+git apply --binary /var/lib/claude-agents/snapshots/<task_id>/<time>/uncommitted.diff
 ```
 
 ### Host secrets for previews (optional)

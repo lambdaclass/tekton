@@ -27,10 +27,93 @@ pub struct TokenUsage {
 }
 
 /// Return value from Claude streaming: text output, structured actions, and token usage.
+#[derive(Debug, Default)]
 pub struct ClaudeStreamResult {
     pub text: String,
     pub actions: Vec<RawAction>,
     pub usage: TokenUsage,
+}
+
+/// A failed Claude invocation, with whatever output was streamed before it failed.
+#[derive(Debug)]
+pub struct ClaudeStreamError {
+    pub error: AppError,
+    pub partial: ClaudeStreamResult,
+}
+
+pub type ClaudeRun = Result<ClaudeStreamResult, ClaudeStreamError>;
+
+impl ClaudeStreamError {
+    /// An invocation that failed before Claude produced any output.
+    pub fn before_start(error: AppError) -> Self {
+        Self {
+            error,
+            partial: ClaudeStreamResult::default(),
+        }
+    }
+}
+
+/// Accumulates token usage from a Claude stream-json run.
+///
+/// The `result` event carries the final usage and cost. If the run dies before emitting one,
+/// fall back to summing per-message usage from `assistant` events. Those carry no cost, and we
+/// only record cost the CLI reports, so partial usage has a cost of 0.
+#[derive(Debug, Default)]
+pub struct UsageAccumulator {
+    result: Option<TokenUsage>,
+    /// (input, output) per assistant message id. stream-json repeats a message's usage on
+    /// every content block, so keep the max per id rather than summing every event.
+    messages: std::collections::HashMap<String, (i64, i64)>,
+}
+
+impl UsageAccumulator {
+    pub fn feed(&mut self, line: &str) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            return;
+        };
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("result") => {
+                if let Some(u) = extract_token_usage(line) {
+                    let total = self.result.get_or_insert_with(TokenUsage::default);
+                    total.input_tokens += u.input_tokens;
+                    total.output_tokens += u.output_tokens;
+                    total.cost_usd += u.cost_usd;
+                }
+            }
+            Some("assistant") => {
+                let Some(id) = v.pointer("/message/id").and_then(|i| i.as_str()) else {
+                    return;
+                };
+                let input = v
+                    .pointer("/message/usage/input_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let output = v
+                    .pointer("/message/usage/output_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let entry = self.messages.entry(id.to_string()).or_default();
+                entry.0 = entry.0.max(input);
+                entry.1 = entry.1.max(output);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn finish(&self) -> TokenUsage {
+        if let Some(result) = &self.result {
+            return result.clone();
+        }
+        let (input_tokens, output_tokens) = self
+            .messages
+            .values()
+            .fold((0, 0), |(i, o), (mi, mo)| (i + mi, o + mo));
+        TokenUsage {
+            input_tokens,
+            output_tokens,
+            cost_usd: 0.0,
+        }
+    }
 }
 
 /// Run a command and return its stdout.
@@ -378,6 +461,45 @@ pub async fn scp_to_agent(name: &str, local_path: &str, remote_path: &str) -> Re
     Ok(())
 }
 
+/// Recursively copy `remote_path` out of an agent container to `local_path` on the host.
+pub async fn scp_from_agent(
+    name: &str,
+    remote_path: &str,
+    local_path: &str,
+) -> Result<(), AppError> {
+    let ip = agent_ip(name)?;
+    run_cmd(
+        "scp",
+        &[
+            "-r",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            &format!("agent@{ip}:{remote_path}"),
+            local_path,
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Names of all agent containers known to the agent manager.
+pub async fn list_agents(config: &Config) -> Result<Vec<String>, AppError> {
+    let output = run_cmd(&config.agent_bin, &["list"]).await?;
+    Ok(parse_agent_list(&output))
+}
+
+fn parse_agent_list(output: &str) -> Vec<String> {
+    strip_ansi(output)
+        .lines()
+        .skip(1) // header
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|name| !name.starts_with('('))
+        .map(String::from)
+        .collect()
+}
+
 /// Run a command inside an agent container via SSH and capture stdout.
 pub async fn agent_exec_capture(name: &str, cmd_line: &str) -> Result<String, AppError> {
     let ip = agent_ip(name)?;
@@ -418,29 +540,38 @@ pub async fn agent_exec(
 }
 
 /// Run Claude in an agent container with stream-json output, parsing events into readable log lines.
-/// Returns Claude's accumulated text output, structured actions, and token usage.
+/// Returns Claude's accumulated text output, structured actions, and token usage. On failure the
+/// error carries whatever was streamed before it, so callers can still record that usage.
 pub async fn agent_exec_claude_streaming(
     name: &str,
     cmd_line: &str,
     tx: broadcast::Sender<String>,
-) -> Result<ClaudeStreamResult, AppError> {
-    let ip = agent_ip(name)?;
+) -> ClaudeRun {
+    let ip = agent_ip(name).map_err(ClaudeStreamError::before_start)?;
 
     tracing::info!("Streaming Claude JSON: ssh agent@{ip}");
-    let mut child = Command::new("ssh")
-        .args([
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            &format!("agent@{ip}"),
-            cmd_line,
-        ])
+    let mut cmd = Command::new("ssh");
+    cmd.args([
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        &format!("agent@{ip}"),
+        cmd_line,
+    ]);
+    stream_claude(cmd, tx).await
+}
+
+/// Spawn `cmd` and parse its stdout as Claude stream-json.
+async fn stream_claude(mut cmd: Command, tx: broadcast::Sender<String>) -> ClaudeRun {
+    let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| {
-            AppError::Internal(format!("Failed to spawn ssh for Claude streaming: {e}"))
+            ClaudeStreamError::before_start(AppError::Internal(format!(
+                "Failed to spawn ssh for Claude streaming: {e}"
+            )))
         })?;
 
     let stdout = child.stdout.take().unwrap();
@@ -452,7 +583,7 @@ pub async fn agent_exec_claude_streaming(
     let actions = Arc::new(tokio::sync::Mutex::new(Vec::<RawAction>::new()));
     let actions_clone = actions.clone();
 
-    let usage = Arc::new(tokio::sync::Mutex::new(TokenUsage::default()));
+    let usage = Arc::new(tokio::sync::Mutex::new(UsageAccumulator::default()));
     let usage_clone = usage.clone();
 
     let tx2 = tx.clone();
@@ -472,13 +603,7 @@ pub async fn agent_exec_claude_streaming(
             if let Some(action) = extract_action(&line) {
                 actions_clone.lock().await.push(action);
             }
-            // Extract token usage and cost from result events
-            if let Some(u) = extract_token_usage(&line) {
-                let mut usage = usage_clone.lock().await;
-                usage.input_tokens += u.input_tokens;
-                usage.output_tokens += u.output_tokens;
-                usage.cost_usd += u.cost_usd;
-            }
+            usage_clone.lock().await.feed(&line);
             if let Some(formatted) = format_claude_event(&line) {
                 let _ = tx.send(formatted);
             }
@@ -503,10 +628,21 @@ pub async fn agent_exec_claude_streaming(
     let _ = stdout_handle.await;
     let _ = stderr_handle.await;
 
-    let status = child
-        .wait()
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to wait on ssh: {e}")))?;
+    let output = ClaudeStreamResult {
+        text: claude_text.lock().await.clone(),
+        actions: actions.lock().await.clone(),
+        usage: usage.lock().await.finish(),
+    };
+
+    let status = match child.wait().await {
+        Ok(status) => status,
+        Err(e) => {
+            return Err(ClaudeStreamError {
+                error: AppError::Internal(format!("Failed to wait on ssh: {e}")),
+                partial: output,
+            })
+        }
+    };
 
     if !status.success() {
         let stderr_output = stderr_lines.lock().await.join("\n");
@@ -515,20 +651,15 @@ pub async fn agent_exec_claude_streaming(
         } else {
             format!(": {stderr_output}")
         };
-        return Err(AppError::Internal(format!(
-            "Claude streaming exited with status {status}{detail}"
-        )));
+        return Err(ClaudeStreamError {
+            error: AppError::Internal(format!(
+                "Claude streaming exited with status {status}{detail}"
+            )),
+            partial: output,
+        });
     }
 
-    let text = claude_text.lock().await.clone();
-    let actions = actions.lock().await.clone();
-    let usage = usage.lock().await.clone();
-
-    Ok(ClaudeStreamResult {
-        text,
-        actions,
-        usage,
-    })
+    Ok(output)
 }
 
 /// Extract raw text from a Claude stream-json "assistant" message.
@@ -820,5 +951,148 @@ SLUG                STATUS          BRANCH                          URL
         let output = "No active previews.\n";
         let result = parse_preview_list(output, "example.com").unwrap();
         assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_agent_list() {
+        let output = "\x1b[1mNAME            STATUS          HOST IP         CONTAINER IP\x1b[0m\n\
+task-abc123     \x1b[0;32mrunning\x1b[0m         10.100.0.2      10.100.0.3\n\
+task-def456     \x1b[1;33mstopped\x1b[0m         10.100.0.4      10.100.0.5\n";
+        assert_eq!(parse_agent_list(output), vec!["task-abc123", "task-def456"]);
+        let empty = "NAME            STATUS          HOST IP         CONTAINER IP\n  \x1b[0;36m(no agents)\x1b[0m\n";
+        assert!(parse_agent_list(empty).is_empty());
+    }
+
+    fn assistant_event(id: &str, input: i64, output: i64) -> String {
+        format!(
+            r#"{{"type":"assistant","message":{{"id":"{id}","content":[{{"type":"text","text":"hi"}}],"usage":{{"input_tokens":{input},"output_tokens":{output}}}}}}}"#
+        )
+    }
+
+    fn result_event(input: i64, output: i64, cost: f64) -> String {
+        format!(
+            r#"{{"type":"result","total_cost_usd":{cost},"usage":{{"input_tokens":{input},"output_tokens":{output}}}}}"#
+        )
+    }
+
+    fn usage_of(lines: &[String]) -> TokenUsage {
+        let mut acc = UsageAccumulator::default();
+        for line in lines {
+            acc.feed(line);
+        }
+        acc.finish()
+    }
+
+    #[test]
+    fn usage_prefers_result_event_over_partial() {
+        let usage = usage_of(&[
+            assistant_event("m1", 10, 5),
+            assistant_event("m2", 20, 7),
+            result_event(100, 50, 0.25),
+        ]);
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 50);
+        assert_eq!(usage.cost_usd, 0.25);
+    }
+
+    #[test]
+    fn partial_usage_dedupes_repeated_message_ids() {
+        // stream-json repeats a message's usage on each of its content blocks
+        let usage = usage_of(&[
+            assistant_event("m1", 10, 3),
+            assistant_event("m1", 10, 5),
+            assistant_event("m2", 20, 7),
+        ]);
+        assert_eq!(usage.input_tokens, 30);
+        assert_eq!(usage.output_tokens, 12);
+        assert_eq!(usage.cost_usd, 0.0);
+    }
+
+    #[test]
+    fn no_usage_information_is_zero() {
+        let usage = usage_of(&[
+            "not json".to_string(),
+            r#"{"type":"system","subtype":"init"}"#.to_string(),
+        ]);
+        assert_eq!(usage.input_tokens, 0);
+        assert_eq!(usage.output_tokens, 0);
+        assert_eq!(usage.cost_usd, 0.0);
+    }
+
+    /// Run `stream_claude` on a shell script that prints `lines` and exits with `code`.
+    async fn run_fake_claude(lines: &[String], code: i32) -> ClaudeRun {
+        let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", &format!("cat <<'EOF'\n{body}EOF\nexit {code}")]);
+        let (tx, _rx) = broadcast::channel(64);
+        stream_claude(cmd, tx).await
+    }
+
+    #[tokio::test]
+    async fn successful_run_reports_result_usage() {
+        let run = run_fake_claude(
+            &[assistant_event("m1", 10, 5), result_event(100, 50, 0.25)],
+            0,
+        )
+        .await;
+        let output = run.expect("run should succeed");
+        assert_eq!(output.usage.input_tokens, 100);
+        assert_eq!(output.usage.output_tokens, 50);
+        assert_eq!(output.usage.cost_usd, 0.25);
+        assert_eq!(output.text, "hi");
+    }
+
+    #[tokio::test]
+    async fn failed_run_keeps_final_result_usage() {
+        let run = run_fake_claude(
+            &[assistant_event("m1", 10, 5), result_event(100, 50, 0.25)],
+            1,
+        )
+        .await;
+        let err = run.expect_err("run should fail");
+        assert_eq!(err.partial.usage.input_tokens, 100);
+        assert_eq!(err.partial.usage.output_tokens, 50);
+        assert_eq!(err.partial.usage.cost_usd, 0.25);
+    }
+
+    #[tokio::test]
+    async fn failed_run_keeps_partial_usage() {
+        let run = run_fake_claude(
+            &[assistant_event("m1", 10, 5), assistant_event("m2", 20, 7)],
+            1,
+        )
+        .await;
+        let err = run.expect_err("run should fail");
+        assert_eq!(err.partial.usage.input_tokens, 30);
+        assert_eq!(err.partial.usage.output_tokens, 12);
+        assert_eq!(err.partial.usage.cost_usd, 0.0);
+        assert_eq!(err.partial.actions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_run_without_usage_is_zero() {
+        let err = run_fake_claude(&[], 1).await.expect_err("run should fail");
+        assert_eq!(err.partial.usage.input_tokens, 0);
+        assert_eq!(err.partial.usage.output_tokens, 0);
+        assert_eq!(err.partial.usage.cost_usd, 0.0);
+    }
+
+    #[tokio::test]
+    async fn fallback_invocations_are_accounted_independently() {
+        // A failed --continue followed by a fresh-session fallback: each run reports only its
+        // own usage, so recording both counts every invocation exactly once.
+        let failed = run_fake_claude(&[assistant_event("m1", 10, 5)], 1)
+            .await
+            .expect_err("--continue should fail");
+        let fallback =
+            run_fake_claude(&[assistant_event("m1", 40, 9), result_event(40, 9, 0.1)], 0)
+                .await
+                .expect("fallback should succeed");
+        assert_eq!(failed.partial.usage.input_tokens, 10);
+        assert_eq!(fallback.usage.input_tokens, 40);
+        assert_eq!(
+            failed.partial.usage.output_tokens + fallback.usage.output_tokens,
+            14
+        );
     }
 }
