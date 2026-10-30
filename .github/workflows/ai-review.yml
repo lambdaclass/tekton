@@ -18,6 +18,11 @@ jobs:
 
   claude:
     uses: lambdaclass/actions/.github/workflows/ai-review-claude.yml@v1
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
