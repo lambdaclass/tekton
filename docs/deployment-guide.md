@@ -379,7 +379,7 @@ They live in 1Password. An operator pushes them by hand into `/run/dashboard-sec
 
 #### 1Password item
 
-[`server-config/dashboard-secrets.env.tpl`](../server-config/dashboard-secrets.env.tpl) holds `op://` references to one 1Password item with three fields, named `SECRETS_ENCRYPTION_KEY`, `JWT_SECRET` and `GITHUB_CLIENT_SECRET`. **The vault and item names in the template (`VAULT_NAME`, `ITEM_NAME`) are placeholders: change them to the real vault and item.**
+[`server-config/dashboard-secrets.env.tpl`](../server-config/dashboard-secrets.env.tpl) holds `op://` references to the 1Password item `key-tekton-00` in the `Tekton` vault, which has three fields named `SECRETS_ENCRYPTION_KEY`, `JWT_SECRET` and `GITHUB_CLIENT_SECRET`. To use another vault or item, change the template.
 
 All the commands below use [`server-config/dashboard-secrets.sh`](../server-config/dashboard-secrets.sh). Run them from the repo root on your machine, signed in to the 1Password CLI (`op signin`). Values only travel through pipes: they never appear on a command line, in shell history or on the terminal. The `copy` commands refuse to write to a terminal. (`pbcopy` is macOS; use `xclip -selection clipboard` or `wl-copy` on Linux. Clear the clipboard afterwards.)
 
