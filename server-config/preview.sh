@@ -483,7 +483,16 @@ start_container_services() {
     setup_service=$(jq -r '.setupService' "$meta_file")
     local -a app_services
     readarray -t app_services < <(jq -r '.appServices[]' "$meta_file")
-    nixos-container run "$slug" -- systemctl start "$setup_service" "${app_services[@]}" &
+    (
+        # `nixos-container start` returns before the container's network is usable;
+        # starting setup immediately makes its git clone fail with "Could not resolve host".
+        local i
+        for i in {1..30}; do
+            nixos-container run "$slug" -- getent hosts github.com &>/dev/null && break
+            sleep 2
+        done
+        nixos-container run "$slug" -- systemctl start "$setup_service" "${app_services[@]}"
+    ) &
 }
 
 # -- Meta helpers -------------------------------------------------------------
