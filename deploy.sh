@@ -147,6 +147,9 @@ deploy_nix() {
         done && \
         cd /etc/nixos && nixos-rebuild switch
     "
+    # Idempotent: removes GitHub tokens that older versions left in previews.
+    info "Scrubbing GitHub tokens from existing previews..."
+    $SSH "preview scrub-tokens" || echo -e "${RED}[WARN]${NC} preview scrub-tokens reported failures; re-run it on the server."
     success "NixOS configs deployed."
 }
 

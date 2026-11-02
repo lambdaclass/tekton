@@ -137,7 +137,7 @@
     })
     (pkgs.writeShellApplication {
       name = "preview";
-      runtimeInputs = [ coreutils gnused nixos-container openssh curl jq postgresql sudo ];
+      runtimeInputs = [ coreutils gnused nixos-container openssh curl jq postgresql sudo git util-linux ];
       text = builtins.readFile ./preview.sh;
     })
   ];

@@ -361,6 +361,10 @@ WEBHOOK_PORT=3100
 ALLOWED_REPOS=yourorg/repo1,yourorg/repo2
 ```
 
+These keys are never forwarded into previews, even if a repo lists them in `hostSecrets`.
+
+> **Upgrading from a version before #184:** older versions copied the GitHub token into every preview container (`/etc/preview-token` and the app's git remote), where app code could read it. `deploy.sh` runs `preview scrub-tokens` to remove those copies, but that doesn't undo the exposure, so rotate `GITHUB_TOKEN` here if you use one.
+
 **`/var/secrets/claude/oauth_token`:**
 
 ```
