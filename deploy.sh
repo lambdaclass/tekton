@@ -46,6 +46,7 @@ if [[ -z "$SERVER" ]]; then
 fi
 
 SSH="ssh root@${SERVER}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REMOTE_SRC="/opt/src"
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
@@ -70,9 +71,39 @@ sync_code() {
     $SSH "cd ${REMOTE_SRC} && git fetch origin && git checkout ${CURRENT_BRANCH} && git reset --hard origin/${CURRENT_BRANCH}"
 }
 
+# ── Dashboard secrets preflight ─────────────────────────────────────────────
+
+# Names only, never values; see docs/deployment-guide.md, "Dashboard secrets".
+# --unit also requires the loaded unit to read the /run file.
+check_dashboard_secrets() {
+    info "Checking dashboard secrets on the server..."
+    "${SCRIPT_DIR}/server-config/dashboard-secrets.sh" check "${SERVER}" "$@"
+}
+
+# NRestarts catches a crash loop that is-active alone can miss (Restart=always).
+verify_dashboard_running() {
+    info "Waiting for the dashboard to come up..."
+    if ! $SSH '
+        before=$(systemctl show -p NRestarts --value dashboard)
+        sleep 8
+        after=$(systemctl show -p NRestarts --value dashboard)
+        state=$(systemctl is-active dashboard || true)
+        if [ "$state" != active ] || [ "$after" != "$before" ]; then
+            echo "Dashboard is not running (state: $state, restarts: $before -> $after). Last log lines:"
+            journalctl -u dashboard -n 30 --no-pager
+            exit 1
+        fi
+    '; then
+        error "Dashboard failed to start after deploy."
+    fi
+    success "Dashboard is running."
+}
+
 # ── Dashboard (Rust backend + React frontend) ──────────────────────────────
 
 deploy_dashboard() {
+    check_dashboard_secrets --unit
+
     info "Ensuring PostgreSQL dashboard database exists..."
     $SSH "
         sudo -u postgres psql -tc \"SELECT 1 FROM pg_roles WHERE rolname='dashboard'\" | grep -q 1 || \
@@ -113,6 +144,7 @@ deploy_dashboard() {
         rm -rf /opt/dashboard/static.old && \
         systemctl start dashboard
     "
+    verify_dashboard_running
     success "Dashboard deployed."
 }
 
@@ -173,6 +205,8 @@ sync_code
 
 case "$COMPONENT" in
     all)
+        # Before deploy_nix: nixos-rebuild restarts the dashboard when its unit changes.
+        check_dashboard_secrets
         deploy_nix
         deploy_dashboard
         deploy_webhook

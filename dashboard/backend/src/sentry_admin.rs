@@ -13,11 +13,6 @@ const ISSUE_COLUMNS: &str = "id, source_id, sentry_issue_id, sentry_short_id, se
      TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at";
 
 fn encrypt_token(state: &crate::AppState, token: &str) -> Result<String, AppError> {
-    if state.config.secrets_encryption_key.is_empty() {
-        return Err(AppError::BadRequest(
-            "SECRETS_ENCRYPTION_KEY is not configured".into(),
-        ));
-    }
     crate::secrets::encrypt_secret(&state.config.secrets_encryption_key, token)
 }
 

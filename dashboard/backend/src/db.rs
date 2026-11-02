@@ -8,8 +8,56 @@ pub async fn init_pool(database_url: &str, secrets_key: &str) -> anyhow::Result<
         .await?;
 
     run_migrations(&pool).await?;
+    check_secrets_key(&pool, secrets_key).await?;
     encrypt_legacy_github_tokens(&pool, secrets_key).await?;
     Ok(pool)
+}
+
+/// Refuses to start when stored ciphertext exists but none of a sample
+/// decrypts: the key is wrong, and running on would encrypt new values (legacy
+/// GitHub tokens included) under it. One undecryptable row among good ones is
+/// tolerated, since that is a damaged row, not a wrong key. The sample takes the
+/// oldest rows, so recent writes under a wrong key can't vouch for it.
+async fn check_secrets_key(pool: &PgPool, key: &str) -> anyhow::Result<()> {
+    let sample: Vec<String> = sqlx::query_scalar(
+        "(SELECT github_token_encrypted FROM users
+            WHERE github_token_encrypted IS NOT NULL AND github_token_encrypted <> ''
+            ORDER BY created_at, github_login LIMIT 5)
+         UNION ALL
+         (SELECT ai_api_key_encrypted FROM users
+            WHERE ai_api_key_encrypted IS NOT NULL AND ai_api_key_encrypted <> ''
+            ORDER BY created_at, github_login LIMIT 5)
+         UNION ALL
+         (SELECT encrypted_value FROM secrets ORDER BY id LIMIT 5)
+         UNION ALL
+         (SELECT ai_api_key_encrypted FROM global_ai_config LIMIT 1)
+         UNION ALL
+         (SELECT auth_token_encrypted FROM sentry_sources ORDER BY id LIMIT 5)
+         UNION ALL
+         (SELECT api_token_encrypted FROM intake_sources
+            WHERE api_token_encrypted IS NOT NULL AND api_token_encrypted <> ''
+            ORDER BY id LIMIT 5)",
+    )
+    .fetch_all(pool)
+    .await?;
+    check_key_against_sample(key, &sample)
+}
+
+fn check_key_against_sample(key: &str, sample: &[String]) -> anyhow::Result<()> {
+    if sample.is_empty()
+        || sample
+            .iter()
+            .any(|c| crate::secrets::decrypt_secret(key, c).is_ok())
+    {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "SECRETS_ENCRYPTION_KEY does not decrypt any of {} stored encrypted value(s). \
+         The key is probably wrong (wrong 1Password item, or a typo in the pushed \
+         /run/dashboard-secrets/secrets.env). Refusing to start so nothing gets \
+         encrypted with the wrong key.",
+        sample.len()
+    )
 }
 
 /// Moves plaintext `users.github_token` values into `github_token_encrypted`.
@@ -479,4 +527,35 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::secrets::encrypt_secret;
+
+    #[test]
+    fn key_check_passes_on_empty_db() {
+        assert!(check_key_against_sample("k", &[]).is_ok());
+    }
+
+    #[test]
+    fn key_check_accepts_right_key_despite_one_bad_row() {
+        let sample = vec![
+            "garbage".to_string(),
+            encrypt_secret("other", "x").unwrap(),
+            encrypt_secret("right", "x").unwrap(),
+        ];
+        assert!(check_key_against_sample("right", &sample).is_ok());
+    }
+
+    #[test]
+    fn key_check_rejects_wrong_key() {
+        let sample = vec![
+            encrypt_secret("right", "a").unwrap(),
+            encrypt_secret("right", "b").unwrap(),
+        ];
+        let err = check_key_against_sample("wrong", &sample).unwrap_err();
+        assert!(err.to_string().contains("probably wrong"));
+    }
 }

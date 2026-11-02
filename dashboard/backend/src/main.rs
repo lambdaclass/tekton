@@ -44,8 +44,9 @@ pub struct AppState {
     pub task_channels: TaskChannels,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+// Sync on purpose: Config::from_env removes the secrets from the process
+// environment, which is only sound before any other thread exists.
+fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -54,6 +55,13 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::from_env()?;
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(config))
+}
+
+async fn run(config: Config) -> anyhow::Result<()> {
     let db = db::init_pool(&config.database_url, &config.secrets_encryption_key).await?;
     let listen_addr = config.listen_addr.clone();
     let static_dir = config.static_dir.clone();

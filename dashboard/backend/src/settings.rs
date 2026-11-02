@@ -151,15 +151,6 @@ pub async fn get_ai_settings(
     user: MemberUser,
     State(state): State<crate::AppState>,
 ) -> Result<Json<AiSettingsResponse>, AppError> {
-    if state.config.secrets_encryption_key.is_empty() {
-        return Ok(Json(AiSettingsResponse {
-            provider: None,
-            has_api_key: false,
-            model: None,
-            has_global_fallback: None,
-        }));
-    }
-
     match get_user_ai_config(&state.db, &state.config.secrets_encryption_key, &user.0.sub).await? {
         Some(cfg) => Ok(Json(AiSettingsResponse {
             provider: Some(cfg.provider),
@@ -188,12 +179,6 @@ pub async fn put_ai_settings(
     State(state): State<crate::AppState>,
     Json(req): Json<SetAiSettingsRequest>,
 ) -> Result<Json<AiSettingsResponse>, AppError> {
-    if state.config.secrets_encryption_key.is_empty() {
-        return Err(AppError::BadRequest(
-            "SECRETS_ENCRYPTION_KEY is not configured".into(),
-        ));
-    }
-
     if req.provider != "anthropic" && req.provider != "openrouter" {
         return Err(AppError::BadRequest(format!(
             "Invalid provider '{}'. Use 'anthropic' or 'openrouter'",
@@ -270,15 +255,6 @@ pub async fn get_global_ai_settings(
     AdminUser(_claims): AdminUser,
     State(state): State<crate::AppState>,
 ) -> Result<Json<AiSettingsResponse>, AppError> {
-    if state.config.secrets_encryption_key.is_empty() {
-        return Ok(Json(AiSettingsResponse {
-            provider: None,
-            has_api_key: false,
-            model: None,
-            has_global_fallback: None,
-        }));
-    }
-
     match get_global_ai_config(&state.db, &state.config.secrets_encryption_key).await? {
         Some(cfg) => Ok(Json(AiSettingsResponse {
             provider: Some(cfg.provider),
@@ -301,12 +277,6 @@ pub async fn put_global_ai_settings(
     State(state): State<crate::AppState>,
     Json(req): Json<SetAiSettingsRequest>,
 ) -> Result<Json<AiSettingsResponse>, AppError> {
-    if state.config.secrets_encryption_key.is_empty() {
-        return Err(AppError::BadRequest(
-            "SECRETS_ENCRYPTION_KEY is not configured".into(),
-        ));
-    }
-
     if req.provider != "anthropic"
         && req.provider != "anthropic-oauth"
         && req.provider != "openrouter"
