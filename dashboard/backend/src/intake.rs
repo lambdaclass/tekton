@@ -461,18 +461,29 @@ async fn poll_all_sources(config: &Arc<Config>, db: &PgPool) -> Result<(), AppEr
     Ok(())
 }
 
+/// For background jobs: an undecryptable token is not the caller's session
+/// problem, so name the user who has to sign in again.
+pub fn run_as_user_token_error(run_as_user: &str, e: AppError) -> AppError {
+    match e {
+        AppError::Auth(_) => AppError::Internal(format!(
+            "GitHub token for run_as_user '{run_as_user}' could not be decrypted; \
+             they must sign in to the dashboard again"
+        )),
+        other => other,
+    }
+}
+
 /// Poll a single source: fetch external issues, deduplicate, insert new ones as `backlog`.
 /// No tasks are spawned here — that happens in `process_pending_issues()`.
-async fn poll_source(_config: &Config, db: &PgPool, source: &IntakeSource) -> Result<(), AppError> {
+async fn poll_source(config: &Config, db: &PgPool, source: &IntakeSource) -> Result<(), AppError> {
     let poll_start = std::time::Instant::now();
 
     // Get the GitHub token from the run_as_user's account
-    let api_token: String =
-        sqlx::query_scalar("SELECT github_token FROM users WHERE github_login = $1")
-            .bind(&source.run_as_user)
-            .fetch_one(db)
+    let api_token =
+        crate::auth::load_github_token(db, &config.secrets_encryption_key, &source.run_as_user)
             .await
-            .map_err(|_| {
+            .map_err(|e| run_as_user_token_error(&source.run_as_user, e))?
+            .ok_or_else(|| {
                 AppError::Internal(format!(
                     "run_as_user '{}' not found or has no GitHub token",
                     source.run_as_user

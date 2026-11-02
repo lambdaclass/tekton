@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::from_env()?;
-    let db = db::init_pool(&config.database_url).await?;
+    let db = db::init_pool(&config.database_url, &config.secrets_encryption_key).await?;
     let listen_addr = config.listen_addr.clone();
     let static_dir = config.static_dir.clone();
 

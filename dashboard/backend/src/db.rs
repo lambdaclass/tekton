@@ -1,14 +1,50 @@
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
-pub async fn init_pool(database_url: &str) -> anyhow::Result<PgPool> {
+pub async fn init_pool(database_url: &str, secrets_key: &str) -> anyhow::Result<PgPool> {
     let pool = PgPoolOptions::new()
         .max_connections(10)
         .connect(database_url)
         .await?;
 
     run_migrations(&pool).await?;
+    encrypt_legacy_github_tokens(&pool, secrets_key).await?;
     Ok(pool)
+}
+
+/// Moves plaintext `users.github_token` values into `github_token_encrypted`.
+/// Each row is one conditional UPDATE, so an interrupted run leaves every row
+/// either done or untouched, and the next start picks up the rest. Once done,
+/// no row has a plaintext token and this is a no-op.
+async fn encrypt_legacy_github_tokens(pool: &PgPool, key: &str) -> anyhow::Result<()> {
+    sqlx::query("UPDATE users SET github_token = NULL WHERE github_token = ''")
+        .execute(pool)
+        .await?;
+
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT github_login, github_token FROM users WHERE github_token IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    for (login, token) in &rows {
+        let encrypted = crate::auth::encrypt_github_token(key, token)
+            .map_err(|e| anyhow::anyhow!("encrypting GitHub token for {login}: {e}"))?;
+        // Matching on the old value never clobbers a token written meanwhile.
+        sqlx::query(
+            "UPDATE users SET github_token_encrypted = $1, github_token = NULL
+             WHERE github_login = $2 AND github_token = $3",
+        )
+        .bind(&encrypted)
+        .bind(login)
+        .bind(token)
+        .execute(pool)
+        .await?;
+    }
+    if !rows.is_empty() {
+        tracing::info!("Encrypted {} stored GitHub token(s)", rows.len());
+    }
+    Ok(())
 }
 
 async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
@@ -135,6 +171,15 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     ] {
         // Every authenticated request reads these columns, so fail startup
         // rather than serve 500s. IF NOT EXISTS makes re-runs no-ops.
+        sqlx::query(col_sql).execute(pool).await?;
+    }
+
+    // GitHub tokens are stored encrypted; the plaintext column is emptied at
+    // startup (see encrypt_legacy_github_tokens) and dropped in a later release.
+    for col_sql in &[
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS github_token_encrypted TEXT",
+        "ALTER TABLE users ALTER COLUMN github_token DROP NOT NULL",
+    ] {
         sqlx::query(col_sql).execute(pool).await?;
     }
 

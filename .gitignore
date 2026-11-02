@@ -1,6 +1,7 @@
 # Setup env file contains secrets
 setup.env
 dashboard/backend/.env
+dashboard/backend/.secrets-key
 
 # Playwright test artifacts
 playwright-report/

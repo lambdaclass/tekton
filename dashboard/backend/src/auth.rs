@@ -107,15 +107,46 @@ pub async fn check_org_membership(
     })
 }
 
-/// The stored GitHub token for `login`, or `None` when the user has none.
-/// The only place the extractors read the token from.
-pub async fn load_github_token(db: &PgPool, login: &str) -> Result<Option<String>, AppError> {
-    let token: Option<String> =
-        sqlx::query_scalar("SELECT github_token FROM users WHERE github_login = $1")
+/// The stored GitHub token for `login`, or `None` when the user doesn't exist
+/// or has no token. The only way the backend reads a user's GitHub token.
+/// A token that won't decrypt (the key was lost or changed) is an
+/// `AppError::Auth`: signing in again stores a fresh one.
+pub async fn load_github_token(
+    db: &PgPool,
+    key: &str,
+    login: &str,
+) -> Result<Option<String>, AppError> {
+    let stored: Option<Option<String>> =
+        sqlx::query_scalar("SELECT github_token_encrypted FROM users WHERE github_login = $1")
             .bind(login)
             .fetch_optional(db)
             .await?;
-    Ok(token.filter(|t| !t.is_empty()))
+    decrypt_github_token(key, login, stored.flatten())
+}
+
+/// The pure half of [`load_github_token`].
+pub fn decrypt_github_token(
+    key: &str,
+    login: &str,
+    encrypted: Option<String>,
+) -> Result<Option<String>, AppError> {
+    let Some(encrypted) = encrypted.filter(|e| !e.is_empty()) else {
+        return Ok(None);
+    };
+    match crate::secrets::decrypt_secret(key, &encrypted) {
+        Ok(token) => Ok(Some(token).filter(|t| !t.is_empty())),
+        Err(e) => {
+            tracing::warn!("Stored GitHub token for {login} could not be decrypted: {e}");
+            Err(AppError::Auth(
+                "Your stored GitHub token could not be read; sign in again".into(),
+            ))
+        }
+    }
+}
+
+/// Encrypts a GitHub token for `users.github_token_encrypted`.
+pub fn encrypt_github_token(key: &str, token: &str) -> Result<String, AppError> {
+    crate::secrets::encrypt_secret(key, token)
 }
 
 // ── Extractors ──
@@ -216,14 +247,17 @@ async fn ensure_membership_fresh(
         return Ok(());
     }
 
-    let outcome = match load_github_token(&state.db, &claims.sub)
-        .await
-        .map_err(db_failure)?
-    {
-        Some(token) => check_org_membership(&token, &state.config.github_org, &claims.sub).await,
-        // No credential to verify membership with: the user must sign in again.
-        None => Ok(Membership::TokenRevoked),
-    };
+    let outcome =
+        match load_github_token(&state.db, &state.config.secrets_encryption_key, &claims.sub)
+            .await
+            .map_err(db_failure)?
+        {
+            Some(token) => {
+                check_org_membership(&token, &state.config.github_org, &claims.sub).await
+            }
+            // No credential to verify membership with: the user must sign in again.
+            None => Ok(Membership::TokenRevoked),
+        };
 
     match outcome {
         Ok(Membership::Member) => {
@@ -439,20 +473,25 @@ async fn complete_login(state: &AppState, code: &str) -> Result<Cookie<'static>,
         .await?;
     let role_for_new_user = if user_count.0 == 0 { "admin" } else { "member" };
 
+    let encrypted_token = encrypt_github_token(
+        &state.config.secrets_encryption_key,
+        &token_resp.access_token,
+    )?;
     sqlx::query(
-        "INSERT INTO users (github_login, name, email, github_token, role, membership_checked_at)
+        "INSERT INTO users (github_login, name, email, github_token_encrypted, role, membership_checked_at)
          VALUES ($1, $2, $3, $4, $5, NOW())
          ON CONFLICT(github_login) DO UPDATE SET
            name = EXCLUDED.name,
            email = EXCLUDED.email,
-           github_token = EXCLUDED.github_token,
+           github_token_encrypted = EXCLUDED.github_token_encrypted,
+           github_token = NULL,
            membership_checked_at = NOW(),
            updated_at = NOW()",
     )
     .bind(&user_info.login)
     .bind(&name)
     .bind(&user_info.email)
-    .bind(&token_resp.access_token)
+    .bind(&encrypted_token)
     .bind(role_for_new_user)
     .execute(&state.db)
     .await?;
@@ -548,8 +587,8 @@ pub async fn test_login(
         return Err(AppError::BadRequest(format!("Invalid role '{}'", req.role)));
     }
     let (sv,): (i32,) = sqlx::query_as(
-        "INSERT INTO users (github_login, name, github_token, role, membership_checked_at)
-         VALUES ($1, $1, '', $2, NOW())
+        "INSERT INTO users (github_login, name, role, membership_checked_at)
+         VALUES ($1, $1, $2, NOW())
          ON CONFLICT(github_login) DO UPDATE SET
            role = EXCLUDED.role,
            membership_checked_at = NOW(),
@@ -1086,5 +1125,35 @@ mod tests {
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b);
         assert!(validate_oauth_state(Some(&a), Some(&a)));
+    }
+
+    #[test]
+    fn github_token_roundtrips_through_encryption() {
+        let enc = encrypt_github_token("key-a", "gho_secret").unwrap();
+        assert!(!enc.contains("gho_secret"));
+        assert_eq!(
+            decrypt_github_token("key-a", "u", Some(enc)).unwrap(),
+            Some("gho_secret".into())
+        );
+    }
+
+    #[test]
+    fn missing_github_token_is_none() {
+        assert_eq!(decrypt_github_token("key-a", "u", None).unwrap(), None);
+        assert_eq!(
+            decrypt_github_token("key-a", "u", Some(String::new())).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn github_token_under_another_key_asks_to_sign_in_again() {
+        let enc = encrypt_github_token("key-a", "gho_secret").unwrap();
+        for stored in [enc, "not-base64!".into()] {
+            match decrypt_github_token("key-b", "u", Some(stored)) {
+                Err(AppError::Auth(msg)) => assert!(msg.contains("sign in again")),
+                other => panic!("expected Auth error, got {other:?}"),
+            }
+        }
     }
 }

@@ -308,6 +308,7 @@ Key points:
 
 /var/lib/dashboard/
   dashboard.db                         # SQLite database (created automatically)
+  secrets-key                          # Encryption key for stored secrets (created automatically, 0600) — back it up
 
 /var/lib/claude-agents/
   .next_slot                           # Monotonic IP allocation counter (shared)
@@ -350,6 +351,17 @@ PREVIEW_BIN=/run/current-system/sw/bin/preview
 AGENT_BIN=/run/current-system/sw/bin/agent
 STATIC_DIR=/opt/dashboard/static
 ```
+
+### Secrets encryption key
+
+The dashboard encrypts what it stores for users at rest: GitHub OAuth tokens, repo secrets, AI provider keys and Sentry tokens. The key is never stored in the database, so a database dump taken after upgrading exposes none of them.
+
+> **Upgrading from a version before #184:** older versions stored GitHub tokens in plaintext. The first start after upgrading encrypts them, but database backups, dumps and WAL archives from before then still hold live tokens. After the first start, run `VACUUM FULL users;` so the old row versions are dropped from the table files. If an old backup may have leaked, have users revoke the dashboard's OAuth grant (GitHub → Settings → Applications → Authorized OAuth Apps) and sign in again, or revoke all grants for the OAuth App. Rolling back to a pre-#184 build after the upgrade breaks tasks and GitHub calls until each user signs in again, because the plaintext column is now empty.
+
+On first start, if `SECRETS_ENCRYPTION_KEY` is not set, the dashboard generates a random key in `/var/lib/dashboard/secrets-key` (mode 0600, 32 random bytes in base64). Set `SECRETS_ENCRYPTION_KEY_FILE` to keep it somewhere else. The dashboard refuses to start if the file exists but can't be read or doesn't hold a valid key; it never overwrites it.
+
+- **Back the key file up** alongside your database backups, but not in the same place. Without it, a restored database is unreadable: users have to sign in again to store a fresh GitHub token, and repo secrets, AI keys and Sentry tokens have to be re-entered.
+- **`SECRETS_ENCRYPTION_KEY` takes precedence over the file.** Setting it (or changing it) on an existing install switches keys without re-encrypting anything, with the same effect as losing the key. To move to the env var, set it to the contents of the key file.
 
 **`/var/secrets/preview.env`:**
 
@@ -404,6 +416,7 @@ Template files in the repo have placeholder values that `server-setup.sh` substi
 | Problem | Solution |
 |---------|----------|
 | Dashboard won't start | `journalctl -u dashboard -n 50`. Check `/var/secrets/dashboard.env` exists and has all variables. |
+| "Could not load the secrets encryption key" | `/var/lib/dashboard/secrets-key` is unreadable or corrupt. Restore it from backup; see [Secrets encryption key](#secrets-encryption-key). Deleting it makes the dashboard generate a new key, and every stored secret is lost. |
 | Webhook not receiving events | `systemctl status preview-webhook` and check GitHub webhook deliveries. |
 | Preview returns 502 | App is still building. Check `preview logs <slug> --follow`. Some builds (e.g. Elixir) take 10-15 minutes. |
 | Container fails to start | `journalctl -u container@<name>` on host. |
@@ -502,6 +515,8 @@ Then:
 ```bash
 make run
 ```
+
+The generated `.env` sets `SECRETS_ENCRYPTION_KEY_FILE=.secrets-key`, so the backend creates its encryption key in `dashboard/backend/.secrets-key` instead of `/var/lib/dashboard`. If your `.env` predates that line, add it (or set `SECRETS_ENCRYPTION_KEY`).
 
 This starts the Rust backend (port 3200) and the Vite dev server at `http://localhost:5173` (proxies `/api` to the backend). Ctrl-C stops both. Database tables are auto-created on first startup.
 

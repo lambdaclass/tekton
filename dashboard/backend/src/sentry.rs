@@ -534,12 +534,11 @@ async fn poll_sentry_source(
     let source = &due.source;
     let sentry_token =
         crate::secrets::decrypt_secret(&config.secrets_encryption_key, &due.auth_token_encrypted)?;
-    let github_token: String =
-        sqlx::query_scalar("SELECT github_token FROM users WHERE github_login = $1")
-            .bind(&source.run_as_user)
-            .fetch_one(db)
+    let github_token =
+        crate::auth::load_github_token(db, &config.secrets_encryption_key, &source.run_as_user)
             .await
-            .map_err(|_| {
+            .map_err(|e| crate::intake::run_as_user_token_error(&source.run_as_user, e))?
+            .ok_or_else(|| {
                 AppError::Internal(format!(
                     "run_as_user '{}' not found or has no GitHub token",
                     source.run_as_user
