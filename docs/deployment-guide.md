@@ -154,7 +154,7 @@ The `server-setup.sh` script is the main server-side configuration tool. It prom
 
 1. **Configuration prompts**: domain, GitHub OAuth App credentials, GitHub organization, GitHub PAT, webhook secret, allowed repos, SSH public key
 2. **Hardware detection**: auto-detects server IP, gateway, interface, disks, and kernel modules from the running system
-3. **Secret generation**: JWT secret and secrets encryption key, unless `/run/dashboard-secrets/secrets.env` was already pushed from 1Password. On a server that already has a dashboard install it refuses to generate them and asks you to push them instead. Also generates the root SSH key.
+3. **Secret generation**: JWT secret and secrets encryption key, unless `/run/dashboard-secrets/secrets.env` was already set from 1Password. On a server that already has a dashboard install it refuses to generate them and asks you to set them from 1Password instead. Also generates the root SSH key.
 4. **NixOS configuration**: substitutes all placeholders in `.nix` config files and installs to `/etc/nixos/`
 5. **Environment files**: writes `dashboard.env`, `preview.env`, the Caddy webhook route, and `/run/dashboard-secrets/secrets.env` (tmpfs) if it isn't there yet. See [Dashboard secrets](#dashboard-secrets): if setup generated that file, save its three values in 1Password before the server reboots.
 6. **NixOS rebuild**: runs `nixos-rebuild switch` (handles Caddy hash auto-fix on first build)
@@ -314,7 +314,7 @@ Key points:
     oauth_token                        # Long-lived Claude OAuth token
 
 /run/dashboard-secrets/                # tmpfs, 0700; wiped on reboot
-  secrets.env                          # SECRETS_ENCRYPTION_KEY, JWT_SECRET, GITHUB_CLIENT_SECRET (0600), pushed from 1Password
+  secrets.env                          # SECRETS_ENCRYPTION_KEY, JWT_SECRET, GITHUB_CLIENT_SECRET (0600), set from 1Password
 
 /var/lib/dashboard/
   dashboard.db                         # SQLite database (created automatically)
@@ -371,76 +371,91 @@ Three dashboard secrets never touch the server's persistent disk:
 | `JWT_SECRET` | Signs sessions. Anyone holding it can forge an admin session, and the dashboard then uses every stored token on their behalf. |
 | `GITHUB_CLIENT_SECRET` | The GitHub OAuth App secret. |
 
-They live in 1Password. An operator pushes them by hand into `/run/dashboard-secrets/secrets.env` (tmpfs, directory 0700, file 0600, root), and the `dashboard` systemd unit loads that file as a second, required `EnvironmentFile`. The dashboard refuses to start if any of the three is missing or empty.
+They live in 1Password. An operator pastes them by hand into `/run/dashboard-secrets/secrets.env` (tmpfs, directory 0700, file 0600, root), and the `dashboard` systemd unit loads that file as a second, required `EnvironmentFile`. The dashboard refuses to start if any of the three is missing or empty.
 
 **What this protects against:** database dumps, backups, disk images and snapshots, and bugs that read files from disk. None of these ever hold the key and the ciphertext together. **What it doesn't:** root on the running server, or anything that can read the dashboard's memory. Both can read the secrets out of `/run` or the process.
 
-**A reboot wipes the file.** After a reboot the dashboard stays down (`journalctl -u dashboard` shows "Failed to load environment files") until someone pushes the secrets again. This is intended. Nothing pushes them automatically.
+**A reboot wipes the file.** After a reboot the dashboard stays down (`journalctl -u dashboard` shows "Failed to load environment files") until someone runs `server-config/dashboard-secrets.sh set <server>` and pastes the three values again. This is intended. Nothing sets them automatically.
 
-#### 1Password item
+#### 1Password item and clipboard
 
-[`server-config/dashboard-secrets.env.tpl`](../server-config/dashboard-secrets.env.tpl) holds `op://` references to the 1Password item `key-tekton-00` in the `Tekton` vault, which has three fields named `SECRETS_ENCRYPTION_KEY`, `JWT_SECRET` and `GITHUB_CLIENT_SECRET`. To use another vault or item, change the template.
+By convention the values live in the `Tekton` vault, item `key-tekton-00`, with three fields named `SECRETS_ENCRYPTION_KEY`, `JWT_SECRET` and `GITHUB_CLIENT_SECRET`. Nothing reads the item automatically. You open it in the 1Password app, copy a field, and paste it where a command asks.
 
-All the commands below use [`server-config/dashboard-secrets.sh`](../server-config/dashboard-secrets.sh). Run them from the repo root on your machine, signed in to the 1Password CLI (`op signin`). Values only travel through pipes: they never appear on a command line, in shell history or on the terminal. The `copy` commands refuse to write to a terminal. (`pbcopy` is macOS; use `xclip -selection clipboard` or `wl-copy` on Linux. Clear the clipboard afterwards.)
+There is deliberately no 1Password CLI (`op`) in this flow. A signed-in `op` session lets any process in that terminal read every vault you can see, including a buggy or rogue agent.
 
-#### Pushing the secrets
+All the commands below use [`server-config/dashboard-secrets.sh`](../server-config/dashboard-secrets.sh), run from the repo root on your machine. They connect to the server as root. `set` and `verify-key` prompt on the server with hidden input (`read -s`), so the values never appear on a command line, in either shell's history, on your machine's disk or on the terminal. `copy` and `copy-live` refuse to write to a terminal; pipe them to `pbcopy`.
+
+Clipboard hygiene:
+
+- In the 1Password app, set the clipboard-clearing option (under **Settings → Security**) to 30 seconds. This only covers values copied from 1Password.
+- macOS Universal Clipboard (Handoff) can sync the clipboard to your other Apple devices. Turn off Handoff (System Settings → General → AirDrop & Handoff) or accept that.
+- After `copy … | pbcopy` or `copy-live … | pbcopy`, the value stays in the clipboard until you replace it. Clear it by hand once it's pasted: `pbcopy < /dev/null`. On Linux use `xclip -selection clipboard` or `wl-copy` instead of `pbcopy`.
+
+Allowed characters: `set` writes each value single-quoted, which systemd's `EnvironmentFile` parser takes literally. Any printable symbol works except a single quote (`'`). Spaces, tabs and control characters are refused too. If the 1Password generator produces a `'`, regenerate the value or switch off symbols. A trailing newline or carriage return from the paste, and blanks around the value, are stripped. A paste with more than one line is refused and you're asked again. For `SECRETS_ENCRYPTION_KEY` and `JWT_SECRET`, a generated password of 40 or more characters is plenty.
+
+#### Setting the secrets
 
 ```bash
-server-config/dashboard-secrets.sh push <server>
+server-config/dashboard-secrets.sh set <server>
 ```
 
-This fills the template with `op inject` and sends it to the server over ssh. On the server, the result goes to a temp file next to `secrets.env`. If any of the three values is missing or empty (for example because `op inject` failed), the push refuses and the existing file stays as it was. Otherwise the temp file replaces `secrets.env`, and the dashboard is restarted and checked, if its unit exists yet. Run the push after every reboot, and after changing a value in 1Password.
+This prompts three times on the server. For each field, copy it in the 1Password app and paste at the prompt; nothing is echoed. The values go to a temp file next to `secrets.env`. An invalid value is asked again, up to three times. If one still fails, or the connection drops, nothing changes and the existing file stays as it was. Otherwise the temp file replaces `secrets.env`, and the dashboard is restarted and checked, if its unit exists yet. Run this after every reboot, and after changing a value in 1Password.
 
 #### Fresh install
 
 There are two ways to do it:
 
-- **Push first.** Fill the 1Password item, then push before running `server-setup.sh`. Setup uses the pushed file and doesn't prompt for the client secret. To generate values, use e.g. `openssl rand -base64 32 | pbcopy` for `SECRETS_ENCRYPTION_KEY` and `openssl rand -hex 32 | pbcopy` for `JWT_SECRET`. Take `GITHUB_CLIENT_SECRET` from the GitHub OAuth App.
-- **Let setup generate them.** `server-setup.sh` generates `SECRETS_ENCRYPTION_KEY` and `JWT_SECRET`, prompts for `GITHUB_CLIENT_SECRET`, and writes the `/run` file. Move the values into 1Password before the server reboots, one field at a time:
+- **Set first.** Create the item, generating `SECRETS_ENCRYPTION_KEY` and `JWT_SECRET` with the 1Password password generator and taking `GITHUB_CLIENT_SECRET` from the GitHub OAuth App. Then run `set` before `server-setup.sh`. Setup uses the file and doesn't prompt for the client secret.
+- **Let setup generate them.** `server-setup.sh` generates `SECRETS_ENCRYPTION_KEY` and `JWT_SECRET`, prompts for `GITHUB_CLIENT_SECRET`, and writes the `/run` file. Before the server reboots, move each value into the 1Password app, one field at a time:
   ```bash
   server-config/dashboard-secrets.sh copy <server> SECRETS_ENCRYPTION_KEY | pbcopy   # paste into the field
   server-config/dashboard-secrets.sh copy <server> JWT_SECRET | pbcopy
   server-config/dashboard-secrets.sh copy <server> GITHUB_CLIENT_SECRET | pbcopy
+  pbcopy < /dev/null
   ```
 
-`server-setup.sh` only generates secrets on a fresh server. If it finds an existing install (`/var/secrets/dashboard.env`, state in `/var/lib/dashboard`, or a `dashboard` database) and no `/run` file, it stops and asks you to push from 1Password. A new key would make every stored secret unreadable. If the old values really are lost, set `ALLOW_NEW_DASHBOARD_SECRETS=1` to override.
+`server-setup.sh` only generates secrets on a fresh server. If it finds an existing install (`/var/secrets/dashboard.env`, state in `/var/lib/dashboard`, or a `dashboard` database) and no `/run` file, it stops and asks you to run `set`. A new key would make every stored secret unreadable. If the old values really are lost, set `ALLOW_NEW_DASHBOARD_SECRETS=1` to override.
 
 #### Losing or changing the key
 
 There is no key rotation: changing `SECRETS_ENCRYPTION_KEY` on an existing install switches keys without re-encrypting anything, which is the same as losing it. Users have to sign in again to store a fresh GitHub token, and repo secrets, AI keys and Sentry tokens have to be re-entered. Treat the 1Password item as the only copy and keep it backed up.
 
-On startup the dashboard tries to decrypt a sample of the oldest values it has stored. If none of them decrypts, it refuses to start with "SECRETS_ENCRYPTION_KEY does not decrypt any of N stored encrypted value(s)", which almost always means the wrong 1Password item or a typo. This catches a wrong key before the new build encrypts anything with it, including the legacy GitHub tokens it encrypts at startup. It doesn't cover values that an earlier build already wrote under a wrong key; the `verify-key` step in the upgrade below exists for that. One damaged row among good ones doesn't stop it.
+On startup the dashboard tries to decrypt a sample of the oldest values it has stored. If none of them decrypts, it refuses to start with "SECRETS_ENCRYPTION_KEY does not decrypt any of N stored encrypted value(s)". That almost always means the wrong 1Password item or a pasting mistake. This catches a wrong key before the new build encrypts anything with it, including the legacy GitHub tokens it encrypts at startup. It doesn't cover values that an earlier build already wrote under a wrong key; the `verify-key` step in the upgrade below exists for that. One damaged row among good ones doesn't stop it.
 
 #### Upgrading an existing server
 
-Servers set up before this change keep `JWT_SECRET` and `GITHUB_CLIENT_SECRET` in `/var/secrets/dashboard.env`. They may also hold a `SECRETS_ENCRYPTION_KEY`, either in `dashboard.env` or in a key file written by an earlier build of #184 (`/var/lib/dashboard/secrets-key`, or the path in `SECRETS_ENCRYPTION_KEY_FILE`). Do these steps in order, while the current dashboard is still running: steps 2 and 3 read the values the running process actually uses, not what a file appears to say.
+Servers set up before this change keep `JWT_SECRET` and `GITHUB_CLIENT_SECRET` in `/var/secrets/dashboard.env`, and may keep `SECRETS_ENCRYPTION_KEY` there too. Do these steps in order, while the current dashboard is still running: `copy-live` and `verify-key` read the values the running process actually uses, not what a file appears to say.
 
-1. **Create the 1Password item** with the three fields, and point the template at it (see above).
-2. **Copy the current values into 1Password.**
-   - **`SECRETS_ENCRYPTION_KEY`: copy the existing key, don't generate a new one.** Everything already encrypted needs it. `copy-live` reads it from the running dashboard's environment, or from the key file that build reads:
+1. **Create the item** (`Tekton` vault, item `key-tekton-00`) with the three fields.
+2. **Copy the current key and client secret into it.**
+   - **`SECRETS_ENCRYPTION_KEY`: copy the existing key, don't generate a new one.** Everything already encrypted needs it.
      ```bash
-     server-config/dashboard-secrets.sh copy-live <server> SECRETS_ENCRYPTION_KEY | pbcopy
+     server-config/dashboard-secrets.sh copy-live <server> SECRETS_ENCRYPTION_KEY | pbcopy   # paste into the field
      ```
-     If it reports that the dashboard has no key, nothing has been encrypted yet; generate one as for a fresh install.
-   - **`JWT_SECRET`: generate a new one.** Rotating it only signs everyone out.
-   - **`GITHUB_CLIENT_SECRET`:** either copy the current one (`copy-live <server> GITHUB_CLIENT_SECRET | pbcopy`), or, optionally, generate a new client secret in the GitHub OAuth App settings and delete the old one there after the deploy.
-3. **Verify the key before deleting anything:**
+     If it reports that the dashboard has no key, nothing has been encrypted yet; generate one in the app instead.
+   - **`GITHUB_CLIENT_SECRET`:** `copy-live <server> GITHUB_CLIENT_SECRET | pbcopy` the same way. Optionally, generate a new client secret in the GitHub OAuth App settings instead, and delete the old one there after the deploy.
+
+   Clear the clipboard afterwards (`pbcopy < /dev/null`).
+3. **Generate `JWT_SECRET` in the 1Password app** (password generator, 40+ characters, no `'`). Rotating it only signs everyone out.
+4. **Verify the key before deleting anything:**
    ```bash
    server-config/dashboard-secrets.sh verify-key <server>
    ```
-   This compares a SHA-256 of 1Password's value with a SHA-256 of the key the running dashboard uses, and prints only OK or MISMATCH. On a mismatch, fix the 1Password field and run it again. Don't continue until it says OK.
-4. **Push the secrets** (`server-config/dashboard-secrets.sh push <server>`). The restart is harmless, because the running build doesn't read the file yet.
-5. **Add the file to the unit on the server.** `deploy.sh` never copies `configuration.nix`, so edit `/etc/nixos/configuration.nix` on the server and change the dashboard's `EnvironmentFile` to:
+   Paste the key from the app at the hidden prompt. The server compares its SHA-256 with that of the key the running dashboard uses, and prints only OK or MISMATCH. On a mismatch, fix the field and run it again. Don't continue until it says OK.
+5. **Set the secrets** (`server-config/dashboard-secrets.sh set <server>`, pasting the three fields). The restart is harmless, because the running build doesn't read the file yet.
+6. **Add the file to the unit on the server.** `deploy.sh` never copies `configuration.nix`, so edit `/etc/nixos/configuration.nix` on the server and change the dashboard's `EnvironmentFile` to:
    ```nix
    EnvironmentFile = [
      "/var/secrets/dashboard.env"
      "/run/dashboard-secrets/secrets.env"
    ];
    ```
-6. **Remove the old copies.** On the server, delete the `SECRETS_ENCRYPTION_KEY`, `JWT_SECRET`, `GITHUB_CLIENT_SECRET` and `SECRETS_ENCRYPTION_KEY_FILE` lines from `/var/secrets/dashboard.env`. Then delete the key file, if there is one (`shred -u /var/lib/dashboard/secrets-key`, or the custom path).
-7. **Deploy** with `./deploy.sh <server>` (all components, so `nixos-rebuild` picks up the unit change). The preflight lists anything left over from steps 5 and 6.
+7. **Remove the old lines.** On the server, delete the `SECRETS_ENCRYPTION_KEY`, `JWT_SECRET` and `GITHUB_CLIENT_SECRET` lines (and any `SECRETS_ENCRYPTION_KEY_FILE` line) from `/var/secrets/dashboard.env`.
+8. **Deploy** with `./deploy.sh <server>` (all components, so `nixos-rebuild` picks up the unit change). The preflight lists anything left over from steps 6 and 7.
 
-Backups and snapshots taken before the upgrade still hold the old copies. Rotating `JWT_SECRET` and the client secret (step 2) makes those copies useless. The encryption key can't be rotated, so keep those old backups as protected as the 1Password item.
+Only earlier builds of this branch wrote a key file (`/var/lib/dashboard/secrets-key`, or the path in `SECRETS_ENCRYPTION_KEY_FILE`). Prod never ran them, so it shouldn't have one. If a server does, `copy-live` reads the key from it. The preflight then refuses to deploy until you delete the file, after `verify-key` says OK.
+
+Backups and snapshots taken before the upgrade still hold the old copies. Rotating `JWT_SECRET` (step 3), and the client secret if you did, makes those copies useless. The encryption key can't be rotated, so keep those old backups as protected as the 1Password item.
 
 > **Upgrading from a version before #184:** older versions stored GitHub tokens in plaintext. The first start after upgrading encrypts them, but database backups, dumps and WAL archives from before then still hold live tokens. After the first start, run `VACUUM FULL users;` so the old row versions are dropped from the table files. If an old backup may have leaked, have users revoke the dashboard's OAuth grant (GitHub → Settings → Applications → Authorized OAuth Apps) and sign in again, or revoke all grants for the OAuth App. Rolling back to a pre-#184 build after the upgrade breaks tasks and GitHub calls until each user signs in again, because the plaintext column is now empty.
 
@@ -497,12 +512,14 @@ Template files in the repo have placeholder values that `server-setup.sh` substi
 | Problem | Solution |
 |---------|----------|
 | Dashboard won't start | `journalctl -u dashboard -n 50`. Check `/var/secrets/dashboard.env` exists and has all variables. |
-| Dashboard down after a reboot; "Failed to load environment files" | `/run/dashboard-secrets/secrets.env` is on tmpfs and a reboot wipes it. Push it again from 1Password; see [Dashboard secrets](#dashboard-secrets). |
-| "SECRETS_ENCRYPTION_KEY is not set" (or `JWT_SECRET`, `GITHUB_CLIENT_SECRET`) | The unit doesn't load the `/run` file, or the file lacks that variable. Check the `EnvironmentFile` list in `configuration.nix` and the 1Password field names, then push again. |
-| "SECRETS_ENCRYPTION_KEY does not decrypt any of N stored encrypted value(s)" | The key isn't the one the data was encrypted with: wrong 1Password item, or a typo. Fix the item and push again. Don't generate a new key: that loses every stored secret. See [Losing or changing the key](#losing-or-changing-the-key). |
-| `deploy.sh`: "Dashboard secrets are not set up correctly" | It lists what's wrong. Missing or incomplete `/run` file: push it. `dashboard.env` still defines a secret, or an old key file still exists: save the value in 1Password, run `verify-key` for the key, then remove it. `configuration.nix` or the loaded unit doesn't read the `/run` file: see step 5 of [Upgrading an existing server](#upgrading-an-existing-server). |
+| Dashboard down after a reboot; "Failed to load environment files" | `/run/dashboard-secrets/secrets.env` is on tmpfs and a reboot wipes it. Run `server-config/dashboard-secrets.sh set <server>` and paste the three values from 1Password; see [Dashboard secrets](#dashboard-secrets). |
+| "SECRETS_ENCRYPTION_KEY is not set" (or `JWT_SECRET`, `GITHUB_CLIENT_SECRET`) | The unit doesn't load the `/run` file, or the file lacks that variable. Check the `EnvironmentFile` list in `configuration.nix`, then run `set` again. |
+| "SECRETS_ENCRYPTION_KEY does not decrypt any of N stored encrypted value(s)" | The key isn't the one the data was encrypted with: wrong 1Password item, or a pasting mistake. Fix the item and run `set` again. Don't generate a new key: that loses every stored secret. See [Losing or changing the key](#losing-or-changing-the-key). |
+| `deploy.sh`: "Dashboard secrets are not set up correctly" | It lists what's wrong. Missing or incomplete `/run` file: run `set`. `dashboard.env` still defines a secret, or an old key file still exists: save the value in 1Password, run `verify-key` for the key, then remove it. `configuration.nix` or the loaded unit doesn't read the `/run` file: see step 6 of [Upgrading an existing server](#upgrading-an-existing-server). |
+| `set`: "Contains a single quote, whitespace or a control character" | Regenerate the value in 1Password without `'` (or with symbols off). |
+| `set` / `verify-key`: "No terminal" or "run this from an interactive terminal" | Run it directly in a terminal, not through a pipe or a non-interactive wrapper: the prompts need a tty on the server. |
 | `deploy.sh`: "Dashboard failed to start after deploy" | It prints the last log lines. Usually one of the rows above. |
-| `server-setup.sh`: "already has a dashboard install, but /run/dashboard-secrets/secrets.env is missing" | Push the secrets from 1Password and rerun setup. Don't override with `ALLOW_NEW_DASHBOARD_SECRETS=1` unless the old values are lost. |
+| `server-setup.sh`: "already has a dashboard install, but /run/dashboard-secrets/secrets.env is missing" | Run `set` with the values from 1Password and rerun setup. Don't override with `ALLOW_NEW_DASHBOARD_SECRETS=1` unless the old values are lost. |
 | Webhook not receiving events | `systemctl status preview-webhook` and check GitHub webhook deliveries. |
 | Preview returns 502 | App is still building. Check `preview logs <slug> --follow`. Some builds (e.g. Elixir) take 10-15 minutes. |
 | Container fails to start | `journalctl -u container@<name>` on host. |

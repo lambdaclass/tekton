@@ -134,13 +134,13 @@ existing_dashboard_install() {
 DASHBOARD_SECRETS_PUSHED=""
 if [[ -f "$DASHBOARD_SECRETS_FILE" ]]; then
     "$SERVER_CONFIG/dashboard-secrets.sh" check-file "$DASHBOARD_SECRETS_FILE" ||
-        fatal "$DASHBOARD_SECRETS_FILE is incomplete. Push it again from 1Password, from the repo root on your machine: server-config/dashboard-secrets.sh push <server>"
+        fatal "$DASHBOARD_SECRETS_FILE is incomplete. Set it again from 1Password, from the repo root on your machine: server-config/dashboard-secrets.sh set <server>"
     DASHBOARD_SECRETS_PUSHED=1
 elif existing_dashboard_install && [[ -z "${ALLOW_NEW_DASHBOARD_SECRETS:-}" ]]; then
     error "This server already has a dashboard install, but $DASHBOARD_SECRETS_FILE is missing"
     error "(it is on tmpfs, so a reboot wipes it). Generating new secrets would lose every"
-    error "stored secret. Push them from 1Password, from the repo root on your machine:"
-    error "  server-config/dashboard-secrets.sh push <server>"
+    error "stored secret. Set them from 1Password, from the repo root on your machine:"
+    error "  server-config/dashboard-secrets.sh set <server>"
     error "then run this script again. See docs/deployment-guide.md, \"Dashboard secrets\"."
     error "Only if the old values are truly lost, rerun with ALLOW_NEW_DASHBOARD_SECRETS=1."
     exit 1
@@ -162,7 +162,7 @@ echo "Authorization callback URL: https://dashboard.${DOMAIN}/api/auth/callback"
 echo ""
 prompt GITHUB_CLIENT_ID "GitHub OAuth App Client ID"
 if [[ -n "$DASHBOARD_SECRETS_PUSHED" ]]; then
-    success "Using the dashboard secrets already pushed to $DASHBOARD_SECRETS_FILE."
+    success "Using the dashboard secrets already set in $DASHBOARD_SECRETS_FILE."
 else
     prompt_secret GITHUB_CLIENT_SECRET "GitHub OAuth App Client Secret"
 fi
@@ -428,9 +428,9 @@ else
     (
         umask 077
         cat > "$DASHBOARD_SECRETS_FILE" << ENVEOF
-SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY}
-JWT_SECRET=${JWT_SECRET}
-GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
+SECRETS_ENCRYPTION_KEY='${SECRETS_ENCRYPTION_KEY}'
+JWT_SECRET='${JWT_SECRET}'
+GITHUB_CLIENT_SECRET='${GITHUB_CLIENT_SECRET}'
 ENVEOF
     )
     DASHBOARD_SECRETS_GENERATED=1
@@ -603,11 +603,11 @@ echo ""
 if [[ -n "${DASHBOARD_SECRETS_GENERATED:-}" ]]; then
     echo -e "  ${RED}${BOLD}0. Save the dashboard secrets in 1Password now.${NC}"
     echo "     $DASHBOARD_SECRETS_FILE is on tmpfs: a reboot wipes it, and the"
-    echo "     dashboard stays down until it is pushed again from 1Password."
+    echo "     dashboard stays down until the values are set again from 1Password."
     echo "     Losing SECRETS_ENCRYPTION_KEY makes every stored secret unreadable."
     echo "     From the repo root on your machine, copy each value to the clipboard"
-    echo "     and paste it into the 1Password field of the same name (the item the"
-    echo "     template server-config/dashboard-secrets.env.tpl points to):"
+    echo "     and paste it into the field of the same name in the 1Password app"
+    echo "     (vault Tekton, item key-tekton-00):"
     for name in SECRETS_ENCRYPTION_KEY JWT_SECRET GITHUB_CLIENT_SECRET; do
         echo "       server-config/dashboard-secrets.sh copy $SERVER_IP $name | pbcopy"
     done

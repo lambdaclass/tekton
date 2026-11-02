@@ -53,7 +53,7 @@ fn check_key_against_sample(key: &str, sample: &[String]) -> anyhow::Result<()> 
     }
     anyhow::bail!(
         "SECRETS_ENCRYPTION_KEY does not decrypt any of {} stored encrypted value(s). \
-         The key is probably wrong (wrong 1Password item, or a typo in the pushed \
+         The key is probably wrong (wrong 1Password item, or a typo in \
          /run/dashboard-secrets/secrets.env). Refusing to start so nothing gets \
          encrypted with the wrong key.",
         sample.len()

@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
 # =============================================================================
 # Dashboard secrets: SECRETS_ENCRYPTION_KEY, JWT_SECRET, GITHUB_CLIENT_SECRET.
-# They live in 1Password and on the server only in /run/dashboard-secrets/
-# secrets.env (tmpfs). See docs/deployment-guide.md, "Dashboard secrets".
+# They live in 1Password (vault Tekton, item key-tekton-00) and on the server
+# only in /run/dashboard-secrets/secrets.env (tmpfs). No 1Password CLI: values
+# are copied from the app and pasted at hidden prompts on the server. See
+# docs/deployment-guide.md, "Dashboard secrets".
 #
-# From your machine (repo root, signed in with `op signin`):
-#   server-config/dashboard-secrets.sh push <server>
-#       Fill the template from 1Password and install it on the server.
+# From your machine (repo root):
+#   server-config/dashboard-secrets.sh set <server>
+#       Prompt (hidden) for the three values and install them on the server.
+#   server-config/dashboard-secrets.sh verify-key <server>
+#       Prompt (hidden) for 1Password's key; check it is the one in use.
 #   server-config/dashboard-secrets.sh copy <server> <NAME> | pbcopy
 #       A value from the server's /run file (fresh install: move it to 1Password).
 #   server-config/dashboard-secrets.sh copy-live <server> <NAME> | pbcopy
 #       The value the running dashboard uses (upgrade: move it to 1Password).
-#   server-config/dashboard-secrets.sh verify-key <server>
-#       Check that 1Password's SECRETS_ENCRYPTION_KEY is the one in use.
 #   server-config/dashboard-secrets.sh check <server> [--unit]
 #       Preflight run by deploy.sh.
 # On the server:
 #   server-config/dashboard-secrets.sh check-file <file>
 #
-# Values only travel through pipes: never argv, shell history or the terminal.
+# Values never reach argv, shell history, the laptop's disk or the terminal.
 # =============================================================================
 
 set -euo pipefail
-
-TEMPLATE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/dashboard-secrets.env.tpl"
 
 # ── Functions that run on the server (shipped with declare -f) ─────────────
 
@@ -63,16 +63,58 @@ dashboard_started() {
     return 1
 }
 
-remote_install() {
-    local d=/run/dashboard-secrets f=/run/dashboard-secrets/secrets.env tmp missing
+# Hidden prompt on the server's tty; the value lands in SECRET_VALUE. Values are
+# written single-quoted, which systemd's EnvironmentFile parser takes literally,
+# so only a single quote, whitespace and control characters are refused.
+read_secret() {
+    local v c extra
+    SECRET_VALUE=""
+    for _ in 1 2 3; do
+        printf '%s (paste, hidden): ' "$1" > /dev/tty
+        IFS= read -rs v < /dev/tty || { printf '\n' > /dev/tty; return 1; }
+        printf '\n' > /dev/tty
+        # A paste with a line break leaves the rest queued; CR/LF alone is fine.
+        extra=""
+        while IFS= read -rs -t 0.3 -n 1 c < /dev/tty; do
+            extra+="$c"
+        done
+        v=${v%$'\r'}
+        v=${v#"${v%%[![:blank:]]*}"}
+        v=${v%"${v##*[![:blank:]]}"}
+        if [ -n "${extra//[$'\r\t ']/}" ]; then
+            echo "  The paste had more than one line; try again." > /dev/tty
+        elif [ -z "$v" ]; then
+            echo "  Empty; try again." > /dev/tty
+        elif [[ "$v" == *[[:space:][:cntrl:]\']* ]]; then
+            echo "  Contains a single quote, whitespace or a control character; regenerate it without those." > /dev/tty
+        else
+            SECRET_VALUE=$v
+            return 0
+        fi
+    done
+    echo "Giving up after 3 attempts." > /dev/tty
+    return 1
+}
+
+remote_set() {
+    local d=/run/dashboard-secrets f=/run/dashboard-secrets/secrets.env tmp name missing
+    [ -r /dev/tty ] || { echo "No terminal; run this from an interactive shell." >&2; return 1; }
     install -d -m 700 "$d" || return 1
     umask 077
     tmp=$(mktemp "$d/.secrets.env.XXXXXX") || return 1
-    cat > "$tmp"
+    for name in $(secret_names); do
+        if ! read_secret "$name"; then
+            rm -f "$tmp"
+            echo "Nothing changed; $f is as it was." >&2
+            return 1
+        fi
+        printf "%s='%s'\n" "$name" "$SECRET_VALUE" >> "$tmp"
+    done
+    SECRET_VALUE=""
     missing=$(missing_values "$tmp" | tr '\n' ' ')
     if [ -n "$missing" ]; then
         rm -f "$tmp"
-        echo "Refusing to install: no value for: $missing(did op inject fail?). $f is unchanged." >&2
+        echo "Refusing to install: no value for: $missing. $f is unchanged." >&2
         return 1
     fi
     mv -f "$tmp" "$f" || { rm -f "$tmp"; return 1; }
@@ -117,6 +159,22 @@ remote_live_value() {
     return 1
 }
 
+remote_verify_key() {
+    local ours live
+    [ -r /dev/tty ] || { echo "No terminal; run this from an interactive shell." >&2; return 1; }
+    live=$(remote_live_value SECRETS_ENCRYPTION_KEY) || return 1
+    live=$(printf '%s' "$live" | sha256sum)
+    read_secret SECRETS_ENCRYPTION_KEY || return 1
+    ours=$(printf '%s' "$SECRET_VALUE" | sha256sum)
+    SECRET_VALUE=""
+    if [ "$ours" = "$live" ]; then
+        echo "OK"
+    else
+        echo "MISMATCH: that is not the key the dashboard uses. Don't delete anything on the server; fix the 1Password field (copy-live) and verify again."
+        return 1
+    fi
+}
+
 remote_preflight() {
     local f=/run/dashboard-secrets/secrets.env env=/var/secrets/dashboard.env v kf
     if [ ! -f "$f" ]; then
@@ -127,7 +185,7 @@ remote_preflight() {
         done
     fi
     for v in $(secret_names); do
-        if grep -Eq "^[[:space:]]*(export[[:space:]]+)?$v[[:space:]]*=" "$env" 2>/dev/null; then
+        if grep -Eq "^[[:space:]]*(export[[:space:]]+)?${v}[[:space:]]*=" "$env" 2>/dev/null; then
             echo "$env still defines $v; save it in 1Password, then remove the line."
         fi
     done
@@ -145,19 +203,26 @@ remote_preflight() {
 }
 
 REMOTE_FUNCS="secret_names env_file_value unquote has_value missing_values dashboard_started
-    remote_install remote_copy remote_live_value remote_preflight"
+    read_secret remote_set remote_copy remote_live_value remote_verify_key remote_preflight"
 
 # ── Local side ─────────────────────────────────────────────────────────────
 
 die() { echo "Error: $*" >&2; exit 1; }
 
+# With -t first, the remote side gets a terminal for the hidden prompts.
 on_server() {
+    local tty=()
+    if [ "$1" = -t ]; then
+        tty=(-t)
+        shift
+    fi
     local server=$1
     shift
     local code
     # shellcheck disable=SC2086
     code="$(declare -f $REMOTE_FUNCS); $*"
-    ssh "root@${server}" "bash -c $(printf '%q' "$code")"
+    # shellcheck disable=SC2029
+    ssh ${tty[@]+"${tty[@]}"} "root@${server}" "bash -c $(printf '%q' "$code")"
 }
 
 check_name() {
@@ -172,21 +237,26 @@ refuse_terminal() {
     return 0
 }
 
-sha256() { if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi; }
-
-op_ref() {
-    sed -n -E "s/^$1=\{\{ *(op:[^ }]+) *\}\}$/\1/p" "$TEMPLATE"
+need_terminal() {
+    [ -t 0 ] && [ -t 1 ] || die "run this from an interactive terminal; it prompts on the server"
 }
 
-push_command() { echo "server-config/dashboard-secrets.sh push $1"; }
+set_command() { echo "server-config/dashboard-secrets.sh set $1"; }
 
 main() {
     local cmd=${1:-} server=${2:-}
     case "$cmd" in
-        push)
-            [ -n "$server" ] || die "usage: $0 push <server>"
-            command -v op >/dev/null || die "the 1Password CLI (op) is not installed"
-            op inject -i "$TEMPLATE" | on_server "$server" remote_install
+        set)
+            [ -n "$server" ] || die "usage: $0 set <server>"
+            need_terminal
+            echo "Copy each field from 1Password (vault Tekton, item key-tekton-00) and paste it at the prompt."
+            on_server -t "$server" remote_set
+            ;;
+        verify-key)
+            [ -n "$server" ] || die "usage: $0 verify-key <server>"
+            need_terminal
+            echo "Paste SECRETS_ENCRYPTION_KEY from 1Password (vault Tekton, item key-tekton-00)."
+            on_server -t "$server" remote_verify_key
             ;;
         copy | copy-live)
             [ -n "$server" ] && [ -n "${3:-}" ] || die "usage: $0 $cmd <server> <NAME> | pbcopy"
@@ -198,19 +268,6 @@ main() {
                 on_server "$server" remote_live_value "$3"
             fi
             ;;
-        verify-key)
-            [ -n "$server" ] || die "usage: $0 verify-key <server>"
-            local ref ours live
-            ref=$(op_ref SECRETS_ENCRYPTION_KEY)
-            [ -n "$ref" ] || die "no SECRETS_ENCRYPTION_KEY reference in $TEMPLATE"
-            ours=$(op read --no-newline "$ref" | sha256)
-            live=$(on_server "$server" remote_live_value SECRETS_ENCRYPTION_KEY | sha256)
-            if [ "$ours" = "$live" ]; then
-                echo "OK: 1Password's SECRETS_ENCRYPTION_KEY is the key the dashboard uses."
-            else
-                die "MISMATCH: 1Password's SECRETS_ENCRYPTION_KEY is not the key the dashboard uses. Do not delete anything on the server; fix the 1Password value (copy-live) and verify again."
-            fi
-            ;;
         check)
             [ -n "$server" ] || die "usage: $0 check <server> [--unit]"
             local problems
@@ -218,9 +275,9 @@ main() {
             if [ -n "$problems" ]; then
                 {
                     echo "Dashboard secrets are not set up correctly:"
-                    sed 's/^/  /' <<< "$problems"
-                    echo "Push the secrets from 1Password (repo root on your machine):"
-                    echo "  $(push_command "$server")"
+                    while IFS= read -r line; do echo "  $line"; done <<< "$problems"
+                    echo "To set the secrets from 1Password (repo root on your machine):"
+                    echo "  $(set_command "$server")"
                     echo "See docs/deployment-guide.md, \"Dashboard secrets\"."
                 } >&2
                 exit 1
@@ -234,7 +291,7 @@ main() {
             [ -z "$missing" ] || die "$server has no value for: $missing"
             ;;
         *)
-            sed -n '3,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+            sed -n '3,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
             exit 1
             ;;
     esac

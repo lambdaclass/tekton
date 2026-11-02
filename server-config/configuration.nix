@@ -162,9 +162,9 @@
       Restart = "always";
       RestartSec = 5;
       # secrets.env holds SECRETS_ENCRYPTION_KEY, JWT_SECRET and
-      # GITHUB_CLIENT_SECRET. It lives on tmpfs, pushed by hand from 1Password
+      # GITHUB_CLIENT_SECRET. It lives on tmpfs, set by hand from 1Password
       # (see docs/deployment-guide.md), so it is gone after a reboot and the
-      # unit refuses to start until it is pushed again. Not a RuntimeDirectory:
+      # unit refuses to start until it is set again. Not a RuntimeDirectory:
       # systemd would delete it on every stop, and deploys stop the service.
       EnvironmentFile = [
         "/var/secrets/dashboard.env"

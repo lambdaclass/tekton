@@ -82,14 +82,15 @@ impl Config {
 }
 
 /// The secrets that must stay off persistent disk come from
-/// `/run/dashboard-secrets/secrets.env`, pushed from 1Password; see
+/// `/run/dashboard-secrets/secrets.env`, set from 1Password; see
 /// docs/deployment-guide.md.
 fn required_secret(name: &str) -> anyhow::Result<String> {
     match env::var(name) {
         Ok(v) if !v.trim().is_empty() => Ok(v),
         _ => bail!(
             "{name} is not set. On the server it comes from \
-             /run/dashboard-secrets/secrets.env (pushed from 1Password; see the \
+             /run/dashboard-secrets/secrets.env (set from 1Password with \
+             server-config/dashboard-secrets.sh set; see the \
              deployment guide); locally, add it to dashboard/backend/.env"
         ),
     }
