@@ -11,6 +11,7 @@ mod models;
 mod policies;
 mod previews;
 mod public_config;
+mod repo_sync;
 mod secrets;
 mod sentry;
 mod sentry_admin;
@@ -244,6 +245,9 @@ async fn main() -> anyhow::Result<()> {
             "/internal/preview-logs/{slug}",
             get(ws::internal_preview_logs),
         );
+
+    // Strip GitHub tokens left in agent remotes by older versions (best effort, background)
+    tokio::spawn(repo_sync::scrub_agent_remotes());
 
     // Recover tasks that were in-progress before the server restarted
     tasks::recover_interrupted_tasks(

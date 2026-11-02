@@ -14,6 +14,7 @@ use crate::models::{
     TaskAction, TaskLog, TaskMessage, UpdateTaskNameRequest,
 };
 use crate::policies;
+use crate::repo_sync;
 use crate::secrets;
 use crate::settings;
 use crate::shell;
@@ -412,17 +413,14 @@ pub(crate) async fn spawn_task_internal(
 
     let git_id = get_git_identity(&db, &created_by).await?;
 
-    // Intake sources with auto_create_pr off never get a preview, so don't advertise one.
-    if intake_auto_create_pr(&db, &id).await? != Some(false) {
-        let preview_slug = format!("t-{short_id}");
-        let preview_url = format!("https://{preview_slug}.{}", config.preview_domain);
-        sqlx::query("UPDATE tasks SET preview_slug = $1, preview_url = $2 WHERE id = $3")
-            .bind(&preview_slug)
-            .bind(&preview_url)
-            .bind(&id)
-            .execute(&db)
-            .await?;
-    }
+    let preview_slug = format!("t-{short_id}");
+    let preview_url = format!("https://{preview_slug}.{}", config.preview_domain);
+    sqlx::query("UPDATE tasks SET preview_slug = $1, preview_url = $2 WHERE id = $3")
+        .bind(&preview_slug)
+        .bind(&preview_url)
+        .bind(&id)
+        .execute(&db)
+        .await?;
 
     let (tx, _) = broadcast::channel(1024);
     task_channels.insert(id.clone(), tx.clone());
@@ -740,17 +738,13 @@ async fn run_task_pipeline(
         &format!("[STEP] Cloning {repo} and creating branch {branch_name}..."),
     );
 
-    let clone_url = format!(
-        "https://x-access-token:{}@github.com/{repo}.git",
-        git_id.token
-    );
-
+    repo_sync::stage_clone_bundle(&agent_name, repo, &git_id.token, base_branch, None).await?;
     let escaped_name = git_id.name.replace('\'', "'\\''");
     let escaped_email = git_id.email.replace('\'', "'\\''");
     let clone_cmd = format!(
-        "cd /home/agent && git clone --branch {base_branch} --single-branch '{clone_url}' repo && \
-         cd repo && git checkout -b '{branch_name}' && \
-         git config user.name '{escaped_name}' && git config user.email '{escaped_email}'"
+        "{} && git checkout -b '{branch_name}' && \
+         git config user.name '{escaped_name}' && git config user.email '{escaped_email}'",
+        repo_sync::clone_cmd(repo, base_branch)
     );
     shell::agent_exec(&agent_name, &clone_cmd, tx.clone()).await?;
     update_task_field(db, task_id, "branch_name", &branch_name).await?;
@@ -772,12 +766,9 @@ async fn run_task_pipeline(
         &format!("[STEP] Pushed branch '{branch_name}' to GitHub"),
     );
 
-    let auto_create_pr = intake_auto_create_pr(db, task_id).await?;
-    let deliver = auto_create_pr != Some(false);
-
     // Prewarm preview: create it on the feature branch so it's already on the right
     // branch when the agent finishes. Runs in background while Claude works.
-    if deliver {
+    {
         let config2 = config.clone();
         let repo2 = repo.to_string();
         let branch2 = branch_name.clone();
@@ -826,15 +817,17 @@ async fn run_task_pipeline(
     }
 
     // Step 3: Copy images and run Claude (streaming)
-    let mut effective_prompt =
-        augment_prompt_with_images(config, &agent_name, image_url_json, prompt, &tx).await?;
+    let mut effective_prompt = format!(
+        "{DELIVERY_NOTE}\n\n{}",
+        augment_prompt_with_images(config, &agent_name, image_url_json, prompt, &tx).await?
+    );
 
     // Inject policy constraints into the prompt so Claude knows its boundaries
     if let Some(ref pol) = policy {
         let mut constraints = Vec::new();
         if !pol.protected_branches.is_empty() {
             constraints.push(format!(
-                "PROTECTED BRANCHES (do NOT push directly to these): {}",
+                "PROTECTED BRANCHES (do NOT target these): {}",
                 pol.protected_branches.join(", ")
             ));
         }
@@ -946,12 +939,10 @@ async fn run_task_pipeline(
 
     // Step 3b: Commit any changes (if Claude asked a question and made none, that's fine —
     // the user will see the question in chat and respond via the follow-up loop)
-    if deliver {
-        let _ = commit_changes_in_agent(&agent_name, prompt, tx.clone()).await?;
-    }
+    let _ = commit_changes_in_agent(&agent_name, prompt, tx.clone()).await?;
 
     // Step 3c: Push changes and update preview
-    let mut preview_created = deliver;
+    let mut preview_created = true;
     let mut branch_pushed = false;
     let outcome = push_and_preview(
         ctx,
@@ -962,7 +953,7 @@ async fn run_task_pipeline(
         &tx,
     )
     .await?;
-    if outcome.branch_has_commits() {
+    if outcome == PushOutcome::Pushed {
         save_system_message(db, task_id, "Changes pushed and preview updated ✓").await?;
         maybe_auto_open_pr(ctx, created_by, &tx).await;
     }
@@ -1703,9 +1694,7 @@ async fn follow_up_loop(
         }
         increment_token_usage(db, task_id, &result.usage).await;
 
-        if should_deliver(db, task_id).await? {
-            let _ = commit_changes_in_agent(agent_name, &combined_parts[0], tx.clone()).await?;
-        }
+        let _ = commit_changes_in_agent(agent_name, &combined_parts[0], tx.clone()).await?;
 
         // Push and update preview
         let outcome = push_and_preview(
@@ -1717,7 +1706,7 @@ async fn follow_up_loop(
             tx,
         )
         .await?;
-        if outcome.branch_has_commits() {
+        if outcome == PushOutcome::Pushed {
             save_system_message(db, task_id, "Changes pushed and preview updated ✓").await?;
             maybe_auto_open_pr(ctx, created_by, tx).await;
         }
@@ -1728,9 +1717,14 @@ async fn follow_up_loop(
     }
 }
 
+/// Agents have no GitHub credentials; Tekton commits and pushes their work.
+const DELIVERY_NOTE: &str = "Note: Tekton commits and pushes your changes to the task branch \
+     when you finish. Do not run `git push` or open pull requests yourself; this environment \
+     has no GitHub credentials.";
+
 /// Build a follow-up prompt that includes the original task context and conversation history.
 fn build_followup_prompt(original_prompt: &str, history: &[String], new_message: &str) -> String {
-    let mut prompt = format!("ORIGINAL TASK:\n{original_prompt}\n\n");
+    let mut prompt = format!("{DELIVERY_NOTE}\n\nORIGINAL TASK:\n{original_prompt}\n\n");
 
     if !history.is_empty() {
         prompt.push_str("PREVIOUS FOLLOW-UP MESSAGES (already addressed):\n");
@@ -1951,7 +1945,7 @@ async fn github_create_commit(
 }
 
 /// `None` for manual tasks; `Some(auto_create_pr)` for intake tasks. An intake task whose
-/// source was deleted resolves to `Some(false)` so it never starts pushing.
+/// source was deleted resolves to `Some(false)` so it never auto-opens a PR.
 fn resolve_auto_create_pr(source_type: Option<String>, source_flag: Option<bool>) -> Option<bool> {
     match source_type {
         Some(t) if t.starts_with("intake_") => Some(source_flag.unwrap_or(false)),
@@ -1972,32 +1966,30 @@ async fn intake_auto_create_pr(db: &PgPool, task_id: &str) -> Result<Option<bool
     .and_then(|(source_type, flag)| resolve_auto_create_pr(source_type, flag)))
 }
 
-/// Whether the pipeline commits, pushes and previews Claude's changes for this task.
-async fn should_deliver(db: &PgPool, task_id: &str) -> Result<bool, AppError> {
-    Ok(intake_auto_create_pr(db, task_id).await? != Some(false))
-}
-
 /// Sync the agent's local repo to match the remote branch after an API push.
-/// Uses explicit refspec because the repo is cloned with --single-branch.
-async fn sync_agent_to_remote(agent_name: &str, branch_name: &str) -> Result<(), AppError> {
-    let escaped = branch_name.replace('\'', "'\\''");
-    let cmd = format!(
-        "cd /home/agent/repo && git fetch origin '{escaped}:refs/remotes/origin/{escaped}' && git reset --hard 'origin/{escaped}'"
-    );
-    shell::agent_exec_capture(agent_name, &cmd).await?;
+async fn sync_agent_to_remote(
+    agent_name: &str,
+    repo: &str,
+    token: &str,
+    branch_name: &str,
+) -> Result<(), AppError> {
+    repo_sync::sync_branch(agent_name, repo, token, branch_name).await?;
+    shell::agent_exec_capture(agent_name, &repo_sync::reset_to_origin_cmd(branch_name)).await?;
     Ok(())
 }
 
 /// Fetch the task branch from GitHub into the agent repo and return its head commit,
 /// or `None` if it couldn't be fetched (e.g. the branch doesn't exist yet).
-async fn fetch_remote_branch(agent_name: &str, branch_name: &str) -> Option<String> {
-    let escaped = branch_name.replace('\'', "'\\''");
-    let cmd = format!(
-        "cd /home/agent/repo && git fetch -q origin '+{escaped}:refs/remotes/origin/{escaped}' && git rev-parse 'refs/remotes/origin/{escaped}'"
-    );
-    let output = shell::agent_exec_capture(agent_name, &cmd).await.ok()?;
-    let oid = output.trim();
-    (!oid.is_empty()).then(|| oid.to_string())
+async fn fetch_remote_branch(
+    agent_name: &str,
+    repo: &str,
+    token: &str,
+    branch_name: &str,
+) -> Option<String> {
+    repo_sync::sync_branch(agent_name, repo, token, branch_name)
+        .await
+        .inspect_err(|e| tracing::warn!("Could not fetch branch '{branch_name}': {e}"))
+        .ok()
 }
 
 /// Rebase the agent's local branch onto `remote_head` unless it already contains it, and
@@ -2031,36 +2023,10 @@ async fn rebase_onto_remote_head(agent_name: &str, remote_head: &str) -> Result<
     Ok(true)
 }
 
-/// Whether the fetched task branch has commits that aren't on the base branch.
-async fn remote_branch_ahead_of_base(
-    agent_name: &str,
-    branch_name: &str,
-    base_branch: &str,
-) -> bool {
-    let cmd = format!(
-        "cd /home/agent/repo && git rev-list --count 'origin/{base_branch}..refs/remotes/origin/{branch_name}'"
-    );
-    shell::agent_exec_capture(agent_name, &cmd)
-        .await
-        .ok()
-        .and_then(|out| out.trim().parse::<u64>().ok())
-        .is_some_and(|n| n > 0)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PushOutcome {
-    /// The task's intake source has auto_create_pr off; delivery is left to the agent.
-    Disabled,
     NoChanges,
     Pushed,
-    /// Nothing left to push because the agent already pushed its commits to the branch.
-    AgentPushed,
-}
-
-impl PushOutcome {
-    fn branch_has_commits(self) -> bool {
-        matches!(self, PushOutcome::Pushed | PushOutcome::AgentPushed)
-    }
 }
 
 async fn push_and_preview(
@@ -2080,19 +2046,9 @@ async fn push_and_preview(
         ..
     } = ctx;
 
-    if !should_deliver(db, task_id).await? {
-        log_and_send(
-            db,
-            task_id,
-            tx,
-            "[STEP] Auto-push disabled for this intake source; leaving changes to the agent.",
-        );
-        return Ok(PushOutcome::Disabled);
-    }
-
-    // Diff against the branch as it is on GitHub right now: the agent may have pushed to it
-    // itself, and a stale ref makes createCommitOnBranch fail with STALE_DATA.
-    let remote_head = fetch_remote_branch(agent_name, branch_name).await;
+    // Diff against the branch as it is on GitHub right now: someone else may have pushed to
+    // it, and a stale ref makes createCommitOnBranch fail with STALE_DATA.
+    let remote_head = fetch_remote_branch(agent_name, repo, &git_id.token, branch_name).await;
     if let Some(oid) = &remote_head {
         if rebase_onto_remote_head(agent_name, oid).await? {
             log_and_send(
@@ -2115,20 +2071,6 @@ async fn push_and_preview(
     let file_changes = collect_file_changes(agent_name, &base_ref).await?;
 
     if file_changes.additions.is_empty() && file_changes.deletions.is_empty() {
-        if !*branch_pushed
-            && remote_head.is_some()
-            && remote_branch_ahead_of_base(agent_name, branch_name, base_branch).await
-        {
-            log_and_send(
-                db,
-                task_id,
-                tx,
-                "[STEP] The agent already pushed its changes to the branch.",
-            );
-            *branch_pushed = true;
-            update_task_preview(ctx, branch_name, preview_created, tx).await?;
-            return Ok(PushOutcome::AgentPushed);
-        }
         log_and_send(db, task_id, tx, "[WARN] No file changes to push.");
         return Ok(PushOutcome::NoChanges);
     }
@@ -2205,7 +2147,7 @@ async fn push_and_preview(
     );
 
     // Sync local repo to match the API-created commit
-    sync_agent_to_remote(agent_name, branch_name).await?;
+    sync_agent_to_remote(agent_name, repo, &git_id.token, branch_name).await?;
     *branch_pushed = true;
 
     update_task_preview(ctx, branch_name, preview_created, tx).await?;
@@ -2937,7 +2879,7 @@ async fn run_reopen_pipeline(
         task_id,
         short_id,
         repo,
-        base_branch: _,
+        base_branch,
         git_id,
     } = ctx;
     // Check if the previous agent container is still alive (e.g. server crashed mid-run).
@@ -2994,17 +2936,13 @@ async fn run_reopen_pipeline(
             &format!("[STEP] Cloning {repo} and checking out existing branch {branch_name}..."),
         );
 
-        let clone_url = format!(
-            "https://x-access-token:{}@github.com/{repo}.git",
-            git_id.token
-        );
-
+        repo_sync::stage_clone_bundle(&name, repo, &git_id.token, branch_name, Some(base_branch))
+            .await?;
         let escaped_name = git_id.name.replace('\'', "'\\''");
         let escaped_email = git_id.email.replace('\'', "'\\''");
         let clone_cmd = format!(
-            "cd /home/agent && git clone '{clone_url}' repo && \
-             cd repo && git checkout '{branch_name}' && \
-             git config user.name '{escaped_name}' && git config user.email '{escaped_email}'"
+            "{} && git config user.name '{escaped_name}' && git config user.email '{escaped_email}'",
+            repo_sync::clone_cmd(repo, branch_name)
         );
         shell::agent_exec(&name, &clone_cmd, tx.clone()).await?;
 
@@ -3116,17 +3054,10 @@ async fn recover_to_followup(
         &format!("[STEP] Reconnected to existing agent container '{agent_name}'"),
     );
 
-    // Refresh the git remote URL with a fresh token so pushes/fetches work
-    let clone_url = format!(
-        "https://x-access-token:{}@github.com/{repo}.git",
-        ctx.git_id.token
-    );
-    let remote_cmd = format!(
-        "cd /home/agent/repo && git remote set-url origin '{}'",
-        clone_url.replace('\'', "'\\''")
-    );
+    // Containers from before tokens left the agents may still carry one in their remote.
+    let remote_cmd = repo_sync::set_plain_remote_cmd(repo);
     if let Err(e) = shell::agent_exec_capture(&agent_name, &remote_cmd).await {
-        tracing::warn!("Failed to refresh git remote URL: {e}");
+        tracing::warn!("Failed to reset git remote URL: {e}");
     }
 
     // Load effective policy for enforcement during follow-ups
@@ -3965,7 +3896,7 @@ mod tests {
             resolve_auto_create_pr(Some("intake_github".into()), Some(false)),
             Some(false)
         );
-        // Source deleted: never start pushing
+        // Source deleted: never auto-open a PR
         assert_eq!(
             resolve_auto_create_pr(Some("intake_github".into()), None),
             Some(false)
