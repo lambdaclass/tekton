@@ -50,6 +50,9 @@ struct PipelineCtx<'a> {
     repo: &'a str,
     base_branch: &'a str,
     git_id: &'a GitIdentity,
+    /// The user the pipeline runs as: the task creator, the reopening user, or an intake
+    /// source's run_as_user. `git_id` belongs to this user.
+    created_by: &'a str,
 }
 
 #[derive(Clone)]
@@ -450,8 +453,9 @@ pub(crate) async fn spawn_task_internal(
             repo: &repo,
             base_branch: &base_branch,
             git_id: &git_id,
+            created_by: &created_by,
         };
-        let result = run_task_pipeline(&ctx, &prompt, None, None, &created_by, tx.clone()).await;
+        let result = run_task_pipeline(&ctx, &prompt, None, None, tx.clone()).await;
 
         if let Err(e) = &result {
             let _ = update_task_status(&db, &task_id, "failed", Some(&e.to_string())).await;
@@ -611,13 +615,13 @@ pub async fn create_task(
             repo: &repo,
             base_branch: &base,
             git_id: &git_id,
+            created_by: &created_by,
         };
         let result = run_task_pipeline(
             &ctx,
             &prompt,
             image_url_json2.as_deref(),
             custom_branch,
-            &created_by,
             tx.clone(),
         )
         .await;
@@ -654,7 +658,6 @@ async fn run_task_pipeline(
     prompt: &str,
     image_url_json: Option<&str>,
     custom_branch_name: Option<String>,
-    created_by: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
     let &PipelineCtx {
@@ -665,6 +668,7 @@ async fn run_task_pipeline(
         repo,
         base_branch,
         git_id,
+        created_by,
     } = ctx;
     // Generate a short name for the task using Claude
     let task_name =
@@ -887,9 +891,7 @@ async fn run_task_pipeline(
     }
     log_and_send(db, task_id, &tx, "[STEP] Running Claude...");
     let result = match run_claude_streaming(
-        db,
-        &config.secrets_encryption_key,
-        created_by,
+        ctx,
         &agent_name,
         &effective_prompt,
         tx.clone(),
@@ -969,7 +971,7 @@ async fn run_task_pipeline(
     .await?;
     if outcome == PushOutcome::Pushed {
         save_system_message(db, task_id, "Changes pushed and preview updated ✓").await?;
-        maybe_auto_open_pr(ctx, created_by, &tx).await;
+        maybe_auto_open_pr(ctx, &tx).await;
     }
 
     // Step 4: Follow-up loop
@@ -979,7 +981,6 @@ async fn run_task_pipeline(
         &branch_name,
         &mut branch_pushed,
         &mut preview_created,
-        created_by,
         &tx,
         0,
     )
@@ -1015,73 +1016,68 @@ async fn run_task_pipeline(
 }
 
 /// Build the shell export fragment that sets AI credentials for a user.
-/// Returns (env_export_string, model_flag) where model_flag is always `""`.
-/// Model selection uses ANTHROPIC_MODEL env var rather than --model flag to
-/// avoid the Claude CLI's client-side validation against Anthropic-only names.
+/// Returns (env_export_string, effective_model). The model is `Some` for OpenRouter, which
+/// selects it through ANTHROPIC_MODEL (not --model, which the Claude CLI validates against
+/// Anthropic-only names), and `None` for Anthropic keys and OAuth, where the CLI default applies.
 async fn build_claude_auth_env(
     db: &PgPool,
     encryption_key: &str,
     created_by: &str,
-) -> Result<(String, String), AppError> {
-    match settings::get_user_ai_config(db, encryption_key, created_by).await? {
-        Some(cfg) if cfg.provider == "openrouter" => {
+) -> Result<(String, Option<String>), AppError> {
+    let cfg = match settings::get_user_ai_config(db, encryption_key, created_by).await? {
+        Some(cfg) => cfg,
+        // Fallback to the global admin-configured key
+        None => settings::get_global_ai_config(db, encryption_key)
+            .await?
+            .ok_or_else(|| {
+                AppError::Internal(
+                    "No AI provider configured. Go to Settings → AI Provider to connect your account, or ask an admin to set up a global API key."
+                        .into(),
+                )
+            })?,
+    };
+    Ok(match cfg.provider.as_str() {
+        "openrouter" => {
             let model = cfg
                 .model
                 .as_deref()
-                .unwrap_or("anthropic/claude-sonnet-4.6");
-            Ok((
+                .unwrap_or(OPENROUTER_DEFAULT_MODEL)
+                .to_string();
+            (
                 format!(
                     "export ANTHROPIC_BASE_URL='https://openrouter.ai/api' ANTHROPIC_AUTH_TOKEN='{}' ANTHROPIC_API_KEY='' ANTHROPIC_MODEL='{}'",
                     cfg.api_key, model
                 ),
-                String::new(),
-            ))
+                Some(model),
+            )
         }
-        Some(cfg) if cfg.provider == "anthropic-oauth" => Ok((
+        "anthropic-oauth" => (
             format!(
                 "export CLAUDE_CODE_OAUTH_TOKEN='{}' ANTHROPIC_API_KEY=''",
                 cfg.api_key
             ),
-            String::new(),
-        )),
-        Some(cfg) => Ok((
-            format!("export ANTHROPIC_API_KEY='{}'", cfg.api_key),
-            String::new(),
-        )),
-        None => {
-            // Fallback to the global admin-configured key
-            match settings::get_global_ai_config(db, encryption_key).await? {
-                Some(cfg) if cfg.provider == "openrouter" => {
-                    let model = cfg
-                        .model
-                        .as_deref()
-                        .unwrap_or("anthropic/claude-sonnet-4.6");
-                    Ok((
-                        format!(
-                            "export ANTHROPIC_BASE_URL='https://openrouter.ai/api' ANTHROPIC_AUTH_TOKEN='{}' ANTHROPIC_API_KEY='' ANTHROPIC_MODEL='{}'",
-                            cfg.api_key, model
-                        ),
-                        String::new(),
-                    ))
-                }
-                Some(cfg) if cfg.provider == "anthropic-oauth" => Ok((
-                    format!(
-                "export CLAUDE_CODE_OAUTH_TOKEN='{}' ANTHROPIC_API_KEY=''",
-                cfg.api_key
-            ),
-                    String::new(),
-                )),
-                Some(cfg) => Ok((
-                    format!("export ANTHROPIC_API_KEY='{}'", cfg.api_key),
-                    String::new(),
-                )),
-                None => Err(AppError::Internal(
-                    "No AI provider configured. Go to Settings → AI Provider to connect your account, or ask an admin to set up a global API key."
-                        .into(),
-                )),
-            }
-        }
+            None,
+        ),
+        _ => (format!("export ANTHROPIC_API_KEY='{}'", cfg.api_key), None),
+    })
+}
+
+const OPENROUTER_DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4.6";
+
+/// Resolve the credentials for a Claude run and record the model it will use on the task,
+/// for the PR footer. A NULL model means the Claude CLI default.
+async fn start_claude_run(ctx: &PipelineCtx<'_>) -> Result<String, AppError> {
+    let (auth_env, model) =
+        build_claude_auth_env(ctx.db, &ctx.config.secrets_encryption_key, ctx.created_by).await?;
+    if let Err(e) = sqlx::query("UPDATE tasks SET model = $1 WHERE id = $2")
+        .bind(&model)
+        .bind(ctx.task_id)
+        .execute(ctx.db)
+        .await
+    {
+        tracing::warn!("Could not record model for task {}: {e}", ctx.task_id);
     }
+    Ok(auth_env)
 }
 
 /// Generate a short task name from the prompt using Claude CLI.
@@ -1116,10 +1112,7 @@ async fn generate_task_name(
         "HOME=/tmp".to_string(),
     ];
     if cfg.provider == "openrouter" {
-        let model = cfg
-            .model
-            .as_deref()
-            .unwrap_or("anthropic/claude-sonnet-4.6");
+        let model = cfg.model.as_deref().unwrap_or(OPENROUTER_DEFAULT_MODEL);
         env_args.push(format!("ANTHROPIC_AUTH_TOKEN={}", cfg.api_key));
         env_args.push("ANTHROPIC_BASE_URL=https://openrouter.ai/api".to_string());
         env_args.push(format!("ANTHROPIC_MODEL={model}"));
@@ -1226,40 +1219,36 @@ fn build_disallowed_tools_flag(policy: Option<&crate::models::RepoPolicy>) -> St
 }
 
 async fn run_claude_streaming(
-    db: &PgPool,
-    encryption_key: &str,
-    created_by: &str,
+    ctx: &PipelineCtx<'_>,
     agent_name: &str,
     prompt: &str,
     tx: broadcast::Sender<String>,
     policy: Option<&crate::models::RepoPolicy>,
 ) -> Result<shell::ClaudeStreamResult, AppError> {
-    let (auth_env, model_flag) = build_claude_auth_env(db, encryption_key, created_by).await?;
+    let auth_env = start_claude_run(ctx).await?;
     let disallowed_flag = build_disallowed_tools_flag(policy);
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
-        "source /home/agent/.env.sh 2>/dev/null ; {auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose {model_flag} {disallowed_flag} -p '{escaped_prompt}'"
+        "source /home/agent/.env.sh 2>/dev/null ; {auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose {disallowed_flag} -p '{escaped_prompt}'"
     );
     shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
 }
 
 /// Run Claude with --continue to maintain conversation context for follow-ups.
 async fn run_claude_continue(
-    db: &PgPool,
-    encryption_key: &str,
-    created_by: &str,
+    ctx: &PipelineCtx<'_>,
     agent_name: &str,
     prompt: &str,
     tx: broadcast::Sender<String>,
     policy: Option<&crate::models::RepoPolicy>,
 ) -> Result<shell::ClaudeStreamResult, AppError> {
-    let (auth_env, model_flag) = build_claude_auth_env(db, encryption_key, created_by).await?;
+    let auth_env = start_claude_run(ctx).await?;
     let disallowed_flag = build_disallowed_tools_flag(policy);
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
         "source /home/agent/.env.sh 2>/dev/null ; {auth_env} && cd /home/agent/repo && \
          claude --dangerously-skip-permissions --output-format stream-json --verbose \
-         {model_flag} {disallowed_flag} --continue -p '{escaped_prompt}'"
+         {disallowed_flag} --continue -p '{escaped_prompt}'"
     );
     shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
 }
@@ -1520,14 +1509,12 @@ enum FollowUpOutcome {
     Done,
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn follow_up_loop(
     ctx: &PipelineCtx<'_>,
     agent_name: &str,
     branch_name: &str,
     branch_pushed: &mut bool,
     preview_created: &mut bool,
-    created_by: &str,
     tx: &broadcast::Sender<String>,
     initial_last_seen_id: i64,
 ) -> Result<FollowUpOutcome, AppError> {
@@ -1539,6 +1526,7 @@ async fn follow_up_loop(
         repo,
         base_branch: _,
         git_id: _,
+        created_by: _,
     } = ctx;
     let mut last_seen_id: i64 = initial_last_seen_id;
 
@@ -1663,9 +1651,7 @@ async fn follow_up_loop(
         let _ = tx.send("[FOLLOWUP] Running Claude with follow-up...".to_string());
 
         let result = match run_claude_continue(
-            db,
-            &config.secrets_encryption_key,
-            created_by,
+            ctx,
             agent_name,
             &combined_prompt,
             tx.clone(),
@@ -1690,9 +1676,7 @@ async fn follow_up_loop(
                     &combined_prompt,
                 );
                 run_claude_streaming(
-                    db,
-                    &config.secrets_encryption_key,
-                    created_by,
+                    ctx,
                     agent_name,
                     &context_prompt,
                     tx.clone(),
@@ -1722,7 +1706,7 @@ async fn follow_up_loop(
         .await?;
         if outcome == PushOutcome::Pushed {
             save_system_message(db, task_id, "Changes pushed and preview updated ✓").await?;
-            maybe_auto_open_pr(ctx, created_by, tx).await;
+            maybe_auto_open_pr(ctx, tx).await;
         }
 
         update_task_status(db, task_id, "awaiting_followup", None).await?;
@@ -1864,6 +1848,40 @@ async fn create_github_branch(
     Ok(())
 }
 
+struct CommitMessage {
+    headline: String,
+    body: String,
+}
+
+/// Collapse a value into one line so it cannot add or break lines of a commit message.
+fn single_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Commit message for a task push: a headline from the prompt and provenance trailers.
+/// GitHub joins headline and body with a blank line, so the trailers form the final paragraph.
+fn commit_message(prompt: Option<&str>, task_id: &str, git_id: &GitIdentity) -> CommitMessage {
+    let headline = match prompt {
+        Some(p) => {
+            let truncated: String = single_line(p).chars().take(72).collect();
+            format!("Claude: {truncated}")
+        }
+        None => format!("Claude: {}", task_id.get(..6).unwrap_or(task_id)),
+    };
+    let email = single_line(&git_id.email.replace(['<', '>'], "")).replace(' ', "");
+    let name = match single_line(&git_id.name.replace(['<', '>'], "")) {
+        n if n.is_empty() => email.clone(),
+        n => n,
+    };
+    CommitMessage {
+        headline,
+        body: format!(
+            "Tekton-Task: {}\nCo-authored-by: {name} <{email}>",
+            single_line(task_id)
+        ),
+    }
+}
+
 /// Create a verified commit on a GitHub branch via the GraphQL API.
 /// Returns the new commit OID.
 async fn github_create_commit(
@@ -1872,7 +1890,7 @@ async fn github_create_commit(
     branch_name: &str,
     expected_head_oid: &str,
     file_changes: &FileChanges,
-    message: &str,
+    message: &CommitMessage,
 ) -> Result<String, AppError> {
     let client = reqwest::Client::new();
 
@@ -1909,7 +1927,7 @@ async fn github_create_commit(
                 "repositoryNameWithOwner": repo,
                 "branchName": branch_name,
             },
-            "message": { "headline": message },
+            "message": { "headline": message.headline, "body": message.body },
             "fileChanges": {
                 "additions": additions,
                 "deletions": deletions,
@@ -2133,15 +2151,12 @@ async fn push_and_preview(
     };
 
     // Build commit message from the task prompt
-    let commit_msg = sqlx::query_scalar::<_, String>("SELECT prompt FROM tasks WHERE id = $1")
+    let prompt = sqlx::query_scalar::<_, String>("SELECT prompt FROM tasks WHERE id = $1")
         .bind(task_id)
         .fetch_one(db)
         .await
-        .map(|p| {
-            let truncated: String = p.chars().take(72).collect();
-            format!("Claude: {truncated}")
-        })
-        .unwrap_or_else(|_| format!("Claude: {}", &task_id[..6]));
+        .ok();
+    let commit_msg = commit_message(prompt.as_deref(), task_id, git_id);
 
     // Create verified commit via GitHub GraphQL API
     let oid = github_create_commit(
@@ -2727,8 +2742,9 @@ pub async fn reopen_task(
             repo: &repo,
             base_branch: &base,
             git_id: &git_id,
+            created_by: &created_by,
         };
-        let result = run_reopen_pipeline(&ctx, &branch, has_preview, &created_by, tx.clone()).await;
+        let result = run_reopen_pipeline(&ctx, &branch, has_preview, tx.clone()).await;
 
         if let Err(e) = &result {
             let _ = update_task_status(&db, &task_id, "failed", Some(&e.to_string())).await;
@@ -2887,7 +2903,6 @@ async fn run_reopen_pipeline(
     ctx: &PipelineCtx<'_>,
     branch_name: &str,
     had_preview: bool,
-    created_by: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
     let &PipelineCtx {
@@ -2898,6 +2913,7 @@ async fn run_reopen_pipeline(
         repo,
         base_branch,
         git_id,
+        created_by: _,
     } = ctx;
     // Check if the previous agent container is still alive (e.g. server crashed mid-run).
     // Look up the last-known agent_name from the DB.
@@ -3011,7 +3027,6 @@ async fn run_reopen_pipeline(
         branch_name,
         &mut branch_pushed,
         &mut preview_created,
-        created_by,
         &tx,
         0,
     )
@@ -3036,7 +3051,6 @@ async fn recover_to_followup(
     ctx: &PipelineCtx<'_>,
     branch_name: &str,
     had_preview: bool,
-    created_by: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
     let &PipelineCtx {
@@ -3047,6 +3061,7 @@ async fn recover_to_followup(
         repo,
         base_branch: _,
         git_id: _,
+        created_by: _,
     } = ctx;
 
     // Look up agent_name from DB
@@ -3116,7 +3131,6 @@ async fn recover_to_followup(
         branch_name,
         &mut branch_pushed,
         &mut preview_created,
-        created_by,
         &tx,
         max_msg_id,
     )
@@ -3221,15 +3235,10 @@ pub async fn recover_interrupted_tasks(
                         repo: &repo,
                         base_branch: &base,
                         git_id: &git_id,
+                        created_by: &created_by,
                     };
-                    let result = recover_to_followup(
-                        &ctx,
-                        &branch_name,
-                        had_preview,
-                        &created_by,
-                        tx.clone(),
-                    )
-                    .await;
+                    let result =
+                        recover_to_followup(&ctx, &branch_name, had_preview, tx.clone()).await;
                     if let Err(e) = result {
                         let _ = update_task_status(
                             &db2,
@@ -3316,15 +3325,10 @@ pub async fn recover_interrupted_tasks(
                         repo: &repo,
                         base_branch: &base,
                         git_id: &git_id,
+                        created_by: &created_by,
                     };
-                    let result = recover_to_followup(
-                        &ctx,
-                        &branch_name,
-                        had_preview,
-                        &created_by,
-                        tx.clone(),
-                    )
-                    .await;
+                    let result =
+                        recover_to_followup(&ctx, &branch_name, had_preview, tx.clone()).await;
                     if let Err(e) = result {
                         let _ = update_task_status(
                             &db2,
@@ -3482,10 +3486,7 @@ async fn generate_pr_body(
         "HOME=/tmp".to_string(),
     ];
     if cfg.provider == "openrouter" {
-        let model = cfg
-            .model
-            .as_deref()
-            .unwrap_or("anthropic/claude-sonnet-4.6");
+        let model = cfg.model.as_deref().unwrap_or(OPENROUTER_DEFAULT_MODEL);
         env_args.push(format!("ANTHROPIC_AUTH_TOKEN={}", cfg.api_key));
         env_args.push("ANTHROPIC_BASE_URL=https://openrouter.ai/api".to_string());
         env_args.push(format!("ANTHROPIC_MODEL={model}"));
@@ -3545,14 +3546,7 @@ pub async fn create_pr(
 
     let git_id =
         get_git_identity(&state.db, &state.config.secrets_encryption_key, &user.0.sub).await?;
-    open_pr_for_task(
-        &state.db,
-        &state.config.secrets_encryption_key,
-        &git_id,
-        &task,
-        &user.0.sub,
-    )
-    .await?;
+    open_pr_for_task(&state.db, &state.config, &git_id, &task, &user.0.sub).await?;
 
     let updated_task = fetch_task(&state.db, &id)
         .await?
@@ -3630,11 +3624,125 @@ async fn find_open_pr_for_branch(
     Ok(prs.into_iter().next())
 }
 
+/// Marks the start of the provenance footer in a PR body.
+const PR_FOOTER_MARKER: &str = "<!-- tekton-provenance -->";
+
+/// Who asked for the task, as shown in the PR footer.
+#[derive(Debug, PartialEq)]
+enum PrRequester {
+    User(String),
+    Intake {
+        source: String,
+        issue_url: Option<String>,
+    },
+    Unknown,
+}
+
+async fn pr_requester(db: &PgPool, task: &Task) -> PrRequester {
+    if let Some(issue_id) = task.intake_issue_id {
+        let row = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT s.name, i.external_url FROM intake_issues i \
+             JOIN intake_sources s ON s.id = i.source_id WHERE i.id = $1",
+        )
+        .bind(issue_id)
+        .fetch_optional(db)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("Could not load intake issue {issue_id} for PR footer: {e}");
+            None
+        });
+        let (source, issue_url) = row.unwrap_or_else(|| ("intake".to_string(), None));
+        return PrRequester::Intake { source, issue_url };
+    }
+    match &task.created_by {
+        Some(login) => PrRequester::User(login.clone()),
+        None => PrRequester::Unknown,
+    }
+}
+
+/// The model recorded for the task's latest Claude run, or None for the CLI default.
+async fn task_model(db: &PgPool, task_id: &str) -> Option<String> {
+    sqlx::query_scalar::<_, Option<String>>("SELECT model FROM tasks WHERE id = $1")
+        .bind(task_id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+}
+
+/// The dashboard's origin, taken from the OAuth redirect URI (which points at the dashboard).
+fn dashboard_origin(redirect_uri: &str) -> Option<String> {
+    let url = reqwest::Url::parse(redirect_uri).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let origin = url.origin();
+    origin.is_tuple().then(|| origin.ascii_serialization())
+}
+
+fn task_link(redirect_uri: &str, task_id: &str) -> Option<String> {
+    let id = urlencoding::encode(task_id);
+    dashboard_origin(redirect_uri).map(|origin| format!("{origin}/tasks/{id}"))
+}
+
+fn is_github_login(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 39
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && !s.starts_with('-')
+        && !s.ends_with('-')
+        && !s.contains("--")
+}
+
+/// One-line provenance footer for a PR body. Mentioning the requester pings them on GitHub.
+fn pr_footer(
+    requester: &PrRequester,
+    task_id: &str,
+    task_link: Option<&str>,
+    model: Option<&str>,
+) -> String {
+    let mut parts = Vec::new();
+    match requester {
+        PrRequester::User(login) if is_github_login(login) => {
+            parts.push(format!("Requested by @{login}"))
+        }
+        PrRequester::User(_) | PrRequester::Unknown => {}
+        PrRequester::Intake { source, issue_url } => {
+            let source = single_line(source).replace(['[', ']', '`', '<', '>', '@'], "");
+            let mut part = format!("Requested via intake source \"{source}\"");
+            if let Some(url) = issue_url
+                .as_deref()
+                .and_then(|u| reqwest::Url::parse(u).ok())
+                .filter(|u| u.scheme() == "https")
+            {
+                part.push_str(&format!(" ({})", url.as_str()));
+            }
+            parts.push(part);
+        }
+    }
+    let short_id = task_id.get(..6).unwrap_or(task_id);
+    parts.push(match task_link {
+        Some(link) => format!("Tekton task [{short_id}]({link})"),
+        None => format!("Tekton task `{short_id}`"),
+    });
+    if let Some(model) = model {
+        parts.push(format!("Model `{}`", single_line(model).replace('`', "")));
+    }
+    format!("{PR_FOOTER_MARKER}\n{}", parts.join(" · "))
+}
+
+/// Append the footer to a PR body. The body is built fresh on every attempt, so it never
+/// carries an earlier footer; text that merely contains the marker is kept as is.
+fn with_footer(body: &str, footer: &str) -> String {
+    format!("{}\n\n{footer}", body.trim_end())
+}
+
 /// Open a PR for the task's branch as `acting_user` and record it on the task. If GitHub
 /// reports that the branch already has a PR (e.g. the agent opened one), that PR is recorded.
 async fn open_pr_for_task(
     db: &PgPool,
-    encryption_key: &str,
+    config: &Config,
     git_id: &GitIdentity,
     task: &Task,
     acting_user: &str,
@@ -3654,17 +3762,32 @@ async fn open_pr_for_task(
         .collect::<String>();
 
     // Build PR body: gather context and ask Claude to write the description
-    let mut body = generate_pr_body(db, encryption_key, &git_id.token, task, acting_user)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!("Failed to generate PR body via Claude: {e}, using fallback");
-            format!("## Task\n\n{}", task.prompt)
-        });
+    let mut body = generate_pr_body(
+        db,
+        &config.secrets_encryption_key,
+        &git_id.token,
+        task,
+        acting_user,
+    )
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!("Failed to generate PR body via Claude: {e}, using fallback");
+        format!("## Task\n\n{}", task.prompt)
+    });
 
+    body.push_str("\n\n---");
     // Append preview URL if one exists for this task
     if let Some(ref url) = task.preview_url {
-        body.push_str(&format!("\n\n---\n\n🔗 **Preview:** {url}"));
+        body.push_str(&format!("\n\n🔗 **Preview:** {url}"));
     }
+
+    let footer = pr_footer(
+        &pr_requester(db, task).await,
+        &task.id,
+        task_link(&config.github_redirect_uri, &task.id).as_deref(),
+        task_model(db, &task.id).await.as_deref(),
+    );
+    let body = with_footer(&body, &footer);
 
     // Create PR via GitHub API
     let client = reqwest::Client::new();
@@ -3747,16 +3870,13 @@ async fn open_pr_for_task(
 
 /// For intake sources with auto_create_pr on, open the task's PR in the background once its
 /// branch has commits. Failures are reported on the task but never fail it.
-async fn maybe_auto_open_pr(
-    ctx: &PipelineCtx<'_>,
-    acting_user: &str,
-    tx: &broadcast::Sender<String>,
-) {
+async fn maybe_auto_open_pr(ctx: &PipelineCtx<'_>, tx: &broadcast::Sender<String>) {
     let &PipelineCtx {
         config,
         db,
         task_id,
         git_id,
+        created_by,
         ..
     } = ctx;
     match intake_auto_create_pr(db, task_id).await {
@@ -3777,13 +3897,13 @@ async fn maybe_auto_open_pr(
     };
 
     let db = db.clone();
-    let encryption_key = config.secrets_encryption_key.clone();
+    let config = config.clone();
     let git_id = git_id.clone();
-    let acting_user = acting_user.to_string();
+    let acting_user = created_by.to_string();
     let tx = tx.clone();
     tokio::spawn(async move {
         log_and_send(&db, &task.id, &tx, "[STEP] Opening pull request...");
-        match open_pr_for_task(&db, &encryption_key, &git_id, &task, &acting_user).await {
+        match open_pr_for_task(&db, &config, &git_id, &task, &acting_user).await {
             Ok((pr_url, _)) => {
                 log_and_send(
                     &db,
@@ -3900,6 +4020,179 @@ pub async fn get_task_logs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn git_id(name: &str, email: &str) -> GitIdentity {
+        GitIdentity {
+            token: "secret".into(),
+            name: name.into(),
+            email: email.into(),
+        }
+    }
+
+    #[test]
+    fn commit_message_has_trailers_as_final_paragraph() {
+        let msg = commit_message(
+            Some("Fix the login page"),
+            "abcdef123456",
+            &git_id("Ada Lovelace", "ada@example.com"),
+        );
+        assert_eq!(msg.headline, "Claude: Fix the login page");
+        assert_eq!(
+            msg.body,
+            "Tekton-Task: abcdef123456\nCo-authored-by: Ada Lovelace <ada@example.com>"
+        );
+        assert!(!msg.body.contains("\n\n"));
+        assert!(!msg.body.contains("secret"));
+    }
+
+    #[test]
+    fn commit_message_headline_is_one_truncated_line() {
+        let prompt = format!("line one\n\nCo-authored-by: x <x@y>\n{}", "a".repeat(200));
+        let msg = commit_message(Some(&prompt), "abcdef123456", &git_id("A", "a@b"));
+        assert!(!msg.headline.contains('\n'));
+        assert_eq!(msg.headline.chars().count(), "Claude: ".len() + 72);
+        assert!(msg.headline.starts_with("Claude: line one Co-authored-by"));
+
+        let msg = commit_message(None, "abcdef123456", &git_id("A", "a@b"));
+        assert_eq!(msg.headline, "Claude: abcdef");
+    }
+
+    #[test]
+    fn commit_message_sanitizes_identity() {
+        let msg = commit_message(
+            Some("x"),
+            "abcdef123456",
+            &git_id(
+                "Eve\nSigned-off-by: Mallory <m@x>",
+                "eve@x.com>\r\nFoo: bar",
+            ),
+        );
+        assert_eq!(msg.body.lines().count(), 2);
+        assert_eq!(
+            msg.body.lines().nth(1).unwrap(),
+            "Co-authored-by: Eve Signed-off-by: Mallory m@x <eve@x.comFoo:bar>"
+        );
+
+        let msg = commit_message(Some("x"), "abcdef123456", &git_id(" \n", "a@b.c"));
+        assert!(msg.body.ends_with("Co-authored-by: a@b.c <a@b.c>"));
+    }
+
+    #[test]
+    fn dashboard_origin_from_redirect_uri() {
+        assert_eq!(
+            dashboard_origin("https://tekton.example.com/api/auth/callback").as_deref(),
+            Some("https://tekton.example.com")
+        );
+        assert_eq!(
+            dashboard_origin("http://localhost:8080/api/auth/callback?x=1#y").as_deref(),
+            Some("http://localhost:8080")
+        );
+        assert_eq!(
+            dashboard_origin("https://tekton.example.com:443/cb").as_deref(),
+            Some("https://tekton.example.com")
+        );
+        assert_eq!(dashboard_origin("not a url"), None);
+        assert_eq!(dashboard_origin(""), None);
+        assert_eq!(dashboard_origin("javascript:alert(1)"), None);
+        assert_eq!(dashboard_origin("file:///etc/passwd"), None);
+        assert_eq!(
+            task_link("https://t.example.com/api/auth/callback", "abc-123").as_deref(),
+            Some("https://t.example.com/tasks/abc-123")
+        );
+        assert_eq!(task_link("nope", "abc"), None);
+    }
+
+    #[test]
+    fn pr_footer_variants() {
+        let id = "abcdef12-3456";
+        assert_eq!(
+            pr_footer(
+                &PrRequester::User("octo-cat".into()),
+                id,
+                Some("https://t.example.com/tasks/abcdef12-3456"),
+                Some("anthropic/claude-sonnet-4.6"),
+            ),
+            format!(
+                "{PR_FOOTER_MARKER}\nRequested by @octo-cat · \
+                 Tekton task [abcdef](https://t.example.com/tasks/abcdef12-3456) · \
+                 Model `anthropic/claude-sonnet-4.6`"
+            )
+        );
+        assert_eq!(
+            pr_footer(&PrRequester::User("bad login".into()), id, None, None),
+            format!("{PR_FOOTER_MARKER}\nTekton task `abcdef`")
+        );
+        assert_eq!(
+            pr_footer(
+                &PrRequester::Intake {
+                    source: "Bugs\n[x]".into(),
+                    issue_url: Some("https://github.com/o/r/issues/7".into()),
+                },
+                id,
+                None,
+                None,
+            ),
+            format!(
+                "{PR_FOOTER_MARKER}\nRequested via intake source \"Bugs x\" \
+                 (https://github.com/o/r/issues/7) · Tekton task `abcdef`"
+            )
+        );
+        let footer = pr_footer(
+            &PrRequester::Intake {
+                source: "S".into(),
+                issue_url: Some("javascript:alert(1)".into()),
+            },
+            id,
+            None,
+            None,
+        );
+        assert!(!footer.contains("javascript"));
+    }
+
+    #[test]
+    fn with_footer_keeps_body_intact() {
+        let footer = pr_footer(&PrRequester::Unknown, "abcdef", None, None);
+        assert_eq!(
+            with_footer("Body\n\n---\n", &footer),
+            format!("Body\n\n---\n\n{footer}")
+        );
+        let body = format!("Intro\n{PR_FOOTER_MARKER}\nmore text\n\n---\n\nPreview");
+        assert_eq!(with_footer(&body, &footer), format!("{body}\n\n{footer}"));
+    }
+
+    #[test]
+    fn github_login_validation() {
+        assert!(is_github_login("octo-cat"));
+        assert!(is_github_login("a1"));
+        for bad in ["", "-a", "a-", "a--b", "a b", "a@b", &"a".repeat(40)] {
+            assert!(!is_github_login(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn pr_footer_intake_cannot_ping_or_inject() {
+        let footer = pr_footer(
+            &PrRequester::Intake {
+                source: "@team".into(),
+                issue_url: Some("https://x.example/a<b>c".into()),
+            },
+            "abcdef",
+            None,
+            None,
+        );
+        assert!(!footer.contains('@'));
+        assert!(footer.contains("(https://x.example/a%3Cb%3Ec)"));
+        let footer = pr_footer(
+            &PrRequester::Intake {
+                source: "S".into(),
+                issue_url: Some("http://x.example/1".into()),
+            },
+            "abcdef",
+            None,
+            None,
+        );
+        assert!(!footer.contains("http://"));
+    }
 
     #[test]
     fn auto_create_pr_resolution() {

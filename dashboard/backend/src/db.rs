@@ -85,6 +85,8 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_url TEXT",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_number INTEGER",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS total_cost_usd DOUBLE PRECISION DEFAULT 0",
+        // Model of the latest Claude run (NULL: the Claude CLI default); not a `Task` field
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS model TEXT",
     ] {
         let _ = sqlx::query(col_sql).execute(pool).await;
     }
