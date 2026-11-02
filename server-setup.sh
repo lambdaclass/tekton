@@ -131,11 +131,11 @@ existing_dashboard_install() {
 
 # New secrets only on a fresh install: on an existing one, a new
 # SECRETS_ENCRYPTION_KEY would make every stored secret unreadable.
-DASHBOARD_SECRETS_PUSHED=""
+DASHBOARD_SECRETS_PRESENT=""
 if [[ -f "$DASHBOARD_SECRETS_FILE" ]]; then
     "$SERVER_CONFIG/dashboard-secrets.sh" check-file "$DASHBOARD_SECRETS_FILE" ||
         fatal "$DASHBOARD_SECRETS_FILE is incomplete. Set it again from 1Password, from the repo root on your machine: server-config/dashboard-secrets.sh set <server>"
-    DASHBOARD_SECRETS_PUSHED=1
+    DASHBOARD_SECRETS_PRESENT=1
 elif existing_dashboard_install && [[ -z "${ALLOW_NEW_DASHBOARD_SECRETS:-}" ]]; then
     error "This server already has a dashboard install, but $DASHBOARD_SECRETS_FILE is missing"
     error "(it is on tmpfs, so a reboot wipes it). Generating new secrets would lose every"
@@ -161,7 +161,7 @@ echo "Homepage URL:          https://dashboard.${DOMAIN}"
 echo "Authorization callback URL: https://dashboard.${DOMAIN}/api/auth/callback"
 echo ""
 prompt GITHUB_CLIENT_ID "GitHub OAuth App Client ID"
-if [[ -n "$DASHBOARD_SECRETS_PUSHED" ]]; then
+if [[ -n "$DASHBOARD_SECRETS_PRESENT" ]]; then
     success "Using the dashboard secrets already set in $DASHBOARD_SECRETS_FILE."
 else
     prompt_secret GITHUB_CLIENT_SECRET "GitHub OAuth App Client Secret"
@@ -327,7 +327,7 @@ fi
 # =============================================================================
 header "Step 3: Generate Secrets"
 
-if [[ -z "$DASHBOARD_SECRETS_PUSHED" ]]; then
+if [[ -z "$DASHBOARD_SECRETS_PRESENT" ]]; then
     info "Generating JWT secret and secrets encryption key..."
     JWT_SECRET=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
     SECRETS_ENCRYPTION_KEY=$(head -c 32 /dev/urandom | base64)
@@ -420,18 +420,20 @@ ENVEOF
 chmod 600 /var/secrets/dashboard.env
 success "dashboard.env written."
 
-if [[ -n "$DASHBOARD_SECRETS_PUSHED" ]]; then
+if [[ -n "$DASHBOARD_SECRETS_PRESENT" ]]; then
     success "$DASHBOARD_SECRETS_FILE already present, leaving it as is."
 else
     info "Writing $DASHBOARD_SECRETS_FILE (tmpfs)..."
     install -d -m 700 "$(dirname "$DASHBOARD_SECRETS_FILE")"
     (
+        # Only for sd_quote, the same quoting the set command writes.
+        source "$SERVER_CONFIG/dashboard-secrets.sh"
         umask 077
-        cat > "$DASHBOARD_SECRETS_FILE" << ENVEOF
-SECRETS_ENCRYPTION_KEY='${SECRETS_ENCRYPTION_KEY}'
-JWT_SECRET='${JWT_SECRET}'
-GITHUB_CLIENT_SECRET='${GITHUB_CLIENT_SECRET}'
-ENVEOF
+        {
+            printf 'SECRETS_ENCRYPTION_KEY=%s\n' "$(sd_quote "$SECRETS_ENCRYPTION_KEY")"
+            printf 'JWT_SECRET=%s\n' "$(sd_quote "$JWT_SECRET")"
+            printf 'GITHUB_CLIENT_SECRET=%s\n' "$(sd_quote "$GITHUB_CLIENT_SECRET")"
+        } > "$DASHBOARD_SECRETS_FILE"
     )
     DASHBOARD_SECRETS_GENERATED=1
     success "$DASHBOARD_SECRETS_FILE written."
