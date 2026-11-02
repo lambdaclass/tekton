@@ -119,30 +119,30 @@ test.describe.serial('Admin - User repo permissions modification', () => {
 });
 
 test.describe.serial('Admin - Users role change', () => {
-  test('change testmember role to viewer', async ({ adminPage: page }) => {
+  test('change testrolechange role to viewer', async ({ adminPage: page }) => {
     await page.goto('/admin');
 
-    const testmemberRow = page.locator('tr').filter({ hasText: 'testmember' });
-    const select = testmemberRow.locator('select');
+    const rolechangeRow = page.locator('tr').filter({ hasText: 'testrolechange' });
+    const select = rolechangeRow.locator('select');
     await select.selectOption('viewer');
 
     // Wait for the API call to complete and UI to update
     await expect(select).toHaveValue('viewer');
   });
 
-  test('verify testmember role persisted as viewer', async ({ adminPage: page }) => {
+  test('verify testrolechange role persisted as viewer', async ({ adminPage: page }) => {
     await page.goto('/admin');
 
-    const testmemberRow = page.locator('tr').filter({ hasText: 'testmember' });
-    const select = testmemberRow.locator('select');
+    const rolechangeRow = page.locator('tr').filter({ hasText: 'testrolechange' });
+    const select = rolechangeRow.locator('select');
     await expect(select).toHaveValue('viewer');
   });
 
-  test('restore testmember role to member', async ({ adminPage: page }) => {
+  test('restore testrolechange role to member', async ({ adminPage: page }) => {
     await page.goto('/admin');
 
-    const testmemberRow = page.locator('tr').filter({ hasText: 'testmember' });
-    const select = testmemberRow.locator('select');
+    const rolechangeRow = page.locator('tr').filter({ hasText: 'testrolechange' });
+    const select = rolechangeRow.locator('select');
     await select.selectOption('member');
 
     await expect(select).toHaveValue('member');

@@ -4,9 +4,12 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use axum_extra::extract::CookieJar;
+use dashmap::DashMap;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::Deserialize;
 use sqlx::PgPool;
+use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use crate::error::AppError;
 use crate::models::{Claims, GitHubTokenResponse, GitHubUserInfo, UserInfo};
@@ -26,6 +29,259 @@ fn extract_user_from_jar(jar: &CookieJar, state: &AppState) -> Option<Claims> {
         .map(|data| data.claims)
 }
 
+/// True when the backend runs with `TEST_MODE=true` (e2e suite only).
+pub fn test_mode_enabled() -> bool {
+    static TEST_MODE: LazyLock<bool> =
+        LazyLock::new(|| std::env::var("TEST_MODE").as_deref() == Ok("true"));
+    *TEST_MODE
+}
+
+// ── GitHub org membership ──
+
+/// How recent the last successful membership check must be for a request.
+#[derive(Clone, Copy)]
+struct MembershipFreshness {
+    /// Re-check with GitHub once the last successful check is older than this.
+    max_age_secs: i64,
+    /// When GitHub can't be reached, keep honoring a successful check this recent.
+    grace_secs: i64,
+}
+
+/// Any authenticated request.
+const AUTH_FRESHNESS: MembershipFreshness = MembershipFreshness {
+    max_age_secs: 10 * 60,
+    grace_secs: 60 * 60,
+};
+/// Member and admin actions.
+const PRIVILEGED_FRESHNESS: MembershipFreshness = MembershipFreshness {
+    max_age_secs: 2 * 60,
+    grace_secs: 10 * 60,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Membership {
+    Member,
+    NotMember,
+    TokenRevoked,
+}
+
+/// Maps the status of `GET /orgs/{org}/members/{login}` to an outcome. `None`
+/// means the answer says nothing definite (rate limit, outage, SSO, ...).
+fn membership_from_status(status: reqwest::StatusCode) -> Option<Membership> {
+    match status {
+        reqwest::StatusCode::NO_CONTENT => Some(Membership::Member),
+        // 302: requester isn't an org member, GitHub points to public_members.
+        reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::FOUND => Some(Membership::NotMember),
+        reqwest::StatusCode::UNAUTHORIZED => Some(Membership::TokenRevoked),
+        _ => None,
+    }
+}
+
+static MEMBERSHIP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("failed to build GitHub HTTP client")
+});
+
+/// Asks GitHub whether `login` is a member of `org`, using `token`. Any answer
+/// other than a definite yes/no/revoked is an `Err` and should be treated as
+/// transient.
+pub async fn check_org_membership(
+    token: &str,
+    org: &str,
+    login: &str,
+) -> Result<Membership, AppError> {
+    let resp = MEMBERSHIP_CLIENT
+        .get(format!("https://api.github.com/orgs/{org}/members/{login}"))
+        .header("User-Agent", "dashboard")
+        .bearer_auth(token)
+        .send()
+        .await?;
+    let status = resp.status();
+    membership_from_status(status).ok_or_else(|| {
+        AppError::Internal(format!(
+            "Unexpected status {status} from GitHub membership check"
+        ))
+    })
+}
+
+/// The stored GitHub token for `login`, or `None` when the user has none.
+/// The only place the extractors read the token from.
+pub async fn load_github_token(db: &PgPool, login: &str) -> Result<Option<String>, AppError> {
+    let token: Option<String> =
+        sqlx::query_scalar("SELECT github_token FROM users WHERE github_login = $1")
+            .bind(login)
+            .fetch_optional(db)
+            .await?;
+    Ok(token.filter(|t| !t.is_empty()))
+}
+
+// ── Extractors ──
+
+fn unauthorized(msg: &'static str) -> Response {
+    (StatusCode::UNAUTHORIZED, msg).into_response()
+}
+
+fn db_failure(e: impl Into<AppError>) -> Response {
+    e.into().into_response()
+}
+
+/// Seconds since the last successful membership check (`None` = never).
+const MEMBERSHIP_AGE_SQL: &str =
+    "EXTRACT(EPOCH FROM NOW() - membership_checked_at)::BIGINT AS membership_age";
+
+/// Decodes the session cookie and validates it against the `users` row, with
+/// one query: the user must exist and the session version must match. The
+/// returned claims carry the role from the DB, never the one in the JWT.
+async fn load_session(
+    parts: &mut Parts,
+    state: &AppState,
+) -> Result<(Claims, Option<i64>), Response> {
+    let jar = CookieJar::from_request_parts(parts, state)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())?;
+
+    let token = jar
+        .get(COOKIE_NAME)
+        .map(|c| c.value().to_string())
+        .ok_or_else(|| unauthorized("Not authenticated"))?;
+
+    let key = DecodingKey::from_secret(state.config.jwt_secret.as_bytes());
+    let mut claims = decode::<Claims>(&token, &key, &Validation::default())
+        .map_err(|_| unauthorized("Invalid session"))?
+        .claims;
+
+    let row: Option<(String, i32, Option<i64>)> = sqlx::query_as(&format!(
+        "SELECT role, session_version, {MEMBERSHIP_AGE_SQL} FROM users WHERE github_login = $1"
+    ))
+    .bind(&claims.sub)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(db_failure)?;
+
+    let Some((role, session_version, membership_age)) = row else {
+        return Err(unauthorized("Session no longer valid"));
+    };
+    if session_version != claims.sv {
+        return Err(unauthorized("Session no longer valid"));
+    }
+    claims.role = role;
+    Ok((claims, membership_age))
+}
+
+/// One in-flight membership re-check per user; concurrent requests wait for it
+/// and then see the fresh timestamp instead of each calling GitHub.
+static MEMBERSHIP_CHECKS: LazyLock<DashMap<String, Arc<tokio::sync::Mutex<()>>>> =
+    LazyLock::new(DashMap::new);
+
+/// Makes sure the user's org membership was confirmed within `freshness.max_age_secs`,
+/// re-checking with GitHub when it wasn't.
+async fn ensure_membership_fresh(
+    state: &AppState,
+    claims: &Claims,
+    membership_age: Option<i64>,
+    freshness: MembershipFreshness,
+) -> Result<(), Response> {
+    let is_fresh = |age: Option<i64>| age.is_some_and(|a| a <= freshness.max_age_secs);
+    // The e2e suite (TEST_MODE) mints sessions for seeded users with fake
+    // tokens; it already lets anyone mint any session, so skipping GitHub
+    // there costs nothing.
+    if is_fresh(membership_age) || test_mode_enabled() {
+        return Ok(());
+    }
+
+    let lock = MEMBERSHIP_CHECKS
+        .entry(claims.sub.clone())
+        .or_default()
+        .clone();
+    let _guard = lock.lock().await;
+
+    // Another request may have re-checked (or revoked the session) while we waited.
+    let row: Option<(i32, Option<i64>)> = sqlx::query_as(&format!(
+        "SELECT session_version, {MEMBERSHIP_AGE_SQL} FROM users WHERE github_login = $1"
+    ))
+    .bind(&claims.sub)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(db_failure)?;
+    let Some((session_version, membership_age)) = row else {
+        return Err(unauthorized("Session no longer valid"));
+    };
+    if session_version != claims.sv {
+        return Err(unauthorized("Session no longer valid"));
+    }
+    if is_fresh(membership_age) {
+        return Ok(());
+    }
+
+    let outcome = match load_github_token(&state.db, &claims.sub)
+        .await
+        .map_err(db_failure)?
+    {
+        Some(token) => check_org_membership(&token, &state.config.github_org, &claims.sub).await,
+        // No credential to verify membership with: the user must sign in again.
+        None => Ok(Membership::TokenRevoked),
+    };
+
+    match outcome {
+        Ok(Membership::Member) => {
+            sqlx::query("UPDATE users SET membership_checked_at = NOW() WHERE github_login = $1")
+                .bind(&claims.sub)
+                .execute(&state.db)
+                .await
+                .map_err(db_failure)?;
+            Ok(())
+        }
+        Ok(lost) => {
+            // Conditional on the version we validated, so racing requests bump once.
+            let bumped = sqlx::query(
+                "UPDATE users SET session_version = session_version + 1, updated_at = NOW()
+                 WHERE github_login = $1 AND session_version = $2",
+            )
+            .bind(&claims.sub)
+            .bind(claims.sv)
+            .execute(&state.db)
+            .await
+            .map_err(db_failure)?;
+            if bumped.rows_affected() > 0 {
+                let reason = match lost {
+                    Membership::NotMember => "not_org_member",
+                    _ => "github_token_revoked",
+                };
+                crate::audit::log_event(
+                    &state.db,
+                    "auth.session_revoked",
+                    &claims.sub,
+                    None,
+                    serde_json::json!({ "reason": reason }),
+                    None,
+                )
+                .await;
+            }
+            Err(unauthorized("GitHub access was revoked; sign in again"))
+        }
+        Err(e) => {
+            // Transient: never revoke on it. Honor a recent successful check.
+            if membership_age.is_some_and(|a| a < freshness.grace_secs) {
+                tracing::warn!(
+                    "Membership re-check for {} failed, using last check: {e}",
+                    claims.sub
+                );
+                Ok(())
+            } else {
+                tracing::warn!("Membership re-check for {} failed: {e}", claims.sub);
+                Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Could not verify GitHub organization membership; try again shortly",
+                )
+                    .into_response())
+            }
+        }
+    }
+}
+
 // ── Extractor: authenticated user ──
 
 pub struct AuthUser(pub Claims);
@@ -37,20 +293,9 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let jar = CookieJar::from_request_parts(parts, state)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())?;
-
-        let token = jar
-            .get(COOKIE_NAME)
-            .map(|c| c.value().to_string())
-            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "Not authenticated").into_response())?;
-
-        let key = DecodingKey::from_secret(state.config.jwt_secret.as_bytes());
-        let data = decode::<Claims>(&token, &key, &Validation::default())
-            .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid session").into_response())?;
-
-        Ok(AuthUser(data.claims))
+        let (claims, membership_age) = load_session(parts, state).await?;
+        ensure_membership_fresh(state, &claims, membership_age, AUTH_FRESHNESS).await?;
+        Ok(AuthUser(claims))
     }
 }
 
@@ -157,22 +402,32 @@ async fn complete_login(state: &AppState, code: &str) -> Result<Cookie<'static>,
         .json()
         .await?;
 
-    // Check org membership
-    let org_check = client
-        .get(format!(
-            "https://api.github.com/orgs/{}/members/{}",
-            state.config.github_org, user_info.login
+    let membership = check_org_membership(
+        &token_resp.access_token,
+        &state.config.github_org,
+        &user_info.login,
+    )
+    .await
+    .map_err(|e| {
+        tracing::warn!("Login membership check for {} failed: {e}", user_info.login);
+        AppError::Auth(format!(
+            "Could not verify membership in '{}' with GitHub; try again",
+            state.config.github_org
         ))
-        .header("User-Agent", "dashboard")
-        .bearer_auth(&token_resp.access_token)
-        .send()
-        .await?;
-
-    if org_check.status() != StatusCode::NO_CONTENT {
-        return Err(AppError::Auth(format!(
-            "User '{}' is not a member of the '{}' organization",
-            user_info.login, state.config.github_org
-        )));
+    })?;
+    match membership {
+        Membership::Member => {}
+        Membership::NotMember => {
+            return Err(AppError::Auth(format!(
+                "User '{}' is not a member of the '{}' organization",
+                user_info.login, state.config.github_org
+            )));
+        }
+        Membership::TokenRevoked => {
+            return Err(AppError::Auth(
+                "GitHub rejected the access token".to_string(),
+            ));
+        }
     }
 
     // Upsert into users table
@@ -185,12 +440,13 @@ async fn complete_login(state: &AppState, code: &str) -> Result<Cookie<'static>,
     let role_for_new_user = if user_count.0 == 0 { "admin" } else { "member" };
 
     sqlx::query(
-        "INSERT INTO users (github_login, name, email, github_token, role)
-         VALUES ($1, $2, $3, $4, $5)
+        "INSERT INTO users (github_login, name, email, github_token, role, membership_checked_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())
          ON CONFLICT(github_login) DO UPDATE SET
            name = EXCLUDED.name,
            email = EXCLUDED.email,
            github_token = EXCLUDED.github_token,
+           membership_checked_at = NOW(),
            updated_at = NOW()",
     )
     .bind(&user_info.login)
@@ -202,10 +458,12 @@ async fn complete_login(state: &AppState, code: &str) -> Result<Cookie<'static>,
     .await?;
 
     // Fetch the user's current role (preserved on conflict, so we read it back)
-    let (role,): (String,) = sqlx::query_as("SELECT role FROM users WHERE github_login = $1")
-        .bind(&user_info.login)
-        .fetch_one(&state.db)
-        .await?;
+    // and session version (the new JWT must match it)
+    let (role, sv): (String, i32) =
+        sqlx::query_as("SELECT role, session_version FROM users WHERE github_login = $1")
+            .bind(&user_info.login)
+            .fetch_one(&state.db)
+            .await?;
 
     // Issue JWT
     let exp = chrono::Utc::now().timestamp() as usize + JWT_EXPIRY_SECS;
@@ -214,6 +472,7 @@ async fn complete_login(state: &AppState, code: &str) -> Result<Cookie<'static>,
         name,
         role,
         exp,
+        sv,
     };
     let key = EncodingKey::from_secret(state.config.jwt_secret.as_bytes());
     let token = encode(&Header::default(), &claims, &key)
@@ -277,18 +536,38 @@ pub struct TestLoginRequest {
 
 /// POST /api/auth/test-login — only available when TEST_MODE=true.
 /// Accepts { "login": "testadmin", "role": "admin" } and returns a valid
-/// JWT cookie identical to what the real OAuth callback produces.
+/// JWT cookie identical to what the real OAuth callback produces. The user
+/// row is created if missing and given the requested role, since sessions are
+/// validated against it.
 pub async fn test_login(
     State(state): State<AppState>,
     jar: CookieJar,
     axum::Json(req): axum::Json<TestLoginRequest>,
 ) -> Result<(CookieJar, axum::Json<serde_json::Value>), AppError> {
+    if !matches!(req.role.as_str(), "admin" | "member" | "viewer") {
+        return Err(AppError::BadRequest(format!("Invalid role '{}'", req.role)));
+    }
+    let (sv,): (i32,) = sqlx::query_as(
+        "INSERT INTO users (github_login, name, github_token, role, membership_checked_at)
+         VALUES ($1, $1, '', $2, NOW())
+         ON CONFLICT(github_login) DO UPDATE SET
+           role = EXCLUDED.role,
+           membership_checked_at = NOW(),
+           updated_at = NOW()
+         RETURNING session_version",
+    )
+    .bind(&req.login)
+    .bind(&req.role)
+    .fetch_one(&state.db)
+    .await?;
+
     let exp = chrono::Utc::now().timestamp() as usize + JWT_EXPIRY_SECS;
     let claims = Claims {
         sub: req.login.clone(),
         name: req.login.clone(),
         role: req.role.clone(),
         exp,
+        sv,
     };
     let key = EncodingKey::from_secret(state.config.jwt_secret.as_bytes());
     let token = encode(&Header::default(), &claims, &key)
@@ -321,12 +600,13 @@ impl FromRequestParts<AppState> for AdminUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let AuthUser(claims) = AuthUser::from_request_parts(parts, state).await?;
+        let (claims, membership_age) = load_session(parts, state).await?;
 
         if claims.role != "admin" {
             return Err((StatusCode::FORBIDDEN, "Admin access required").into_response());
         }
 
+        ensure_membership_fresh(state, &claims, membership_age, PRIVILEGED_FRESHNESS).await?;
         Ok(AdminUser(claims))
     }
 }
@@ -342,12 +622,13 @@ impl FromRequestParts<AppState> for MemberUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let AuthUser(claims) = AuthUser::from_request_parts(parts, state).await?;
+        let (claims, membership_age) = load_session(parts, state).await?;
 
         if claims.role != "admin" && claims.role != "member" {
             return Err((StatusCode::FORBIDDEN, "Member access required").into_response());
         }
 
+        ensure_membership_fresh(state, &claims, membership_age, PRIVILEGED_FRESHNESS).await?;
         Ok(MemberUser(claims))
     }
 }
@@ -475,12 +756,18 @@ pub async fn set_user_role(
         )));
     }
 
-    let result =
-        sqlx::query("UPDATE users SET role = $1, updated_at = NOW() WHERE github_login = $2")
-            .bind(&req.role)
-            .bind(&login)
-            .execute(&state.db)
-            .await?;
+    // A real role change revokes the user's sessions (bumps session_version).
+    let result = sqlx::query(
+        "UPDATE users SET
+           session_version = session_version + CASE WHEN role = $1 THEN 0 ELSE 1 END,
+           role = $1,
+           updated_at = NOW()
+         WHERE github_login = $2",
+    )
+    .bind(&req.role)
+    .bind(&login)
+    .execute(&state.db)
+    .await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound(format!("User '{login}' not found")));
@@ -710,6 +997,55 @@ mod tests {
                 assert_state_cookie_cleared(&resp);
             }
         }
+    }
+
+    #[test]
+    fn membership_status_mapping() {
+        use reqwest::StatusCode as S;
+        assert_eq!(
+            membership_from_status(S::NO_CONTENT),
+            Some(Membership::Member)
+        );
+        assert_eq!(
+            membership_from_status(S::NOT_FOUND),
+            Some(Membership::NotMember)
+        );
+        assert_eq!(
+            membership_from_status(S::FOUND),
+            Some(Membership::NotMember)
+        );
+        assert_eq!(
+            membership_from_status(S::UNAUTHORIZED),
+            Some(Membership::TokenRevoked)
+        );
+        for transient in [
+            S::OK,
+            S::ACCEPTED,
+            S::MOVED_PERMANENTLY,
+            S::FORBIDDEN,
+            S::TOO_MANY_REQUESTS,
+            S::INTERNAL_SERVER_ERROR,
+            S::BAD_GATEWAY,
+        ] {
+            assert_eq!(membership_from_status(transient), None, "{transient}");
+        }
+    }
+
+    #[test]
+    fn claims_without_session_version_decode_as_zero() {
+        let key = EncodingKey::from_secret(b"k");
+        let legacy = serde_json::json!({
+            "sub": "alice", "name": "Alice", "role": "member", "exp": 4_000_000_000u64,
+        });
+        let token = encode(&Header::default(), &legacy, &key).unwrap();
+        let claims = decode::<Claims>(
+            &token,
+            &DecodingKey::from_secret(b"k"),
+            &Validation::default(),
+        )
+        .unwrap()
+        .claims;
+        assert_eq!(claims.sv, 0);
     }
 
     #[test]

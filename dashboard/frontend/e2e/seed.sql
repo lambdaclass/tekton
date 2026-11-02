@@ -58,7 +58,9 @@ CREATE TABLE IF NOT EXISTS users (
     ssh_public_key TEXT,
     ai_provider TEXT,
     ai_api_key_encrypted TEXT,
-    ai_model TEXT
+    ai_model TEXT,
+    session_version INT NOT NULL DEFAULT 0,
+    membership_checked_at TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS task_actions (
@@ -165,7 +167,10 @@ INSERT INTO users (github_login, name, email, github_token, role)
 VALUES
     ('testadmin',  'Test Admin',  'admin@test.com',  'ghp_fake_admin_token',  'admin'),
     ('testmember', 'Test Member', 'member@test.com', 'ghp_fake_member_token', 'member'),
-    ('testviewer', 'Test Viewer', 'viewer@test.com', 'ghp_fake_viewer_token', 'viewer');
+    ('testviewer', 'Test Viewer', 'viewer@test.com', 'ghp_fake_viewer_token', 'viewer'),
+    -- Only the role-change e2e test touches this user: a role change revokes
+    -- the user's sessions, so it must not be one the other tests log in as.
+    ('testrolechange', 'Test Role Change', 'rolechange@test.com', 'ghp_fake_rolechange_token', 'member');
 
 -- ============================================================
 -- Seed: Tasks (various states)

@@ -218,7 +218,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/ws/tasks/{id}", get(ws::task_output_ws));
 
     // Conditionally add test-only endpoints when TEST_MODE=true
-    let api = if std::env::var("TEST_MODE").as_deref() == Ok("true") {
+    let api = if auth::test_mode_enabled() {
         tracing::warn!("TEST_MODE enabled — test-only endpoints are active");
         api.route("/auth/test-login", post(auth::test_login))
             .route("/test/intake/sync", post(test_intake_sync))

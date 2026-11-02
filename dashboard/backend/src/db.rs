@@ -128,6 +128,16 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .execute(pool)
     .await;
 
+    // Session revocation and periodic GitHub org membership re-checks
+    for col_sql in &[
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version INT NOT NULL DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS membership_checked_at TIMESTAMPTZ",
+    ] {
+        // Every authenticated request reads these columns, so fail startup
+        // rather than serve 500s. IF NOT EXISTS makes re-runs no-ops.
+        sqlx::query(col_sql).execute(pool).await?;
+    }
+
     // Ensure at least one admin exists — promote the earliest user if none
     let admin_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users WHERE role = 'admin'")
         .fetch_one(pool)
