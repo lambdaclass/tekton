@@ -14,6 +14,8 @@ use crate::AppState;
 
 const COOKIE_NAME: &str = "dashboard_session";
 const JWT_EXPIRY_SECS: usize = 86400 * 7; // 7 days
+const OAUTH_STATE_COOKIE: &str = "oauth_state";
+const OAUTH_STATE_PATH: &str = "/api/auth/callback";
 
 /// Try to decode the JWT from the session cookie. Returns None on any failure.
 fn extract_user_from_jar(jar: &CookieJar, state: &AppState) -> Option<Claims> {
@@ -56,24 +58,78 @@ impl FromRequestParts<AppState> for AuthUser {
 
 #[derive(Deserialize)]
 pub struct CallbackQuery {
-    pub code: String,
+    pub code: Option<String>,
+    pub state: Option<String>,
+    /// Set by GitHub instead of `code` when the user cancels (`access_denied`).
+    pub error: Option<String>,
 }
 
-pub async fn login(State(state): State<AppState>) -> Redirect {
+fn generate_oauth_state() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Constant-time check that the `state` GitHub echoed back matches the one we
+/// stored in the `oauth_state` cookie. Missing or empty values never match.
+fn validate_oauth_state(cookie: Option<&str>, query: Option<&str>) -> bool {
+    let (Some(cookie), Some(query)) = (cookie, query) else {
+        return false;
+    };
+    let (a, b) = (cookie.as_bytes(), query.as_bytes());
+    if a.is_empty() || a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+fn clear_oauth_state(jar: CookieJar) -> CookieJar {
+    jar.remove(Cookie::build((OAUTH_STATE_COOKIE, "")).path(OAUTH_STATE_PATH))
+}
+
+pub async fn login(State(state): State<AppState>, jar: CookieJar) -> (CookieJar, Redirect) {
+    let oauth_state = generate_oauth_state();
     let url = format!(
         "https://github.com/login/oauth/authorize?\
-         client_id={}&redirect_uri={}&scope=repo%20read:org%20admin:repo_hook&allow_signup=false",
+         client_id={}&redirect_uri={}&scope=repo%20read:org%20admin:repo_hook&allow_signup=false&state={}",
         state.config.github_client_id,
         urlencoding::encode(&state.config.github_redirect_uri),
+        oauth_state,
     );
-    Redirect::temporary(&url)
+    let cookie = Cookie::build((OAUTH_STATE_COOKIE, oauth_state))
+        .path(OAUTH_STATE_PATH)
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .secure(true)
+        .max_age(time::Duration::minutes(10));
+    (jar.add(cookie), Redirect::temporary(&url))
 }
 
 pub async fn callback(
     State(state): State<AppState>,
     Query(query): Query<CallbackQuery>,
     jar: CookieJar,
-) -> Result<(CookieJar, Redirect), AppError> {
+) -> Result<(CookieJar, Redirect), (CookieJar, AppError)> {
+    let stored_state = jar.get(OAUTH_STATE_COOKIE).map(|c| c.value().to_string());
+    let jar = clear_oauth_state(jar);
+    if !validate_oauth_state(stored_state.as_deref(), query.state.as_deref()) {
+        return Err((
+            jar,
+            AppError::Auth("Invalid or missing OAuth state".to_string()),
+        ));
+    }
+    let code = match (query.error, query.code) {
+        (None, Some(code)) => code,
+        _ => return Ok((jar, Redirect::temporary("/"))),
+    };
+    match complete_login(&state, &code).await {
+        Ok(session) => Ok((jar.add(session), Redirect::temporary("/"))),
+        Err(e) => Err((jar, e)),
+    }
+}
+
+async fn complete_login(state: &AppState, code: &str) -> Result<Cookie<'static>, AppError> {
     let client = reqwest::Client::new();
 
     // Exchange code for access token
@@ -81,7 +137,7 @@ pub async fn callback(
         .post("https://github.com/login/oauth/access_token")
         .header("Accept", "application/json")
         .form(&[
-            ("code", query.code.as_str()),
+            ("code", code),
             ("client_id", state.config.github_client_id.as_str()),
             ("client_secret", state.config.github_client_secret.as_str()),
             ("redirect_uri", state.config.github_redirect_uri.as_str()),
@@ -181,7 +237,7 @@ pub async fn callback(
     )
     .await;
 
-    Ok((jar.add(cookie), Redirect::temporary("/")))
+    Ok(cookie.build())
 }
 
 pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> (CookieJar, Redirect) {
@@ -508,4 +564,191 @@ pub async fn set_user_repos(
     .await;
 
     Ok(axum::Json(req.repos))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::header::{LOCATION, SET_COOKIE};
+    use axum::http::HeaderValue;
+
+    fn test_state() -> AppState {
+        let config = crate::config::Config {
+            listen_addr: String::new(),
+            database_url: String::new(),
+            jwt_secret: "test-secret".into(),
+            github_client_id: "client-id".into(),
+            github_client_secret: "client-secret".into(),
+            github_redirect_uri: "http://localhost/api/auth/callback".into(),
+            github_org: "org".into(),
+            preview_domain: String::new(),
+            allowed_repos: Vec::new(),
+            preview_bin: String::new(),
+            agent_bin: String::new(),
+            static_dir: String::new(),
+            claude_bin: String::new(),
+            claude_config_dir: String::new(),
+            chromium_bin: String::new(),
+            secrets_encryption_key: String::new(),
+            intake_enabled: false,
+            intake_max_global_concurrent: 0,
+            github_webhook_secret: String::new(),
+        };
+        AppState {
+            config: std::sync::Arc::new(config),
+            // Lazy pool never connects; these handlers must not touch the DB.
+            db: PgPool::connect_lazy("postgres://localhost/unused").unwrap(),
+            task_channels: Default::default(),
+        }
+    }
+
+    fn set_cookies(resp: &Response) -> Vec<String> {
+        resp.headers()
+            .get_all(SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn jar_with_state(value: &str) -> CookieJar {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            HeaderValue::from_str(&format!("{OAUTH_STATE_COOKIE}={value}")).unwrap(),
+        );
+        CookieJar::from_headers(&headers)
+    }
+
+    fn query(code: Option<&str>, state: Option<&str>, error: Option<&str>) -> CallbackQuery {
+        CallbackQuery {
+            code: code.map(Into::into),
+            state: state.map(Into::into),
+            error: error.map(Into::into),
+        }
+    }
+
+    fn assert_state_cookie_cleared(resp: &Response) {
+        let cookies = set_cookies(resp);
+        assert!(
+            cookies.iter().any(|c| c.starts_with("oauth_state=")
+                && c.contains("Path=/api/auth/callback")
+                && c.contains("Max-Age=0")),
+            "state cookie not cleared: {cookies:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn login_sets_state_cookie_and_redirect_state() {
+        let resp = login(State(test_state()), CookieJar::new())
+            .await
+            .into_response();
+        let cookies = set_cookies(&resp);
+        assert_eq!(cookies.len(), 1);
+        let cookie = &cookies[0];
+        for attr in [
+            "Path=/api/auth/callback",
+            "HttpOnly",
+            "Secure",
+            "SameSite=Lax",
+            "Max-Age=600",
+        ] {
+            assert!(cookie.contains(attr), "{attr} missing from {cookie}");
+        }
+        let value = cookie
+            .strip_prefix("oauth_state=")
+            .and_then(|rest| rest.split(';').next())
+            .unwrap();
+        assert_eq!(value.len(), 64);
+
+        let location = resp.headers().get(LOCATION).unwrap().to_str().unwrap();
+        assert!(location.starts_with("https://github.com/login/oauth/authorize?"));
+        assert!(location.contains(&format!("&state={value}")));
+    }
+
+    #[tokio::test]
+    async fn callback_cancelled_on_github_redirects_home_and_clears_cookie() {
+        let resp = callback(
+            State(test_state()),
+            Query(query(None, Some("s3cret"), Some("access_denied"))),
+            jar_with_state("s3cret"),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.headers().get(LOCATION).unwrap(), "/");
+        assert_state_cookie_cleared(&resp);
+    }
+
+    #[tokio::test]
+    async fn callback_without_code_redirects_home() {
+        let resp = callback(
+            State(test_state()),
+            Query(query(None, Some("s3cret"), None)),
+            jar_with_state("s3cret"),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.headers().get(LOCATION).unwrap(), "/");
+        assert_state_cookie_cleared(&resp);
+    }
+
+    #[tokio::test]
+    async fn callback_bad_state_is_rejected_before_anything_else() {
+        for (cookie, q) in [
+            (None, query(Some("code"), Some("s3cret"), None)),
+            (Some("s3cret"), query(Some("code"), Some("other!"), None)),
+            (Some("s3cret"), query(None, None, Some("access_denied"))),
+        ] {
+            let jar = cookie.map(jar_with_state).unwrap_or_default();
+            let resp = callback(State(test_state()), Query(q), jar)
+                .await
+                .into_response();
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+            // The jar only emits a removal for a cookie the browser actually sent.
+            if cookie.is_some() {
+                assert_state_cookie_cleared(&resp);
+            }
+        }
+    }
+
+    #[test]
+    fn oauth_state_matches() {
+        assert!(validate_oauth_state(Some("abc123"), Some("abc123")));
+    }
+
+    #[test]
+    fn oauth_state_missing_either_side() {
+        assert!(!validate_oauth_state(None, Some("abc123")));
+        assert!(!validate_oauth_state(Some("abc123"), None));
+        assert!(!validate_oauth_state(None, None));
+    }
+
+    #[test]
+    fn oauth_state_empty_strings() {
+        assert!(!validate_oauth_state(Some(""), Some("")));
+        assert!(!validate_oauth_state(Some(""), Some("abc123")));
+        assert!(!validate_oauth_state(Some("abc123"), Some("")));
+    }
+
+    #[test]
+    fn oauth_state_mismatch() {
+        assert!(!validate_oauth_state(Some("abc123"), Some("abc124")));
+    }
+
+    #[test]
+    fn oauth_state_different_lengths() {
+        assert!(!validate_oauth_state(Some("abc123"), Some("abc1234")));
+        assert!(!validate_oauth_state(Some("abc1234"), Some("abc123")));
+    }
+
+    #[test]
+    fn generated_oauth_state_is_64_hex_chars_and_unique() {
+        let a = generate_oauth_state();
+        let b = generate_oauth_state();
+        assert_eq!(a.len(), 64);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
+        assert!(validate_oauth_state(Some(&a), Some(&a)));
+    }
 }
