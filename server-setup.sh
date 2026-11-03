@@ -236,6 +236,21 @@ if [[ -f /proc/mdstat ]]; then
     fi
 fi
 
+DISK_LAYOUT="raid1"
+if [[ -z "$DISK_DEVICE_0" ]]; then
+    # Root not on RAID: a single-disk install (e.g. Hetzner Cloud). Boot from
+    # the disk that holds /.
+    root_src=$(readlink -f "$(findmnt -n -o SOURCE /)" 2>/dev/null) || true
+    if [[ -n "$root_src" && "$root_src" != /dev/md* ]]; then
+        root_disk=$(lsblk -n -o PKNAME "$root_src" 2>/dev/null | head -1) || true
+        if [[ -n "$root_disk" ]]; then
+            DISK_LAYOUT="single"
+            DISK_DEVICE_0="/dev/$root_disk"
+            DISK_DEVICE_1=""
+        fi
+    fi
+fi
+
 if [[ -z "$DISK_DEVICE_0" ]]; then
     # Fallback: detect from lsblk
     readarray -t all_disks < <(lsblk -d -n -o NAME,TYPE | awk '$2=="disk" && $1!~/^loop/ {print "/dev/" $1}')
@@ -247,12 +262,19 @@ if [[ -z "$DISK_DEVICE_0" ]]; then
     fi
 fi
 success "Disk 0: $DISK_DEVICE_0"
-success "Disk 1: $DISK_DEVICE_1"
+success "Disk 1: ${DISK_DEVICE_1:-none (single disk, no RAID)}"
 
-# Initrd modules — detect NVMe vs SATA
+# Initrd modules — detect NVMe, virtio (cloud VMs) or SATA
+disk_sysfs=$(readlink -f "/sys/block/$(basename "$DISK_DEVICE_0")" 2>/dev/null) || true
 if [[ "$DISK_DEVICE_0" == /dev/nvme* ]]; then
     INITRD_MODULES='"nvme"'
     success "NVMe disks detected."
+elif [[ "$DISK_DEVICE_0" == /dev/vd* ]]; then
+    INITRD_MODULES='"virtio_pci" "virtio_blk"'
+    success "virtio-blk disk detected."
+elif [[ "$disk_sysfs" == */virtio* ]]; then
+    INITRD_MODULES='"virtio_pci" "virtio_scsi" "sd_mod"'
+    success "virtio-scsi disk detected."
 else
     INITRD_MODULES='"ahci" "sd_mod"'
     success "SATA disks detected."
@@ -280,7 +302,7 @@ echo "  Gateway:        $GATEWAY"
 echo "  Interface:      $INTERFACE"
 echo "  Prefix:         /$PREFIX_LENGTH"
 echo "  Disk 0:         $DISK_DEVICE_0"
-echo "  Disk 1:         $DISK_DEVICE_1"
+echo "  Disk 1:         ${DISK_DEVICE_1:-none (single disk, no RAID)}"
 echo "  Domain:         $DOMAIN"
 echo "  GitHub Org:     $GITHUB_ORG"
 echo "  GitHub Client:  ${GITHUB_CLIENT_ID:0:20}..."
@@ -333,6 +355,12 @@ sed -i "s|prefixLength = [0-9]*;|prefixLength = $PREFIX_LENGTH;|g" "$cfg"
 sed -i "s|interfaces\.enp3s0|interfaces.$INTERFACE|g" "$cfg"
 sed -i "s|interface = \"enp3s0\"|interface = \"$INTERFACE\"|g" "$cfg"
 sed -i "s|externalInterface = \"enp3s0\"|externalInterface = \"$INTERFACE\"|g" "$cfg"
+if [[ "$DISK_LAYOUT" == "single" ]]; then
+    # One GRUB device, no RAID, and the labels from initial-install/disk-config-single.nix
+    sed -i 's|devices = \[ "DISK_DEVICE_0" "DISK_DEVICE_1" \];|devices = [ "DISK_DEVICE_0" ];|' "$cfg"
+    sed -i '/boot\.swraid = {/,/};/ s|enable = true;|enable = false;|' "$cfg"
+    sed -i 's|"/dev/md/root"|"/dev/disk/by-label/nixos-root"|; s|"/dev/md/boot"|"/dev/disk/by-label/nixos-boot"|' "$cfg"
+fi
 sed -i "s|DISK_DEVICE_0|$DISK_DEVICE_0|g" "$cfg"
 sed -i "s|DISK_DEVICE_1|$DISK_DEVICE_1|g" "$cfg"
 sed -i "s|INITRD_KERNEL_MODULES|$INITRD_MODULES|g" "$cfg"

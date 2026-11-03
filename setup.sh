@@ -229,8 +229,11 @@ gather_info() {
 
         INTERFACE=$(ssh $ssh_opts root@"$SERVER_IP" "
             iface='$rescue_iface'
-            # Read the PCI slot from sysfs (e.g. 0000:03:00.0)
-            slot=\$(basename \$(readlink -f /sys/class/net/\$iface/device) 2>/dev/null) || true
+            # Read the PCI slot from sysfs (e.g. 0000:03:00.0). A virtio NIC's
+            # device is a virtioN node under its PCI function, so step up to it.
+            devpath=\$(readlink -f /sys/class/net/\$iface/device 2>/dev/null) || true
+            case \$(basename \"\$devpath\") in virtio*) devpath=\$(dirname \"\$devpath\") ;; esac
+            slot=\$(basename \"\$devpath\" 2>/dev/null) || true
             if [ -n \"\$slot\" ]; then
                 # Parse domain:bus:device.function -> enp{bus}s{device}f{function}
                 # Strip leading domain (0000:), then parse bus:dev.fn
@@ -279,16 +282,20 @@ gather_info() {
             disks+=("$line")
         done <<< "$disk_list"
 
-        if [[ ${#disks[@]} -lt 2 ]]; then
-            fatal "Expected at least 2 disks for RAID 1, found ${#disks[@]}: ${disks[*]}"
-        fi
-
         info "Found ${#disks[@]} disk(s):"
         for i in "${!disks[@]}"; do
             echo -e "  ${BOLD}$((i+1)))${NC} ${disks[$i]}"
         done
 
-        if [[ ${#disks[@]} -eq 2 ]]; then
+        # Two or more disks: RAID 1 (dedicated servers). One disk: plain
+        # partitions, no RAID (e.g. Hetzner Cloud servers).
+        DISK_LAYOUT="raid1"
+        if [[ ${#disks[@]} -eq 1 ]]; then
+            DISK_LAYOUT="single"
+            DISK_DEVICE_0="${disks[0]}"
+            DISK_DEVICE_1=""
+            warn "Only one disk found: installing on ${DISK_DEVICE_0} without RAID."
+        elif [[ ${#disks[@]} -eq 2 ]]; then
             DISK_DEVICE_0="${disks[0]}"
             DISK_DEVICE_1="${disks[1]}"
             success "Using ${DISK_DEVICE_0} and ${DISK_DEVICE_1} for RAID 1."
@@ -308,10 +315,18 @@ gather_info() {
         # --- Detect kernel modules ---
         info "Detecting hardware for kernel modules..."
 
-        # Disk modules: NVMe vs SATA
+        # Disk modules: NVMe, virtio (cloud VMs) or SATA
+        local disk_sysfs
+        disk_sysfs=$(ssh $ssh_opts root@"$SERVER_IP" "readlink -f /sys/block/$(basename "$DISK_DEVICE_0")" 2>/dev/null) || true
         if [[ "$DISK_DEVICE_0" == /dev/nvme* ]]; then
             INITRD_MODULES='"nvme"'
             success "NVMe disks detected — using nvme initrd module."
+        elif [[ "$DISK_DEVICE_0" == /dev/vd* ]]; then
+            INITRD_MODULES='"virtio_pci" "virtio_blk"'
+            success "virtio-blk disk detected — using virtio_pci/virtio_blk initrd modules."
+        elif [[ "$disk_sysfs" == */virtio* ]]; then
+            INITRD_MODULES='"virtio_pci" "virtio_scsi" "sd_mod"'
+            success "virtio-scsi disk detected — using virtio_pci/virtio_scsi/sd_mod initrd modules."
         else
             INITRD_MODULES='"ahci" "sd_mod"'
             success "SATA disks detected — using ahci/sd_mod initrd modules."
@@ -392,7 +407,7 @@ gather_info() {
         echo -e "  ${BOLD}Interface:${NC}     $INTERFACE"
         echo -e "  ${BOLD}Prefix length:${NC} /$PREFIX_LENGTH"
         echo -e "  ${BOLD}Disk 1:${NC}        $DISK_DEVICE_0"
-        echo -e "  ${BOLD}Disk 2:${NC}        $DISK_DEVICE_1"
+        echo -e "  ${BOLD}Disk 2:${NC}        ${DISK_DEVICE_1:-none (single disk, no RAID)}"
     fi
     echo -e "  ${BOLD}SSH Key:${NC}       ${SSH_KEY:0:50}..."
     local secrets_summary=""
@@ -442,6 +457,11 @@ install_nixos() {
 
     # Substitute disk devices in disk-config.nix
     local disk_config="$work_dir/disk-config.nix"
+    if [[ "${DISK_LAYOUT:-raid1}" == "single" ]]; then
+        cp "$work_dir/disk-config-single.nix" "$disk_config"
+        sed -i.tmp '/boot\.swraid = {/,/};/ s|enable = true;|enable = false;|' "$config_file"
+        rm -f "$config_file.tmp"
+    fi
     sed -i.tmp "s|DISK_DEVICE_0|$DISK_DEVICE_0|g" "$disk_config"
     sed -i.tmp "s|DISK_DEVICE_1|$DISK_DEVICE_1|g" "$disk_config"
     rm -f "$disk_config.tmp"
