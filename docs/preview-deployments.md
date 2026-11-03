@@ -86,7 +86,7 @@ preview scrub-tokens
 ## How It Works
 
 1. `preview create` fetches `preview-config.nix` from the repo at the given branch (via GitHub API, cached by commit SHA)
-2. Tekton runs `nix build --impure --expr` to build the NixOS container closure and extract `system.build.previewMeta` (routing, service names, DB mode, host secrets)
+2. Tekton runs `nix build` (restricted evaluation, as a throwaway user; see [Isolating preview builds](deployment-guide.md#isolating-preview-builds)) to build the NixOS container closure and extract `system.build.previewMeta` (routing, service names, DB mode, host secrets)
 3. The container is created with `nixos-container create`, given a static IP on `10.100.0.0/24`
 4. Tekton writes `/etc/preview.env` into the container filesystem before it boots: preview metadata (`PREVIEW_REPO_URL`, `PREVIEW_BRANCH`, `PREVIEW_HOST`, `PREVIEW_URL`, `PREVIEW_CODE_PROVIDED=1`, forwarded host secrets)
 5. The container starts, and the host provides the code (`sync_code`):
@@ -99,7 +99,7 @@ preview scrub-tokens
 
 The token used for the host fetch is the one `preview` resolves on the host: `GITHUB_TOKEN` from its environment (the dashboard passes the signed-in user's token) or, otherwise, the webhook's `/internal/token` (a GitHub App installation token or the server-wide token). `preview` removes `GITHUB_TOKEN` from its environment once resolved, so it is not passed to the container or to the environment of the `nix build` that evaluates the repo's `preview-config.nix`. `hostSecrets` entries must be plain variable names and are looked up by exact match. Tekton's own keys (`GITHUB_*`, `WEBHOOK_*`, `PREVIEW_*`, `ADMIN_SSH_KEY`, `ALLOWED_REPOS`) are never forwarded.
 
-> **Known open issue:** the repo's `preview-config.nix` is evaluated on the host with `nix build --impure`, as root. An untrusted config can still read host files such as `/var/secrets/preview.env` (`builtins.readFile`) or other exported variables (`builtins.getEnv`) during evaluation. Only allow repos whose `preview-config.nix` you trust (`ALLOWED_REPOS`).
+> **Untrusted configs:** the repo's `preview-config.nix` is evaluated in Nix's restricted mode, as a throwaway unprivileged user with no network, and its builds can't reach loopback or private addresses. So a config can't read host files, environment variables or local services. It also can't fetch anything at evaluation time: use derivation fetchers (`pkgs.fetchurl`, `fetchFromGitHub`) instead of `builtins.fetchTarball` or `fetchGit`. See [Isolating preview builds](deployment-guide.md#isolating-preview-builds).
 
 > **Breaking change (#184):** the container can no longer fetch private repos itself. A repo's `preview-config.nix` must use the code already at `/home/preview/app` instead of cloning it (see [adding-a-new-service.md](adding-a-new-service.md#getting-the-code)). Configs that still clone keep working only for public repos.
 

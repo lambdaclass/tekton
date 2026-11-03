@@ -1,7 +1,8 @@
 # NixOS configuration template for Node.js preview containers
 # Copy this file to your repo root as preview-config.nix and customise.
 # This file is fetched by tekton at preview-create time.
-# Built by: tekton's preview.sh using nix build --impure --expr
+# Built by: tekton's preview.sh (restricted evaluation: no host files, env vars
+# or evaluation-time fetches; see docs/deployment-guide.md)
 #
 # system.build.previewMeta  — read by tekton before container start (routing, services, DB)
 # environment.etc."preview-meta.json"  — same JSON available inside the running container

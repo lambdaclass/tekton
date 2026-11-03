@@ -490,6 +490,23 @@ sk-ant-oat01-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 Just the raw token string, no newlines or quotes.
 
+### Isolating preview builds
+
+A repo's `preview-config.nix` is untrusted code, and it runs on the host: `preview` evaluates and builds it to make the container. Without isolation it could read `/run/dashboard-secrets`, `/var/secrets` or any other host file, and copy it into the world-readable `/nix/store` or out over the network. Two layers prevent that:
+
+- **Evaluation** runs through `systemd-run` as a throwaway `DynamicUser`, with Nix's `restrict-eval` on, no network (`IPAddressDeny=any`), and `/run/dashboard-secrets`, `/var/secrets`, `/var/lib` and `/etc/nixos` hidden. Restricted evaluation alone isn't enough, because `builtins.getFlake "path:/some/dir"` still copies any directory the evaluator can read into the store. The config only sees nixpkgs, which is pinned by `/etc/nixos/flake.lock`, and its own file.
+- **Builds** run in nix-daemon's sandbox as `nixbld` users. Fixed-output builds share the host network, so the `tekton-nixbld` firewall chain in `configuration.nix` rejects their traffic to loopback (`/internal/secrets`, the webhook's `/internal/token` and Caddy's admin API trust loopback), to private and link-local addresses (containers, cloud metadata), and to anything but DNS there.
+
+`preview` refuses to build while the chain is missing.
+
+What this means for repo configs: a `preview-config.nix` can't read files outside the store, can't call `builtins.getEnv`, and can't fetch at evaluation time (`fetchTarball`, `fetchGit`, `fetchurl`). Fetchers inside derivations (`pkgs.fetchurl`, `fetchFromGitHub`, …) still work.
+
+**Upgrading an existing server:** `deploy.sh` never copies `configuration.nix`, so copy the `networking.firewall.extraCommands` and `extraStopCommands` blocks, and the swap settings (`swapDevices`, `zramSwap`), into `/etc/nixos/configuration.nix` on the server. Then run `./deploy.sh <server> nix`. It warns if the chain is still missing. To check by hand:
+
+```bash
+iptables -w -S tekton-nixbld && iptables -w -C OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld && echo OK
+```
+
 ### NixOS configuration placeholders
 
 Template files in the repo have placeholder values that `server-setup.sh` substitutes with real values during setup. **Never copy them directly to the server.**
