@@ -31,7 +31,7 @@ the minimal skeleton below as a starting point and expand from there.
 
 let
   meta = {
-    setupService = "setup-myapp";        # oneshot service that clones + builds
+    setupService = "setup-myapp";        # oneshot service that builds the code tekton provides
     appServices  = [ "myapp" ];          # long-running services started after setup
     database     = "container";          # "container" | "host"
     routes       = [
@@ -76,9 +76,9 @@ All six fields are required. Tekton aborts with a clear error if any is missing.
 
 ### `setupService`
 
-Name of the oneshot systemd service that clones the repo, installs
-dependencies, runs build steps, and runs database migrations. Must match the
-service you define in the same file.
+Name of the oneshot systemd service that installs dependencies, runs build
+steps, and runs database migrations on the code tekton has placed at
+`/home/preview/app`. Must match the service you define in the same file.
 
 ### `appServices`
 
@@ -115,7 +115,10 @@ for admin panels at a sub-path):
 
 List of environment variable names forwarded from the host's
 `/var/secrets/preview.env` into the container's `/etc/preview.env`. Use this
-for third-party API keys that must not be generated per-preview.
+for third-party API keys that must not be generated per-preview. Names must
+be plain variable names (`[A-Za-z_][A-Za-z0-9_]*`). Tekton's own keys
+(`GITHUB_*`, `WEBHOOK_*`, `PREVIEW_*`, `ADMIN_SSH_KEY`, `ALLOWED_REPOS`) are
+never forwarded; tekton skips them with a warning.
 
 ```nix
 hostSecrets = [ "STRIPE_SECRET_KEY" "POSTMARK_API_KEY" ];
@@ -143,20 +146,32 @@ Set to `[]` if you don't need extra subdomains.
 
 ## Environment available inside the container
 
-Tekton writes two files into the container filesystem before it boots.
+### Getting the code
 
-### `/etc/preview-token` (mode 604)
+Tekton puts the branch's code at `/home/preview/app` before it starts your
+setup service, as a git checkout owned by the `preview` user whose `origin`
+is the plain `https://github.com/<owner>/<repo>.git` URL. The host fetches
+the code with its own GitHub credentials and hands the container a git
+bundle; **no GitHub token is available inside the container**, so your setup
+service must not clone or fetch the repo itself. On `preview update`, tekton
+fetches the new commit into the same checkout (`git reset --hard`) before it
+restarts the setup service; untracked files such as `node_modules` stay.
 
-Contains a short-lived GitHub App installation token. Use it to authenticate
-`git clone` / `git fetch`:
+Your config must therefore define the `preview` user (see the skeleton above)
+and build from `/home/preview/app`.
 
-```bash
-PREVIEW_TOKEN=$(cat /etc/preview-token 2>/dev/null || echo "")
-AUTHED_URL=$(echo "$PREVIEW_REPO_URL" | sed "s|https://|https://x-access-token:$PREVIEW_TOKEN@|")
-git clone --depth 1 --branch "$PREVIEW_BRANCH" "$AUTHED_URL" /home/preview/app
-```
+> **Breaking change (#184):** earlier versions of tekton wrote a GitHub token
+> to `/etc/preview-token` and expected the setup service to clone the repo
+> with it. That file no longer exists. Drop the clone/fetch step from your
+> `preview-config.nix`; configs that still clone keep working only for public
+> repos. If the same config must also run on an older tekton host, guard the
+> clone with `PREVIEW_CODE_PROVIDED`, as
+> [`server-config/preview-config.nix`](../server-config/preview-config.nix)
+> does.
 
 ### `/etc/preview.env` (mode 644)
+
+Tekton writes this file into the container filesystem before it boots.
 
 Always contains:
 
@@ -166,6 +181,7 @@ Always contains:
 | `PREVIEW_BRANCH` | `feature/my-pr` |
 | `PREVIEW_HOST` | `myapp-42.preview.example.com` |
 | `PREVIEW_URL` | `https://myapp-42.preview.example.com` |
+| `PREVIEW_CODE_PROVIDED` | `1` (the code is already at `/home/preview/app`) |
 | `DATABASE_URL` | *(only when `database = "host"`)* |
 
 Plus any keys listed in `hostSecrets`.
@@ -180,17 +196,17 @@ set -a; source /etc/preview.env; set +a
 
 ## Setup service pattern
 
-The setup service is a `RemainAfterExit = true` oneshot that clones the repo,
-builds the app, and runs migrations. App services depend on it so systemd
+The setup service is a `RemainAfterExit = true` oneshot that builds the app
+from `/home/preview/app` and runs migrations. App services depend on it so systemd
 waits for it to succeed before starting them.
 
 ```nix
 systemd.services.setup-myapp = {
-  description = "Setup myapp preview (clone, build, migrate)";
+  description = "Setup myapp preview (build, migrate)";
   after  = [ "systemd-resolved.service" ];
   wants  = [ "systemd-resolved.service" ];
   before = [ "myapp.service" ];
-  path   = [ pkgs.bash pkgs.coreutils pkgs.git pkgs.openssl ];
+  path   = [ pkgs.bash pkgs.coreutils pkgs.openssl ];
   serviceConfig = {
     Type             = "oneshot";
     RemainAfterExit  = true;
@@ -202,7 +218,8 @@ systemd.services.setup-myapp = {
     set -euo pipefail
     set -a; source /etc/preview.env; set +a
 
-    # ... generate secrets, clone, build, migrate ...
+    cd /home/preview/app
+    # ... generate secrets, build, migrate ...
   '';
 };
 ```
@@ -225,8 +242,9 @@ fi
 rm -f /tmp/force-rebuild
 ```
 
-`preview update <slug>` touches `/tmp/force-rebuild` before restarting the
-setup service, so explicit updates always do a full rebuild.
+`preview update <slug>` syncs the new commit into `/home/preview/app` and
+touches `/tmp/force-rebuild` before restarting the setup service, so explicit
+updates always do a full rebuild.
 
 ### Waiting for PostgreSQL (container DB)
 

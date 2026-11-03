@@ -1,14 +1,98 @@
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
-pub async fn init_pool(database_url: &str) -> anyhow::Result<PgPool> {
+pub async fn init_pool(database_url: &str, secrets_key: &str) -> anyhow::Result<PgPool> {
     let pool = PgPoolOptions::new()
         .max_connections(10)
         .connect(database_url)
         .await?;
 
     run_migrations(&pool).await?;
+    check_secrets_key(&pool, secrets_key).await?;
+    encrypt_legacy_github_tokens(&pool, secrets_key).await?;
     Ok(pool)
+}
+
+/// Refuses to start when stored ciphertext exists but none of a sample
+/// decrypts: the key is wrong, and running on would encrypt new values (legacy
+/// GitHub tokens included) under it. One undecryptable row among good ones is
+/// tolerated, since that is a damaged row, not a wrong key. The sample takes the
+/// oldest rows, so recent writes under a wrong key can't vouch for it.
+async fn check_secrets_key(pool: &PgPool, key: &str) -> anyhow::Result<()> {
+    let sample: Vec<String> = sqlx::query_scalar(
+        "(SELECT github_token_encrypted FROM users
+            WHERE github_token_encrypted IS NOT NULL AND github_token_encrypted <> ''
+            ORDER BY created_at, github_login LIMIT 5)
+         UNION ALL
+         (SELECT ai_api_key_encrypted FROM users
+            WHERE ai_api_key_encrypted IS NOT NULL AND ai_api_key_encrypted <> ''
+            ORDER BY created_at, github_login LIMIT 5)
+         UNION ALL
+         (SELECT encrypted_value FROM secrets ORDER BY id LIMIT 5)
+         UNION ALL
+         (SELECT ai_api_key_encrypted FROM global_ai_config LIMIT 1)
+         UNION ALL
+         (SELECT auth_token_encrypted FROM sentry_sources ORDER BY id LIMIT 5)
+         UNION ALL
+         (SELECT api_token_encrypted FROM intake_sources
+            WHERE api_token_encrypted IS NOT NULL AND api_token_encrypted <> ''
+            ORDER BY id LIMIT 5)",
+    )
+    .fetch_all(pool)
+    .await?;
+    check_key_against_sample(key, &sample)
+}
+
+fn check_key_against_sample(key: &str, sample: &[String]) -> anyhow::Result<()> {
+    if sample.is_empty()
+        || sample
+            .iter()
+            .any(|c| crate::secrets::decrypt_secret(key, c).is_ok())
+    {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "SECRETS_ENCRYPTION_KEY does not decrypt any of {} stored encrypted value(s). \
+         The key is probably wrong (wrong 1Password item, or a typo in \
+         /run/dashboard-secrets/secrets.env). Refusing to start so nothing gets \
+         encrypted with the wrong key.",
+        sample.len()
+    )
+}
+
+/// Moves plaintext `users.github_token` values into `github_token_encrypted`.
+/// Each row is one conditional UPDATE, so an interrupted run leaves every row
+/// either done or untouched, and the next start picks up the rest. Once done,
+/// no row has a plaintext token and this is a no-op.
+async fn encrypt_legacy_github_tokens(pool: &PgPool, key: &str) -> anyhow::Result<()> {
+    sqlx::query("UPDATE users SET github_token = NULL WHERE github_token = ''")
+        .execute(pool)
+        .await?;
+
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT github_login, github_token FROM users WHERE github_token IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    for (login, token) in &rows {
+        let encrypted = crate::auth::encrypt_github_token(key, token)
+            .map_err(|e| anyhow::anyhow!("encrypting GitHub token for {login}: {e}"))?;
+        // Matching on the old value never clobbers a token written meanwhile.
+        sqlx::query(
+            "UPDATE users SET github_token_encrypted = $1, github_token = NULL
+             WHERE github_login = $2 AND github_token = $3",
+        )
+        .bind(&encrypted)
+        .bind(login)
+        .bind(token)
+        .execute(pool)
+        .await?;
+    }
+    if !rows.is_empty() {
+        tracing::info!("Encrypted {} stored GitHub token(s)", rows.len());
+    }
+    Ok(())
 }
 
 async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
@@ -49,6 +133,8 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_url TEXT",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_number INTEGER",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS total_cost_usd DOUBLE PRECISION DEFAULT 0",
+        // Model of the latest Claude run (NULL: the Claude CLI default); not a `Task` field
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS model TEXT",
     ] {
         let _ = sqlx::query(col_sql).execute(pool).await;
     }
@@ -127,6 +213,25 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     )
     .execute(pool)
     .await;
+
+    // Session revocation and periodic GitHub org membership re-checks
+    for col_sql in &[
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version INT NOT NULL DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS membership_checked_at TIMESTAMPTZ",
+    ] {
+        // Every authenticated request reads these columns, so fail startup
+        // rather than serve 500s. IF NOT EXISTS makes re-runs no-ops.
+        sqlx::query(col_sql).execute(pool).await?;
+    }
+
+    // GitHub tokens are stored encrypted; the plaintext column is emptied at
+    // startup (see encrypt_legacy_github_tokens) and dropped in a later release.
+    for col_sql in &[
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS github_token_encrypted TEXT",
+        "ALTER TABLE users ALTER COLUMN github_token DROP NOT NULL",
+    ] {
+        sqlx::query(col_sql).execute(pool).await?;
+    }
 
     // Ensure at least one admin exists — promote the earliest user if none
     let admin_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users WHERE role = 'admin'")
@@ -422,4 +527,35 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::secrets::encrypt_secret;
+
+    #[test]
+    fn key_check_passes_on_empty_db() {
+        assert!(check_key_against_sample("k", &[]).is_ok());
+    }
+
+    #[test]
+    fn key_check_accepts_right_key_despite_one_bad_row() {
+        let sample = vec![
+            "garbage".to_string(),
+            encrypt_secret("other", "x").unwrap(),
+            encrypt_secret("right", "x").unwrap(),
+        ];
+        assert!(check_key_against_sample("right", &sample).is_ok());
+    }
+
+    #[test]
+    fn key_check_rejects_wrong_key() {
+        let sample = vec![
+            encrypt_secret("right", "a").unwrap(),
+            encrypt_secret("right", "b").unwrap(),
+        ];
+        let err = check_key_against_sample("wrong", &sample).unwrap_err();
+        assert!(err.to_string().contains("probably wrong"));
+    }
 }

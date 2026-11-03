@@ -42,7 +42,7 @@ preview destroy myapp-pr-42
 
 ### `preview update <slug>`
 
-Pulls latest code from the branch and rebuilds inside the container.
+Fetches the latest code of the branch on the host, syncs it into the container, and rebuilds. It also scrubs any GitHub token an older tekton version left in the preview (see `scrub-tokens`), even when there are no new commits.
 
 ```bash
 preview update myapp-pr-42
@@ -73,16 +73,35 @@ Pre-builds the NixOS container closure for a repo without creating a preview. Us
 preview build myorg/myapp feature-branch
 ```
 
+### `preview scrub-tokens`
+
+Removes GitHub tokens that tekton versions before #184 left inside previews: deletes `/etc/preview-token` and resets the app's `origin` remote to the plain `https://github.com/<owner>/<repo>.git` URL. It works from the host, so it also covers stopped previews, and it is idempotent. `deploy.sh` runs it after every NixOS config deploy.
+
+Scrubbing removes the tokens but does not undo their exposure: app code in those previews could read them. After deploying this change, rotate the server-wide `GITHUB_TOKEN` in `/var/secrets/preview.env` if you use one, and consider asking users whose OAuth tokens created or updated previews to revoke and re-authorize the dashboard's OAuth app.
+
+```bash
+preview scrub-tokens
+```
+
 ## How It Works
 
 1. `preview create` fetches `preview-config.nix` from the repo at the given branch (via GitHub API, cached by commit SHA)
-2. Tekton runs `nix build --impure --expr` to build the NixOS container closure and extract `system.build.previewMeta` (routing, service names, DB mode, host secrets)
+2. Tekton runs `nix build` (restricted evaluation, as a throwaway user; see [Isolating preview builds](deployment-guide.md#isolating-preview-builds)) to build the NixOS container closure and extract `system.build.previewMeta` (routing, service names, DB mode, host secrets)
 3. The container is created with `nixos-container create`, given a static IP on `10.100.0.0/24`
-4. Tekton writes two files into the container filesystem before it boots:
-   - `/etc/preview-token` — GitHub token for authenticated `git clone`/`git fetch`
-   - `/etc/preview.env` — preview metadata (`PREVIEW_REPO_URL`, `PREVIEW_BRANCH`, `PREVIEW_HOST`, `PREVIEW_URL`, forwarded host secrets)
-5. The container starts; the repo's `setupService` clones/builds the app, then `appServices` run the live process(es)
-6. Caddy is configured with routes from `previewMeta.routes` to proxy the subdomain to the container
+4. Tekton writes `/etc/preview.env` into the container filesystem before it boots: preview metadata (`PREVIEW_REPO_URL`, `PREVIEW_BRANCH`, `PREVIEW_HOST`, `PREVIEW_URL`, `PREVIEW_CODE_PROVIDED=1`, forwarded host secrets)
+5. The container starts, and the host provides the code (`sync_code`):
+   - the host fetches the branch into a root-only bare cache at `/var/lib/preview-deploys/.repo-cache/<owner>__<repo>.git`, sending the GitHub token as an HTTP header through `GIT_CONFIG_*` environment variables (never in argv, a URL, or a file);
+   - it bundles the branch (`git bundle`) and streams the bundle over stdin to git running as the `preview` user inside the container, which clones it into `/home/preview/app` (or, on an update, fetches it and runs `git reset --hard origin/<branch>`). `origin` is the plain `https://github.com/<owner>/<repo>.git` URL. The bundle is deleted afterwards.
+
+   No GitHub token ever enters a preview container.
+6. The repo's `setupService` builds the app from `/home/preview/app`, then `appServices` run the live process(es)
+7. Caddy is configured with routes from `previewMeta.routes` to proxy the subdomain to the container
+
+The token used for the host fetch is the one `preview` resolves on the host: `GITHUB_TOKEN` from its environment (the dashboard passes the signed-in user's token) or, otherwise, the webhook's `/internal/token` (a GitHub App installation token or the server-wide token). `preview` removes `GITHUB_TOKEN` from its environment once resolved, so it is not passed to the container or to the environment of the `nix build` that evaluates the repo's `preview-config.nix`. `hostSecrets` entries must be plain variable names and are looked up by exact match. Tekton's own keys (`GITHUB_*`, `WEBHOOK_*`, `PREVIEW_*`, `ADMIN_SSH_KEY`, `ALLOWED_REPOS`) are never forwarded.
+
+> **Untrusted configs:** the repo's `preview-config.nix` is evaluated in Nix's restricted mode, as a throwaway unprivileged user with no network, and its builds can't reach loopback or private addresses. So a config can't read host files, environment variables or local services. It also can't fetch anything at evaluation time: use derivation fetchers (`pkgs.fetchurl`, `fetchFromGitHub`) instead of `builtins.fetchTarball` or `fetchGit`. See [Isolating preview builds](deployment-guide.md#isolating-preview-builds).
+
+> **Breaking change (#184):** the container can no longer fetch private repos itself. A repo's `preview-config.nix` must use the code already at `/home/preview/app` instead of cloning it (see [adding-a-new-service.md](adding-a-new-service.md#getting-the-code)). Configs that still clone keep working only for public repos.
 
 ## GitHub Webhook Integration
 
@@ -178,7 +197,8 @@ curl https://webhook.PREVIEW_DOMAIN/health
 ### Manually re-running a build
 
 ```bash
-# Re-trigger the setup service inside the container (service name comes from preview-config.nix)
+# Re-trigger the setup service inside the container (service name comes from preview-config.nix).
+# This rebuilds the code already in the container; use `preview update <slug>` to pull new commits.
 nixos-container run <slug> -- systemctl restart <setupService>
 ```
 

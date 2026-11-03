@@ -14,6 +14,7 @@ use crate::models::{
     TaskAction, TaskLog, TaskMessage, UpdateTaskNameRequest,
 };
 use crate::policies;
+use crate::repo_sync;
 use crate::secrets;
 use crate::settings;
 use crate::shell;
@@ -49,6 +50,9 @@ struct PipelineCtx<'a> {
     repo: &'a str,
     base_branch: &'a str,
     git_id: &'a GitIdentity,
+    /// The user the pipeline runs as: the task creator, the reopening user, or an intake
+    /// source's run_as_user. `git_id` belongs to this user.
+    created_by: &'a str,
 }
 
 #[derive(Clone)]
@@ -58,24 +62,28 @@ struct GitIdentity {
     email: String,
 }
 
-async fn get_git_identity(db: &PgPool, github_login: &str) -> Result<GitIdentity, AppError> {
-    let row = sqlx::query_as::<_, (String, String, Option<String>)>(
-        "SELECT github_token, name, email FROM users WHERE github_login = $1",
+async fn get_git_identity(
+    db: &PgPool,
+    secrets_key: &str,
+    github_login: &str,
+) -> Result<GitIdentity, AppError> {
+    let (name, email) = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT name, email FROM users WHERE github_login = $1",
     )
     .bind(github_login)
     .fetch_optional(db)
     .await?
     .ok_or_else(|| AppError::Auth(format!("User '{github_login}' not found in database")))?;
 
-    let email = row
-        .2
-        .unwrap_or_else(|| format!("{github_login}@users.noreply.github.com"));
+    let email = email.unwrap_or_else(|| format!("{github_login}@users.noreply.github.com"));
 
-    Ok(GitIdentity {
-        token: row.0,
-        name: row.1,
-        email,
-    })
+    // A user without a token (only test-login users) keeps the old behavior:
+    // an empty token that fails at the first GitHub call.
+    let token = auth::load_github_token(db, secrets_key, github_login)
+        .await?
+        .unwrap_or_default();
+
+    Ok(GitIdentity { token, name, email })
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -410,19 +418,25 @@ pub(crate) async fn spawn_task_internal(
     .fetch_one(&db)
     .await?;
 
-    let git_id = get_git_identity(&db, &created_by).await?;
+    let git_id = get_git_identity(&db, &config.secrets_encryption_key, &created_by)
+        .await
+        .map_err(|e| {
+            // Intake tasks run as the source's run_as_user, not the session user.
+            if intake_issue_id.is_some() {
+                crate::intake::run_as_user_token_error(&created_by, e)
+            } else {
+                e
+            }
+        })?;
 
-    // Intake sources with auto_create_pr off never get a preview, so don't advertise one.
-    if intake_auto_create_pr(&db, &id).await? != Some(false) {
-        let preview_slug = format!("t-{short_id}");
-        let preview_url = format!("https://{preview_slug}.{}", config.preview_domain);
-        sqlx::query("UPDATE tasks SET preview_slug = $1, preview_url = $2 WHERE id = $3")
-            .bind(&preview_slug)
-            .bind(&preview_url)
-            .bind(&id)
-            .execute(&db)
-            .await?;
-    }
+    let preview_slug = format!("t-{short_id}");
+    let preview_url = format!("https://{preview_slug}.{}", config.preview_domain);
+    sqlx::query("UPDATE tasks SET preview_slug = $1, preview_url = $2 WHERE id = $3")
+        .bind(&preview_slug)
+        .bind(&preview_url)
+        .bind(&id)
+        .execute(&db)
+        .await?;
 
     let (tx, _) = broadcast::channel(1024);
     task_channels.insert(id.clone(), tx.clone());
@@ -439,8 +453,9 @@ pub(crate) async fn spawn_task_internal(
             repo: &repo,
             base_branch: &base_branch,
             git_id: &git_id,
+            created_by: &created_by,
         };
-        let result = run_task_pipeline(&ctx, &prompt, None, None, &created_by, tx.clone()).await;
+        let result = run_task_pipeline(&ctx, &prompt, None, None, tx.clone()).await;
 
         if let Err(e) = &result {
             let _ = update_task_status(&db, &task_id, "failed", Some(&e.to_string())).await;
@@ -562,7 +577,8 @@ pub async fn create_task(
     .await?;
 
     // Get the user's git identity (GitHub token, name, email)
-    let git_id = get_git_identity(&state.db, &created_by).await?;
+    let git_id =
+        get_git_identity(&state.db, &state.config.secrets_encryption_key, &created_by).await?;
 
     // Save preview_slug and preview_url to the DB right away so the frontend can show the link
     let preview_slug = format!("t-{short_id}");
@@ -599,13 +615,13 @@ pub async fn create_task(
             repo: &repo,
             base_branch: &base,
             git_id: &git_id,
+            created_by: &created_by,
         };
         let result = run_task_pipeline(
             &ctx,
             &prompt,
             image_url_json2.as_deref(),
             custom_branch,
-            &created_by,
             tx.clone(),
         )
         .await;
@@ -642,7 +658,6 @@ async fn run_task_pipeline(
     prompt: &str,
     image_url_json: Option<&str>,
     custom_branch_name: Option<String>,
-    created_by: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
     let &PipelineCtx {
@@ -653,6 +668,7 @@ async fn run_task_pipeline(
         repo,
         base_branch,
         git_id,
+        created_by,
     } = ctx;
     // Generate a short name for the task using Claude
     let task_name =
@@ -740,17 +756,13 @@ async fn run_task_pipeline(
         &format!("[STEP] Cloning {repo} and creating branch {branch_name}..."),
     );
 
-    let clone_url = format!(
-        "https://x-access-token:{}@github.com/{repo}.git",
-        git_id.token
-    );
-
+    repo_sync::stage_clone_bundle(&agent_name, repo, &git_id.token, base_branch, None).await?;
     let escaped_name = git_id.name.replace('\'', "'\\''");
     let escaped_email = git_id.email.replace('\'', "'\\''");
     let clone_cmd = format!(
-        "cd /home/agent && git clone --branch {base_branch} --single-branch '{clone_url}' repo && \
-         cd repo && git checkout -b '{branch_name}' && \
-         git config user.name '{escaped_name}' && git config user.email '{escaped_email}'"
+        "{} && git checkout -b '{branch_name}' && \
+         git config user.name '{escaped_name}' && git config user.email '{escaped_email}'",
+        repo_sync::clone_cmd(repo, base_branch)
     );
     shell::agent_exec(&agent_name, &clone_cmd, tx.clone()).await?;
     update_task_field(db, task_id, "branch_name", &branch_name).await?;
@@ -772,12 +784,9 @@ async fn run_task_pipeline(
         &format!("[STEP] Pushed branch '{branch_name}' to GitHub"),
     );
 
-    let auto_create_pr = intake_auto_create_pr(db, task_id).await?;
-    let deliver = auto_create_pr != Some(false);
-
     // Prewarm preview: create it on the feature branch so it's already on the right
     // branch when the agent finishes. Runs in background while Claude works.
-    if deliver {
+    {
         let config2 = config.clone();
         let repo2 = repo.to_string();
         let branch2 = branch_name.clone();
@@ -826,15 +835,17 @@ async fn run_task_pipeline(
     }
 
     // Step 3: Copy images and run Claude (streaming)
-    let mut effective_prompt =
-        augment_prompt_with_images(config, &agent_name, image_url_json, prompt, &tx).await?;
+    let mut effective_prompt = format!(
+        "{DELIVERY_NOTE}\n\n{}",
+        augment_prompt_with_images(config, &agent_name, image_url_json, prompt, &tx).await?
+    );
 
     // Inject policy constraints into the prompt so Claude knows its boundaries
     if let Some(ref pol) = policy {
         let mut constraints = Vec::new();
         if !pol.protected_branches.is_empty() {
             constraints.push(format!(
-                "PROTECTED BRANCHES (do NOT push directly to these): {}",
+                "PROTECTED BRANCHES (do NOT target these): {}",
                 pol.protected_branches.join(", ")
             ));
         }
@@ -880,9 +891,7 @@ async fn run_task_pipeline(
     }
     log_and_send(db, task_id, &tx, "[STEP] Running Claude...");
     let result = match run_claude_streaming(
-        db,
-        &config.secrets_encryption_key,
-        created_by,
+        ctx,
         &agent_name,
         &effective_prompt,
         tx.clone(),
@@ -946,12 +955,10 @@ async fn run_task_pipeline(
 
     // Step 3b: Commit any changes (if Claude asked a question and made none, that's fine —
     // the user will see the question in chat and respond via the follow-up loop)
-    if deliver {
-        let _ = commit_changes_in_agent(&agent_name, prompt, tx.clone()).await?;
-    }
+    let _ = commit_changes_in_agent(&agent_name, prompt, tx.clone()).await?;
 
     // Step 3c: Push changes and update preview
-    let mut preview_created = deliver;
+    let mut preview_created = true;
     let mut branch_pushed = false;
     let outcome = push_and_preview(
         ctx,
@@ -962,9 +969,9 @@ async fn run_task_pipeline(
         &tx,
     )
     .await?;
-    if outcome.branch_has_commits() {
+    if outcome == PushOutcome::Pushed {
         save_system_message(db, task_id, "Changes pushed and preview updated ✓").await?;
-        maybe_auto_open_pr(ctx, created_by, &tx).await;
+        maybe_auto_open_pr(ctx, &tx).await;
     }
 
     // Step 4: Follow-up loop
@@ -974,7 +981,6 @@ async fn run_task_pipeline(
         &branch_name,
         &mut branch_pushed,
         &mut preview_created,
-        created_by,
         &tx,
         0,
     )
@@ -1010,73 +1016,68 @@ async fn run_task_pipeline(
 }
 
 /// Build the shell export fragment that sets AI credentials for a user.
-/// Returns (env_export_string, model_flag) where model_flag is always `""`.
-/// Model selection uses ANTHROPIC_MODEL env var rather than --model flag to
-/// avoid the Claude CLI's client-side validation against Anthropic-only names.
+/// Returns (env_export_string, effective_model). The model is `Some` for OpenRouter, which
+/// selects it through ANTHROPIC_MODEL (not --model, which the Claude CLI validates against
+/// Anthropic-only names), and `None` for Anthropic keys and OAuth, where the CLI default applies.
 async fn build_claude_auth_env(
     db: &PgPool,
     encryption_key: &str,
     created_by: &str,
-) -> Result<(String, String), AppError> {
-    match settings::get_user_ai_config(db, encryption_key, created_by).await? {
-        Some(cfg) if cfg.provider == "openrouter" => {
+) -> Result<(String, Option<String>), AppError> {
+    let cfg = match settings::get_user_ai_config(db, encryption_key, created_by).await? {
+        Some(cfg) => cfg,
+        // Fallback to the global admin-configured key
+        None => settings::get_global_ai_config(db, encryption_key)
+            .await?
+            .ok_or_else(|| {
+                AppError::Internal(
+                    "No AI provider configured. Go to Settings → AI Provider to connect your account, or ask an admin to set up a global API key."
+                        .into(),
+                )
+            })?,
+    };
+    Ok(match cfg.provider.as_str() {
+        "openrouter" => {
             let model = cfg
                 .model
                 .as_deref()
-                .unwrap_or("anthropic/claude-sonnet-4.6");
-            Ok((
+                .unwrap_or(OPENROUTER_DEFAULT_MODEL)
+                .to_string();
+            (
                 format!(
                     "export ANTHROPIC_BASE_URL='https://openrouter.ai/api' ANTHROPIC_AUTH_TOKEN='{}' ANTHROPIC_API_KEY='' ANTHROPIC_MODEL='{}'",
                     cfg.api_key, model
                 ),
-                String::new(),
-            ))
+                Some(model),
+            )
         }
-        Some(cfg) if cfg.provider == "anthropic-oauth" => Ok((
+        "anthropic-oauth" => (
             format!(
                 "export CLAUDE_CODE_OAUTH_TOKEN='{}' ANTHROPIC_API_KEY=''",
                 cfg.api_key
             ),
-            String::new(),
-        )),
-        Some(cfg) => Ok((
-            format!("export ANTHROPIC_API_KEY='{}'", cfg.api_key),
-            String::new(),
-        )),
-        None => {
-            // Fallback to the global admin-configured key
-            match settings::get_global_ai_config(db, encryption_key).await? {
-                Some(cfg) if cfg.provider == "openrouter" => {
-                    let model = cfg
-                        .model
-                        .as_deref()
-                        .unwrap_or("anthropic/claude-sonnet-4.6");
-                    Ok((
-                        format!(
-                            "export ANTHROPIC_BASE_URL='https://openrouter.ai/api' ANTHROPIC_AUTH_TOKEN='{}' ANTHROPIC_API_KEY='' ANTHROPIC_MODEL='{}'",
-                            cfg.api_key, model
-                        ),
-                        String::new(),
-                    ))
-                }
-                Some(cfg) if cfg.provider == "anthropic-oauth" => Ok((
-                    format!(
-                "export CLAUDE_CODE_OAUTH_TOKEN='{}' ANTHROPIC_API_KEY=''",
-                cfg.api_key
-            ),
-                    String::new(),
-                )),
-                Some(cfg) => Ok((
-                    format!("export ANTHROPIC_API_KEY='{}'", cfg.api_key),
-                    String::new(),
-                )),
-                None => Err(AppError::Internal(
-                    "No AI provider configured. Go to Settings → AI Provider to connect your account, or ask an admin to set up a global API key."
-                        .into(),
-                )),
-            }
-        }
+            None,
+        ),
+        _ => (format!("export ANTHROPIC_API_KEY='{}'", cfg.api_key), None),
+    })
+}
+
+const OPENROUTER_DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4.6";
+
+/// Resolve the credentials for a Claude run and record the model it will use on the task,
+/// for the PR footer. A NULL model means the Claude CLI default.
+async fn start_claude_run(ctx: &PipelineCtx<'_>) -> Result<String, AppError> {
+    let (auth_env, model) =
+        build_claude_auth_env(ctx.db, &ctx.config.secrets_encryption_key, ctx.created_by).await?;
+    if let Err(e) = sqlx::query("UPDATE tasks SET model = $1 WHERE id = $2")
+        .bind(&model)
+        .bind(ctx.task_id)
+        .execute(ctx.db)
+        .await
+    {
+        tracing::warn!("Could not record model for task {}: {e}", ctx.task_id);
     }
+    Ok(auth_env)
 }
 
 /// Generate a short task name from the prompt using Claude CLI.
@@ -1111,10 +1112,7 @@ async fn generate_task_name(
         "HOME=/tmp".to_string(),
     ];
     if cfg.provider == "openrouter" {
-        let model = cfg
-            .model
-            .as_deref()
-            .unwrap_or("anthropic/claude-sonnet-4.6");
+        let model = cfg.model.as_deref().unwrap_or(OPENROUTER_DEFAULT_MODEL);
         env_args.push(format!("ANTHROPIC_AUTH_TOKEN={}", cfg.api_key));
         env_args.push("ANTHROPIC_BASE_URL=https://openrouter.ai/api".to_string());
         env_args.push(format!("ANTHROPIC_MODEL={model}"));
@@ -1221,40 +1219,36 @@ fn build_disallowed_tools_flag(policy: Option<&crate::models::RepoPolicy>) -> St
 }
 
 async fn run_claude_streaming(
-    db: &PgPool,
-    encryption_key: &str,
-    created_by: &str,
+    ctx: &PipelineCtx<'_>,
     agent_name: &str,
     prompt: &str,
     tx: broadcast::Sender<String>,
     policy: Option<&crate::models::RepoPolicy>,
 ) -> Result<shell::ClaudeStreamResult, AppError> {
-    let (auth_env, model_flag) = build_claude_auth_env(db, encryption_key, created_by).await?;
+    let auth_env = start_claude_run(ctx).await?;
     let disallowed_flag = build_disallowed_tools_flag(policy);
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
-        "source /home/agent/.env.sh 2>/dev/null ; {auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose {model_flag} {disallowed_flag} -p '{escaped_prompt}'"
+        "source /home/agent/.env.sh 2>/dev/null ; {auth_env} && cd /home/agent/repo && claude --dangerously-skip-permissions --output-format stream-json --verbose {disallowed_flag} -p '{escaped_prompt}'"
     );
     shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
 }
 
 /// Run Claude with --continue to maintain conversation context for follow-ups.
 async fn run_claude_continue(
-    db: &PgPool,
-    encryption_key: &str,
-    created_by: &str,
+    ctx: &PipelineCtx<'_>,
     agent_name: &str,
     prompt: &str,
     tx: broadcast::Sender<String>,
     policy: Option<&crate::models::RepoPolicy>,
 ) -> Result<shell::ClaudeStreamResult, AppError> {
-    let (auth_env, model_flag) = build_claude_auth_env(db, encryption_key, created_by).await?;
+    let auth_env = start_claude_run(ctx).await?;
     let disallowed_flag = build_disallowed_tools_flag(policy);
     let escaped_prompt = prompt.replace('\'', "'\\''");
     let claude_cmd = format!(
         "source /home/agent/.env.sh 2>/dev/null ; {auth_env} && cd /home/agent/repo && \
          claude --dangerously-skip-permissions --output-format stream-json --verbose \
-         {model_flag} {disallowed_flag} --continue -p '{escaped_prompt}'"
+         {disallowed_flag} --continue -p '{escaped_prompt}'"
     );
     shell::agent_exec_claude_streaming(agent_name, &claude_cmd, tx).await
 }
@@ -1515,14 +1509,12 @@ enum FollowUpOutcome {
     Done,
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn follow_up_loop(
     ctx: &PipelineCtx<'_>,
     agent_name: &str,
     branch_name: &str,
     branch_pushed: &mut bool,
     preview_created: &mut bool,
-    created_by: &str,
     tx: &broadcast::Sender<String>,
     initial_last_seen_id: i64,
 ) -> Result<FollowUpOutcome, AppError> {
@@ -1534,6 +1526,7 @@ async fn follow_up_loop(
         repo,
         base_branch: _,
         git_id: _,
+        created_by: _,
     } = ctx;
     let mut last_seen_id: i64 = initial_last_seen_id;
 
@@ -1658,9 +1651,7 @@ async fn follow_up_loop(
         let _ = tx.send("[FOLLOWUP] Running Claude with follow-up...".to_string());
 
         let result = match run_claude_continue(
-            db,
-            &config.secrets_encryption_key,
-            created_by,
+            ctx,
             agent_name,
             &combined_prompt,
             tx.clone(),
@@ -1685,9 +1676,7 @@ async fn follow_up_loop(
                     &combined_prompt,
                 );
                 run_claude_streaming(
-                    db,
-                    &config.secrets_encryption_key,
-                    created_by,
+                    ctx,
                     agent_name,
                     &context_prompt,
                     tx.clone(),
@@ -1703,9 +1692,7 @@ async fn follow_up_loop(
         }
         increment_token_usage(db, task_id, &result.usage).await;
 
-        if should_deliver(db, task_id).await? {
-            let _ = commit_changes_in_agent(agent_name, &combined_parts[0], tx.clone()).await?;
-        }
+        let _ = commit_changes_in_agent(agent_name, &combined_parts[0], tx.clone()).await?;
 
         // Push and update preview
         let outcome = push_and_preview(
@@ -1717,9 +1704,9 @@ async fn follow_up_loop(
             tx,
         )
         .await?;
-        if outcome.branch_has_commits() {
+        if outcome == PushOutcome::Pushed {
             save_system_message(db, task_id, "Changes pushed and preview updated ✓").await?;
-            maybe_auto_open_pr(ctx, created_by, tx).await;
+            maybe_auto_open_pr(ctx, tx).await;
         }
 
         update_task_status(db, task_id, "awaiting_followup", None).await?;
@@ -1728,9 +1715,14 @@ async fn follow_up_loop(
     }
 }
 
+/// Agents have no GitHub credentials; Tekton commits and pushes their work.
+const DELIVERY_NOTE: &str = "Note: Tekton commits and pushes your changes to the task branch \
+     when you finish. Do not run `git push` or open pull requests yourself; this environment \
+     has no GitHub credentials.";
+
 /// Build a follow-up prompt that includes the original task context and conversation history.
 fn build_followup_prompt(original_prompt: &str, history: &[String], new_message: &str) -> String {
-    let mut prompt = format!("ORIGINAL TASK:\n{original_prompt}\n\n");
+    let mut prompt = format!("{DELIVERY_NOTE}\n\nORIGINAL TASK:\n{original_prompt}\n\n");
 
     if !history.is_empty() {
         prompt.push_str("PREVIOUS FOLLOW-UP MESSAGES (already addressed):\n");
@@ -1856,6 +1848,40 @@ async fn create_github_branch(
     Ok(())
 }
 
+struct CommitMessage {
+    headline: String,
+    body: String,
+}
+
+/// Collapse a value into one line so it cannot add or break lines of a commit message.
+fn single_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Commit message for a task push: a headline from the prompt and provenance trailers.
+/// GitHub joins headline and body with a blank line, so the trailers form the final paragraph.
+fn commit_message(prompt: Option<&str>, task_id: &str, git_id: &GitIdentity) -> CommitMessage {
+    let headline = match prompt {
+        Some(p) => {
+            let truncated: String = single_line(p).chars().take(72).collect();
+            format!("Claude: {truncated}")
+        }
+        None => format!("Claude: {}", task_id.get(..6).unwrap_or(task_id)),
+    };
+    let email = single_line(&git_id.email.replace(['<', '>'], "")).replace(' ', "");
+    let name = match single_line(&git_id.name.replace(['<', '>'], "")) {
+        n if n.is_empty() => email.clone(),
+        n => n,
+    };
+    CommitMessage {
+        headline,
+        body: format!(
+            "Tekton-Task: {}\nCo-authored-by: {name} <{email}>",
+            single_line(task_id)
+        ),
+    }
+}
+
 /// Create a verified commit on a GitHub branch via the GraphQL API.
 /// Returns the new commit OID.
 async fn github_create_commit(
@@ -1864,7 +1890,7 @@ async fn github_create_commit(
     branch_name: &str,
     expected_head_oid: &str,
     file_changes: &FileChanges,
-    message: &str,
+    message: &CommitMessage,
 ) -> Result<String, AppError> {
     let client = reqwest::Client::new();
 
@@ -1901,7 +1927,7 @@ async fn github_create_commit(
                 "repositoryNameWithOwner": repo,
                 "branchName": branch_name,
             },
-            "message": { "headline": message },
+            "message": { "headline": message.headline, "body": message.body },
             "fileChanges": {
                 "additions": additions,
                 "deletions": deletions,
@@ -1951,7 +1977,7 @@ async fn github_create_commit(
 }
 
 /// `None` for manual tasks; `Some(auto_create_pr)` for intake tasks. An intake task whose
-/// source was deleted resolves to `Some(false)` so it never starts pushing.
+/// source was deleted resolves to `Some(false)` so it never auto-opens a PR.
 fn resolve_auto_create_pr(source_type: Option<String>, source_flag: Option<bool>) -> Option<bool> {
     match source_type {
         Some(t) if t.starts_with("intake_") => Some(source_flag.unwrap_or(false)),
@@ -1972,32 +1998,30 @@ async fn intake_auto_create_pr(db: &PgPool, task_id: &str) -> Result<Option<bool
     .and_then(|(source_type, flag)| resolve_auto_create_pr(source_type, flag)))
 }
 
-/// Whether the pipeline commits, pushes and previews Claude's changes for this task.
-async fn should_deliver(db: &PgPool, task_id: &str) -> Result<bool, AppError> {
-    Ok(intake_auto_create_pr(db, task_id).await? != Some(false))
-}
-
 /// Sync the agent's local repo to match the remote branch after an API push.
-/// Uses explicit refspec because the repo is cloned with --single-branch.
-async fn sync_agent_to_remote(agent_name: &str, branch_name: &str) -> Result<(), AppError> {
-    let escaped = branch_name.replace('\'', "'\\''");
-    let cmd = format!(
-        "cd /home/agent/repo && git fetch origin '{escaped}:refs/remotes/origin/{escaped}' && git reset --hard 'origin/{escaped}'"
-    );
-    shell::agent_exec_capture(agent_name, &cmd).await?;
+async fn sync_agent_to_remote(
+    agent_name: &str,
+    repo: &str,
+    token: &str,
+    branch_name: &str,
+) -> Result<(), AppError> {
+    repo_sync::sync_branch(agent_name, repo, token, branch_name).await?;
+    shell::agent_exec_capture(agent_name, &repo_sync::reset_to_origin_cmd(branch_name)).await?;
     Ok(())
 }
 
 /// Fetch the task branch from GitHub into the agent repo and return its head commit,
 /// or `None` if it couldn't be fetched (e.g. the branch doesn't exist yet).
-async fn fetch_remote_branch(agent_name: &str, branch_name: &str) -> Option<String> {
-    let escaped = branch_name.replace('\'', "'\\''");
-    let cmd = format!(
-        "cd /home/agent/repo && git fetch -q origin '+{escaped}:refs/remotes/origin/{escaped}' && git rev-parse 'refs/remotes/origin/{escaped}'"
-    );
-    let output = shell::agent_exec_capture(agent_name, &cmd).await.ok()?;
-    let oid = output.trim();
-    (!oid.is_empty()).then(|| oid.to_string())
+async fn fetch_remote_branch(
+    agent_name: &str,
+    repo: &str,
+    token: &str,
+    branch_name: &str,
+) -> Option<String> {
+    repo_sync::sync_branch(agent_name, repo, token, branch_name)
+        .await
+        .inspect_err(|e| tracing::warn!("Could not fetch branch '{branch_name}': {e}"))
+        .ok()
 }
 
 /// Rebase the agent's local branch onto `remote_head` unless it already contains it, and
@@ -2031,36 +2055,10 @@ async fn rebase_onto_remote_head(agent_name: &str, remote_head: &str) -> Result<
     Ok(true)
 }
 
-/// Whether the fetched task branch has commits that aren't on the base branch.
-async fn remote_branch_ahead_of_base(
-    agent_name: &str,
-    branch_name: &str,
-    base_branch: &str,
-) -> bool {
-    let cmd = format!(
-        "cd /home/agent/repo && git rev-list --count 'origin/{base_branch}..refs/remotes/origin/{branch_name}'"
-    );
-    shell::agent_exec_capture(agent_name, &cmd)
-        .await
-        .ok()
-        .and_then(|out| out.trim().parse::<u64>().ok())
-        .is_some_and(|n| n > 0)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PushOutcome {
-    /// The task's intake source has auto_create_pr off; delivery is left to the agent.
-    Disabled,
     NoChanges,
     Pushed,
-    /// Nothing left to push because the agent already pushed its commits to the branch.
-    AgentPushed,
-}
-
-impl PushOutcome {
-    fn branch_has_commits(self) -> bool {
-        matches!(self, PushOutcome::Pushed | PushOutcome::AgentPushed)
-    }
 }
 
 async fn push_and_preview(
@@ -2080,19 +2078,9 @@ async fn push_and_preview(
         ..
     } = ctx;
 
-    if !should_deliver(db, task_id).await? {
-        log_and_send(
-            db,
-            task_id,
-            tx,
-            "[STEP] Auto-push disabled for this intake source; leaving changes to the agent.",
-        );
-        return Ok(PushOutcome::Disabled);
-    }
-
-    // Diff against the branch as it is on GitHub right now: the agent may have pushed to it
-    // itself, and a stale ref makes createCommitOnBranch fail with STALE_DATA.
-    let remote_head = fetch_remote_branch(agent_name, branch_name).await;
+    // Diff against the branch as it is on GitHub right now: someone else may have pushed to
+    // it, and a stale ref makes createCommitOnBranch fail with STALE_DATA.
+    let remote_head = fetch_remote_branch(agent_name, repo, &git_id.token, branch_name).await;
     if let Some(oid) = &remote_head {
         if rebase_onto_remote_head(agent_name, oid).await? {
             log_and_send(
@@ -2115,20 +2103,6 @@ async fn push_and_preview(
     let file_changes = collect_file_changes(agent_name, &base_ref).await?;
 
     if file_changes.additions.is_empty() && file_changes.deletions.is_empty() {
-        if !*branch_pushed
-            && remote_head.is_some()
-            && remote_branch_ahead_of_base(agent_name, branch_name, base_branch).await
-        {
-            log_and_send(
-                db,
-                task_id,
-                tx,
-                "[STEP] The agent already pushed its changes to the branch.",
-            );
-            *branch_pushed = true;
-            update_task_preview(ctx, branch_name, preview_created, tx).await?;
-            return Ok(PushOutcome::AgentPushed);
-        }
         log_and_send(db, task_id, tx, "[WARN] No file changes to push.");
         return Ok(PushOutcome::NoChanges);
     }
@@ -2177,15 +2151,12 @@ async fn push_and_preview(
     };
 
     // Build commit message from the task prompt
-    let commit_msg = sqlx::query_scalar::<_, String>("SELECT prompt FROM tasks WHERE id = $1")
+    let prompt = sqlx::query_scalar::<_, String>("SELECT prompt FROM tasks WHERE id = $1")
         .bind(task_id)
         .fetch_one(db)
         .await
-        .map(|p| {
-            let truncated: String = p.chars().take(72).collect();
-            format!("Claude: {truncated}")
-        })
-        .unwrap_or_else(|_| format!("Claude: {}", &task_id[..6]));
+        .ok();
+    let commit_msg = commit_message(prompt.as_deref(), task_id, git_id);
 
     // Create verified commit via GitHub GraphQL API
     let oid = github_create_commit(
@@ -2205,7 +2176,7 @@ async fn push_and_preview(
     );
 
     // Sync local repo to match the API-created commit
-    sync_agent_to_remote(agent_name, branch_name).await?;
+    sync_agent_to_remote(agent_name, repo, &git_id.token, branch_name).await?;
     *branch_pushed = true;
 
     update_task_preview(ctx, branch_name, preview_created, tx).await?;
@@ -2368,7 +2339,8 @@ pub async fn list_branches(
         &state.config.github_org,
     )
     .await?;
-    let git_id = get_git_identity(&state.db, &user.0.sub).await?;
+    let git_id =
+        get_git_identity(&state.db, &state.config.secrets_encryption_key, &user.0.sub).await?;
 
     let client = reqwest::Client::new();
     let mut branches = Vec::new();
@@ -2728,7 +2700,8 @@ pub async fn reopen_task(
     let short_id = &id[..6];
 
     // Get the reopening user's git identity
-    let git_id = get_git_identity(&state.db, &user.0.sub).await?;
+    let git_id =
+        get_git_identity(&state.db, &state.config.secrets_encryption_key, &user.0.sub).await?;
 
     // Reset status and error
     update_task_status(&state.db, &id, "creating_agent", None).await?;
@@ -2769,8 +2742,9 @@ pub async fn reopen_task(
             repo: &repo,
             base_branch: &base,
             git_id: &git_id,
+            created_by: &created_by,
         };
-        let result = run_reopen_pipeline(&ctx, &branch, has_preview, &created_by, tx.clone()).await;
+        let result = run_reopen_pipeline(&ctx, &branch, has_preview, tx.clone()).await;
 
         if let Err(e) = &result {
             let _ = update_task_status(&db, &task_id, "failed", Some(&e.to_string())).await;
@@ -2842,7 +2816,8 @@ pub async fn get_task_diff(
         return Ok(Json(serde_json::json!({ "diff": "" })));
     };
 
-    let git_id = get_git_identity(&state.db, &user.0.sub).await?;
+    let git_id =
+        get_git_identity(&state.db, &state.config.secrets_encryption_key, &user.0.sub).await?;
     let client = reqwest::Client::new();
     let diff = match client
         .get(format!(
@@ -2928,7 +2903,6 @@ async fn run_reopen_pipeline(
     ctx: &PipelineCtx<'_>,
     branch_name: &str,
     had_preview: bool,
-    created_by: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
     let &PipelineCtx {
@@ -2937,8 +2911,9 @@ async fn run_reopen_pipeline(
         task_id,
         short_id,
         repo,
-        base_branch: _,
+        base_branch,
         git_id,
+        created_by: _,
     } = ctx;
     // Check if the previous agent container is still alive (e.g. server crashed mid-run).
     // Look up the last-known agent_name from the DB.
@@ -2994,17 +2969,13 @@ async fn run_reopen_pipeline(
             &format!("[STEP] Cloning {repo} and checking out existing branch {branch_name}..."),
         );
 
-        let clone_url = format!(
-            "https://x-access-token:{}@github.com/{repo}.git",
-            git_id.token
-        );
-
+        repo_sync::stage_clone_bundle(&name, repo, &git_id.token, branch_name, Some(base_branch))
+            .await?;
         let escaped_name = git_id.name.replace('\'', "'\\''");
         let escaped_email = git_id.email.replace('\'', "'\\''");
         let clone_cmd = format!(
-            "cd /home/agent && git clone '{clone_url}' repo && \
-             cd repo && git checkout '{branch_name}' && \
-             git config user.name '{escaped_name}' && git config user.email '{escaped_email}'"
+            "{} && git config user.name '{escaped_name}' && git config user.email '{escaped_email}'",
+            repo_sync::clone_cmd(repo, branch_name)
         );
         shell::agent_exec(&name, &clone_cmd, tx.clone()).await?;
 
@@ -3056,7 +3027,6 @@ async fn run_reopen_pipeline(
         branch_name,
         &mut branch_pushed,
         &mut preview_created,
-        created_by,
         &tx,
         0,
     )
@@ -3081,7 +3051,6 @@ async fn recover_to_followup(
     ctx: &PipelineCtx<'_>,
     branch_name: &str,
     had_preview: bool,
-    created_by: &str,
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
     let &PipelineCtx {
@@ -3092,6 +3061,7 @@ async fn recover_to_followup(
         repo,
         base_branch: _,
         git_id: _,
+        created_by: _,
     } = ctx;
 
     // Look up agent_name from DB
@@ -3116,17 +3086,10 @@ async fn recover_to_followup(
         &format!("[STEP] Reconnected to existing agent container '{agent_name}'"),
     );
 
-    // Refresh the git remote URL with a fresh token so pushes/fetches work
-    let clone_url = format!(
-        "https://x-access-token:{}@github.com/{repo}.git",
-        ctx.git_id.token
-    );
-    let remote_cmd = format!(
-        "cd /home/agent/repo && git remote set-url origin '{}'",
-        clone_url.replace('\'', "'\\''")
-    );
+    // Containers from before tokens left the agents may still carry one in their remote.
+    let remote_cmd = repo_sync::set_plain_remote_cmd(repo);
     if let Err(e) = shell::agent_exec_capture(&agent_name, &remote_cmd).await {
-        tracing::warn!("Failed to refresh git remote URL: {e}");
+        tracing::warn!("Failed to reset git remote URL: {e}");
     }
 
     // Load effective policy for enforcement during follow-ups
@@ -3168,7 +3131,6 @@ async fn recover_to_followup(
         branch_name,
         &mut branch_pushed,
         &mut preview_created,
-        created_by,
         &tx,
         max_msg_id,
     )
@@ -3237,19 +3199,20 @@ pub async fn recover_interrupted_tasks(
                     .await;
                     continue;
                 };
-                let git_id = match get_git_identity(&db, created_by).await {
-                    Ok(g) => g,
-                    Err(e) => {
-                        let _ = update_task_status(
-                            &db,
-                            &task.id,
-                            "failed",
-                            Some(&format!("Interrupted by dashboard restart: {e}")),
-                        )
-                        .await;
-                        continue;
-                    }
-                };
+                let git_id =
+                    match get_git_identity(&db, &config.secrets_encryption_key, created_by).await {
+                        Ok(g) => g,
+                        Err(e) => {
+                            let _ = update_task_status(
+                                &db,
+                                &task.id,
+                                "failed",
+                                Some(&format!("Interrupted by dashboard restart: {e}")),
+                            )
+                            .await;
+                            continue;
+                        }
+                    };
                 let short_id = task.id[..6].to_string();
                 let had_preview = task.preview_url.is_some();
                 let (tx, _) = broadcast::channel(1024);
@@ -3272,15 +3235,10 @@ pub async fn recover_interrupted_tasks(
                         repo: &repo,
                         base_branch: &base,
                         git_id: &git_id,
+                        created_by: &created_by,
                     };
-                    let result = recover_to_followup(
-                        &ctx,
-                        &branch_name,
-                        had_preview,
-                        &created_by,
-                        tx.clone(),
-                    )
-                    .await;
+                    let result =
+                        recover_to_followup(&ctx, &branch_name, had_preview, tx.clone()).await;
                     if let Err(e) = result {
                         let _ = update_task_status(
                             &db2,
@@ -3318,19 +3276,20 @@ pub async fn recover_interrupted_tasks(
                     .await;
                     continue;
                 };
-                let git_id = match get_git_identity(&db, created_by).await {
-                    Ok(g) => g,
-                    Err(e) => {
-                        let _ = update_task_status(
-                            &db,
-                            &task.id,
-                            "failed",
-                            Some(&format!("Interrupted by dashboard restart: {e}")),
-                        )
-                        .await;
-                        continue;
-                    }
-                };
+                let git_id =
+                    match get_git_identity(&db, &config.secrets_encryption_key, created_by).await {
+                        Ok(g) => g,
+                        Err(e) => {
+                            let _ = update_task_status(
+                                &db,
+                                &task.id,
+                                "failed",
+                                Some(&format!("Interrupted by dashboard restart: {e}")),
+                            )
+                            .await;
+                            continue;
+                        }
+                    };
 
                 // Insert system message explaining the interruption
                 let _ = save_system_message(
@@ -3366,15 +3325,10 @@ pub async fn recover_interrupted_tasks(
                         repo: &repo,
                         base_branch: &base,
                         git_id: &git_id,
+                        created_by: &created_by,
                     };
-                    let result = recover_to_followup(
-                        &ctx,
-                        &branch_name,
-                        had_preview,
-                        &created_by,
-                        tx.clone(),
-                    )
-                    .await;
+                    let result =
+                        recover_to_followup(&ctx, &branch_name, had_preview, tx.clone()).await;
                     if let Err(e) = result {
                         let _ = update_task_status(
                             &db2,
@@ -3532,10 +3486,7 @@ async fn generate_pr_body(
         "HOME=/tmp".to_string(),
     ];
     if cfg.provider == "openrouter" {
-        let model = cfg
-            .model
-            .as_deref()
-            .unwrap_or("anthropic/claude-sonnet-4.6");
+        let model = cfg.model.as_deref().unwrap_or(OPENROUTER_DEFAULT_MODEL);
         env_args.push(format!("ANTHROPIC_AUTH_TOKEN={}", cfg.api_key));
         env_args.push("ANTHROPIC_BASE_URL=https://openrouter.ai/api".to_string());
         env_args.push(format!("ANTHROPIC_MODEL={model}"));
@@ -3593,15 +3544,9 @@ pub async fn create_pr(
         ));
     }
 
-    let git_id = get_git_identity(&state.db, &user.0.sub).await?;
-    open_pr_for_task(
-        &state.db,
-        &state.config.secrets_encryption_key,
-        &git_id,
-        &task,
-        &user.0.sub,
-    )
-    .await?;
+    let git_id =
+        get_git_identity(&state.db, &state.config.secrets_encryption_key, &user.0.sub).await?;
+    open_pr_for_task(&state.db, &state.config, &git_id, &task, &user.0.sub).await?;
 
     let updated_task = fetch_task(&state.db, &id)
         .await?
@@ -3679,11 +3624,125 @@ async fn find_open_pr_for_branch(
     Ok(prs.into_iter().next())
 }
 
+/// Marks the start of the provenance footer in a PR body.
+const PR_FOOTER_MARKER: &str = "<!-- tekton-provenance -->";
+
+/// Who asked for the task, as shown in the PR footer.
+#[derive(Debug, PartialEq)]
+enum PrRequester {
+    User(String),
+    Intake {
+        source: String,
+        issue_url: Option<String>,
+    },
+    Unknown,
+}
+
+async fn pr_requester(db: &PgPool, task: &Task) -> PrRequester {
+    if let Some(issue_id) = task.intake_issue_id {
+        let row = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT s.name, i.external_url FROM intake_issues i \
+             JOIN intake_sources s ON s.id = i.source_id WHERE i.id = $1",
+        )
+        .bind(issue_id)
+        .fetch_optional(db)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("Could not load intake issue {issue_id} for PR footer: {e}");
+            None
+        });
+        let (source, issue_url) = row.unwrap_or_else(|| ("intake".to_string(), None));
+        return PrRequester::Intake { source, issue_url };
+    }
+    match &task.created_by {
+        Some(login) => PrRequester::User(login.clone()),
+        None => PrRequester::Unknown,
+    }
+}
+
+/// The model recorded for the task's latest Claude run, or None for the CLI default.
+async fn task_model(db: &PgPool, task_id: &str) -> Option<String> {
+    sqlx::query_scalar::<_, Option<String>>("SELECT model FROM tasks WHERE id = $1")
+        .bind(task_id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+}
+
+/// The dashboard's origin, taken from the OAuth redirect URI (which points at the dashboard).
+fn dashboard_origin(redirect_uri: &str) -> Option<String> {
+    let url = reqwest::Url::parse(redirect_uri).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let origin = url.origin();
+    origin.is_tuple().then(|| origin.ascii_serialization())
+}
+
+fn task_link(redirect_uri: &str, task_id: &str) -> Option<String> {
+    let id = urlencoding::encode(task_id);
+    dashboard_origin(redirect_uri).map(|origin| format!("{origin}/tasks/{id}"))
+}
+
+fn is_github_login(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 39
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && !s.starts_with('-')
+        && !s.ends_with('-')
+        && !s.contains("--")
+}
+
+/// One-line provenance footer for a PR body. Mentioning the requester pings them on GitHub.
+fn pr_footer(
+    requester: &PrRequester,
+    task_id: &str,
+    task_link: Option<&str>,
+    model: Option<&str>,
+) -> String {
+    let mut parts = Vec::new();
+    match requester {
+        PrRequester::User(login) if is_github_login(login) => {
+            parts.push(format!("Requested by @{login}"))
+        }
+        PrRequester::User(_) | PrRequester::Unknown => {}
+        PrRequester::Intake { source, issue_url } => {
+            let source = single_line(source).replace(['[', ']', '`', '<', '>', '@'], "");
+            let mut part = format!("Requested via intake source \"{source}\"");
+            if let Some(url) = issue_url
+                .as_deref()
+                .and_then(|u| reqwest::Url::parse(u).ok())
+                .filter(|u| u.scheme() == "https")
+            {
+                part.push_str(&format!(" ({})", url.as_str()));
+            }
+            parts.push(part);
+        }
+    }
+    let short_id = task_id.get(..6).unwrap_or(task_id);
+    parts.push(match task_link {
+        Some(link) => format!("Tekton task [{short_id}]({link})"),
+        None => format!("Tekton task `{short_id}`"),
+    });
+    if let Some(model) = model {
+        parts.push(format!("Model `{}`", single_line(model).replace('`', "")));
+    }
+    format!("{PR_FOOTER_MARKER}\n{}", parts.join(" · "))
+}
+
+/// Append the footer to a PR body. The body is built fresh on every attempt, so it never
+/// carries an earlier footer; text that merely contains the marker is kept as is.
+fn with_footer(body: &str, footer: &str) -> String {
+    format!("{}\n\n{footer}", body.trim_end())
+}
+
 /// Open a PR for the task's branch as `acting_user` and record it on the task. If GitHub
 /// reports that the branch already has a PR (e.g. the agent opened one), that PR is recorded.
 async fn open_pr_for_task(
     db: &PgPool,
-    encryption_key: &str,
+    config: &Config,
     git_id: &GitIdentity,
     task: &Task,
     acting_user: &str,
@@ -3703,17 +3762,32 @@ async fn open_pr_for_task(
         .collect::<String>();
 
     // Build PR body: gather context and ask Claude to write the description
-    let mut body = generate_pr_body(db, encryption_key, &git_id.token, task, acting_user)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!("Failed to generate PR body via Claude: {e}, using fallback");
-            format!("## Task\n\n{}", task.prompt)
-        });
+    let mut body = generate_pr_body(
+        db,
+        &config.secrets_encryption_key,
+        &git_id.token,
+        task,
+        acting_user,
+    )
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!("Failed to generate PR body via Claude: {e}, using fallback");
+        format!("## Task\n\n{}", task.prompt)
+    });
 
+    body.push_str("\n\n---");
     // Append preview URL if one exists for this task
     if let Some(ref url) = task.preview_url {
-        body.push_str(&format!("\n\n---\n\n🔗 **Preview:** {url}"));
+        body.push_str(&format!("\n\n🔗 **Preview:** {url}"));
     }
+
+    let footer = pr_footer(
+        &pr_requester(db, task).await,
+        &task.id,
+        task_link(&config.github_redirect_uri, &task.id).as_deref(),
+        task_model(db, &task.id).await.as_deref(),
+    );
+    let body = with_footer(&body, &footer);
 
     // Create PR via GitHub API
     let client = reqwest::Client::new();
@@ -3796,16 +3870,13 @@ async fn open_pr_for_task(
 
 /// For intake sources with auto_create_pr on, open the task's PR in the background once its
 /// branch has commits. Failures are reported on the task but never fail it.
-async fn maybe_auto_open_pr(
-    ctx: &PipelineCtx<'_>,
-    acting_user: &str,
-    tx: &broadcast::Sender<String>,
-) {
+async fn maybe_auto_open_pr(ctx: &PipelineCtx<'_>, tx: &broadcast::Sender<String>) {
     let &PipelineCtx {
         config,
         db,
         task_id,
         git_id,
+        created_by,
         ..
     } = ctx;
     match intake_auto_create_pr(db, task_id).await {
@@ -3826,13 +3897,13 @@ async fn maybe_auto_open_pr(
     };
 
     let db = db.clone();
-    let encryption_key = config.secrets_encryption_key.clone();
+    let config = config.clone();
     let git_id = git_id.clone();
-    let acting_user = acting_user.to_string();
+    let acting_user = created_by.to_string();
     let tx = tx.clone();
     tokio::spawn(async move {
         log_and_send(&db, &task.id, &tx, "[STEP] Opening pull request...");
-        match open_pr_for_task(&db, &encryption_key, &git_id, &task, &acting_user).await {
+        match open_pr_for_task(&db, &config, &git_id, &task, &acting_user).await {
             Ok((pr_url, _)) => {
                 log_and_send(
                     &db,
@@ -3950,6 +4021,179 @@ pub async fn get_task_logs(
 mod tests {
     use super::*;
 
+    fn git_id(name: &str, email: &str) -> GitIdentity {
+        GitIdentity {
+            token: "secret".into(),
+            name: name.into(),
+            email: email.into(),
+        }
+    }
+
+    #[test]
+    fn commit_message_has_trailers_as_final_paragraph() {
+        let msg = commit_message(
+            Some("Fix the login page"),
+            "abcdef123456",
+            &git_id("Ada Lovelace", "ada@example.com"),
+        );
+        assert_eq!(msg.headline, "Claude: Fix the login page");
+        assert_eq!(
+            msg.body,
+            "Tekton-Task: abcdef123456\nCo-authored-by: Ada Lovelace <ada@example.com>"
+        );
+        assert!(!msg.body.contains("\n\n"));
+        assert!(!msg.body.contains("secret"));
+    }
+
+    #[test]
+    fn commit_message_headline_is_one_truncated_line() {
+        let prompt = format!("line one\n\nCo-authored-by: x <x@y>\n{}", "a".repeat(200));
+        let msg = commit_message(Some(&prompt), "abcdef123456", &git_id("A", "a@b"));
+        assert!(!msg.headline.contains('\n'));
+        assert_eq!(msg.headline.chars().count(), "Claude: ".len() + 72);
+        assert!(msg.headline.starts_with("Claude: line one Co-authored-by"));
+
+        let msg = commit_message(None, "abcdef123456", &git_id("A", "a@b"));
+        assert_eq!(msg.headline, "Claude: abcdef");
+    }
+
+    #[test]
+    fn commit_message_sanitizes_identity() {
+        let msg = commit_message(
+            Some("x"),
+            "abcdef123456",
+            &git_id(
+                "Eve\nSigned-off-by: Mallory <m@x>",
+                "eve@x.com>\r\nFoo: bar",
+            ),
+        );
+        assert_eq!(msg.body.lines().count(), 2);
+        assert_eq!(
+            msg.body.lines().nth(1).unwrap(),
+            "Co-authored-by: Eve Signed-off-by: Mallory m@x <eve@x.comFoo:bar>"
+        );
+
+        let msg = commit_message(Some("x"), "abcdef123456", &git_id(" \n", "a@b.c"));
+        assert!(msg.body.ends_with("Co-authored-by: a@b.c <a@b.c>"));
+    }
+
+    #[test]
+    fn dashboard_origin_from_redirect_uri() {
+        assert_eq!(
+            dashboard_origin("https://tekton.example.com/api/auth/callback").as_deref(),
+            Some("https://tekton.example.com")
+        );
+        assert_eq!(
+            dashboard_origin("http://localhost:8080/api/auth/callback?x=1#y").as_deref(),
+            Some("http://localhost:8080")
+        );
+        assert_eq!(
+            dashboard_origin("https://tekton.example.com:443/cb").as_deref(),
+            Some("https://tekton.example.com")
+        );
+        assert_eq!(dashboard_origin("not a url"), None);
+        assert_eq!(dashboard_origin(""), None);
+        assert_eq!(dashboard_origin("javascript:alert(1)"), None);
+        assert_eq!(dashboard_origin("file:///etc/passwd"), None);
+        assert_eq!(
+            task_link("https://t.example.com/api/auth/callback", "abc-123").as_deref(),
+            Some("https://t.example.com/tasks/abc-123")
+        );
+        assert_eq!(task_link("nope", "abc"), None);
+    }
+
+    #[test]
+    fn pr_footer_variants() {
+        let id = "abcdef12-3456";
+        assert_eq!(
+            pr_footer(
+                &PrRequester::User("octo-cat".into()),
+                id,
+                Some("https://t.example.com/tasks/abcdef12-3456"),
+                Some("anthropic/claude-sonnet-4.6"),
+            ),
+            format!(
+                "{PR_FOOTER_MARKER}\nRequested by @octo-cat · \
+                 Tekton task [abcdef](https://t.example.com/tasks/abcdef12-3456) · \
+                 Model `anthropic/claude-sonnet-4.6`"
+            )
+        );
+        assert_eq!(
+            pr_footer(&PrRequester::User("bad login".into()), id, None, None),
+            format!("{PR_FOOTER_MARKER}\nTekton task `abcdef`")
+        );
+        assert_eq!(
+            pr_footer(
+                &PrRequester::Intake {
+                    source: "Bugs\n[x]".into(),
+                    issue_url: Some("https://github.com/o/r/issues/7".into()),
+                },
+                id,
+                None,
+                None,
+            ),
+            format!(
+                "{PR_FOOTER_MARKER}\nRequested via intake source \"Bugs x\" \
+                 (https://github.com/o/r/issues/7) · Tekton task `abcdef`"
+            )
+        );
+        let footer = pr_footer(
+            &PrRequester::Intake {
+                source: "S".into(),
+                issue_url: Some("javascript:alert(1)".into()),
+            },
+            id,
+            None,
+            None,
+        );
+        assert!(!footer.contains("javascript"));
+    }
+
+    #[test]
+    fn with_footer_keeps_body_intact() {
+        let footer = pr_footer(&PrRequester::Unknown, "abcdef", None, None);
+        assert_eq!(
+            with_footer("Body\n\n---\n", &footer),
+            format!("Body\n\n---\n\n{footer}")
+        );
+        let body = format!("Intro\n{PR_FOOTER_MARKER}\nmore text\n\n---\n\nPreview");
+        assert_eq!(with_footer(&body, &footer), format!("{body}\n\n{footer}"));
+    }
+
+    #[test]
+    fn github_login_validation() {
+        assert!(is_github_login("octo-cat"));
+        assert!(is_github_login("a1"));
+        for bad in ["", "-a", "a-", "a--b", "a b", "a@b", &"a".repeat(40)] {
+            assert!(!is_github_login(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn pr_footer_intake_cannot_ping_or_inject() {
+        let footer = pr_footer(
+            &PrRequester::Intake {
+                source: "@team".into(),
+                issue_url: Some("https://x.example/a<b>c".into()),
+            },
+            "abcdef",
+            None,
+            None,
+        );
+        assert!(!footer.contains('@'));
+        assert!(footer.contains("(https://x.example/a%3Cb%3Ec)"));
+        let footer = pr_footer(
+            &PrRequester::Intake {
+                source: "S".into(),
+                issue_url: Some("http://x.example/1".into()),
+            },
+            "abcdef",
+            None,
+            None,
+        );
+        assert!(!footer.contains("http://"));
+    }
+
     #[test]
     fn auto_create_pr_resolution() {
         assert_eq!(resolve_auto_create_pr(None, None), None);
@@ -3965,7 +4209,7 @@ mod tests {
             resolve_auto_create_pr(Some("intake_github".into()), Some(false)),
             Some(false)
         );
-        // Source deleted: never start pushing
+        // Source deleted: never auto-open a PR
         assert_eq!(
             resolve_auto_create_pr(Some("intake_github".into()), None),
             Some(false)

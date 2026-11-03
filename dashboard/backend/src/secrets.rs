@@ -103,12 +103,6 @@ pub async fn create_secret(
     State(state): State<crate::AppState>,
     Json(req): Json<CreateSecretRequest>,
 ) -> Result<Json<SecretEntry>, AppError> {
-    if state.config.secrets_encryption_key.is_empty() {
-        return Err(AppError::BadRequest(
-            "SECRETS_ENCRYPTION_KEY is not configured".into(),
-        ));
-    }
-
     let encrypted = encrypt_secret(&state.config.secrets_encryption_key, &req.value)?;
 
     sqlx::query(
@@ -226,10 +220,6 @@ pub async fn load_secrets_for_repo(
     encryption_key: &str,
     repo: &str,
 ) -> Result<Vec<(String, String)>, AppError> {
-    if encryption_key.is_empty() {
-        return Ok(vec![]);
-    }
-
     let rows = sqlx::query_as::<_, (String, String)>(
         "SELECT name, encrypted_value FROM secrets WHERE repo = $1 OR repo = '*' ORDER BY name",
     )

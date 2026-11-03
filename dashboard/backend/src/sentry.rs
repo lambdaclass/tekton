@@ -526,6 +526,47 @@ pub async fn poll_due_sentry_sources(config: &Arc<Config>, db: &PgPool) -> Resul
     Ok(())
 }
 
+/// Disables a Sentry source whose owner can no longer vouch for it.
+async fn auto_disable_sentry_source(db: &PgPool, source: &SentrySource, reason: &str) {
+    // Only the call that actually flips `enabled` audits.
+    let disabled: Option<i64> = match sqlx::query_scalar(
+        "UPDATE sentry_sources SET enabled = false, updated_at = NOW() \
+         WHERE id = $1 AND enabled RETURNING id",
+    )
+    .bind(source.id)
+    .fetch_optional(db)
+    .await
+    {
+        Ok(row) => row,
+        Err(e) => {
+            tracing::error!("Sentry: failed to disable source {}: {e}", source.id);
+            return;
+        }
+    };
+    if disabled.is_none() {
+        return;
+    }
+    tracing::warn!(
+        "Sentry: disabled source '{}' (id={}): {reason}",
+        source.name,
+        source.id
+    );
+    crate::audit::log_event(
+        db,
+        "sentry.source_auto_disabled",
+        "system",
+        Some(&source.target_repo),
+        serde_json::json!({
+            "source_id": source.id,
+            "source_name": source.name,
+            "run_as_user": source.run_as_user,
+            "reason": reason,
+        }),
+        None,
+    )
+    .await;
+}
+
 async fn poll_sentry_source(
     config: &Config,
     db: &PgPool,
@@ -534,17 +575,17 @@ async fn poll_sentry_source(
     let source = &due.source;
     let sentry_token =
         crate::secrets::decrypt_secret(&config.secrets_encryption_key, &due.auth_token_encrypted)?;
-    let github_token: String =
-        sqlx::query_scalar("SELECT github_token FROM users WHERE github_login = $1")
-            .bind(&source.run_as_user)
-            .fetch_one(db)
-            .await
-            .map_err(|_| {
-                AppError::Internal(format!(
-                    "run_as_user '{}' not found or has no GitHub token",
-                    source.run_as_user
-                ))
-            })?;
+    // Issues are filed with run_as_user's token: make sure they still may.
+    let github_token = match crate::intake::check_run_as_user(config, db, &source.run_as_user).await
+    {
+        crate::intake::OwnerCheck::Allowed(token) => token,
+        crate::intake::OwnerCheck::Revoked(reason) => {
+            auto_disable_sentry_source(db, source, &reason).await;
+            // The caller stores this in `last_error`.
+            return Err(AppError::Internal(reason));
+        }
+        crate::intake::OwnerCheck::Unknown(reason) => return Err(AppError::Internal(reason)),
+    };
 
     let issues = unfiled_sentry_issues(db, source, &sentry_token, &due.cutoff).await?;
     let mut created = 0;

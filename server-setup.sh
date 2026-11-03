@@ -18,6 +18,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_CONFIG="$SCRIPT_DIR/server-config"
+# tmpfs, never persistent disk; see docs/deployment-guide.md, "Dashboard secrets".
+DASHBOARD_SECRETS_FILE="/run/dashboard-secrets/secrets.env"
 
 # Ensure common tools are on PATH (NixOS doesn't put everything in /usr/bin)
 export PATH="/run/current-system/sw/bin:$PATH"
@@ -120,6 +122,30 @@ if [[ ! -d "$SERVER_CONFIG" ]]; then
     fatal "Cannot find server-config/ at $SERVER_CONFIG. Are you running from the repo root?"
 fi
 
+existing_dashboard_install() {
+    [[ -f /var/secrets/dashboard.env ]] && return 0
+    [[ -n "$(ls -A /var/lib/dashboard 2>/dev/null)" ]] && return 0
+    command -v psql >/dev/null 2>&1 &&
+        sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='dashboard'" 2>/dev/null | grep -q 1
+}
+
+# New secrets only on a fresh install: on an existing one, a new
+# SECRETS_ENCRYPTION_KEY would make every stored secret unreadable.
+DASHBOARD_SECRETS_PRESENT=""
+if [[ -f "$DASHBOARD_SECRETS_FILE" ]]; then
+    "$SERVER_CONFIG/dashboard-secrets.sh" check-file "$DASHBOARD_SECRETS_FILE" ||
+        fatal "$DASHBOARD_SECRETS_FILE is incomplete. Set it again from 1Password, from the repo root on your machine: server-config/dashboard-secrets.sh set <server>"
+    DASHBOARD_SECRETS_PRESENT=1
+elif existing_dashboard_install && [[ -z "${ALLOW_NEW_DASHBOARD_SECRETS:-}" ]]; then
+    error "This server already has a dashboard install, but $DASHBOARD_SECRETS_FILE is missing"
+    error "(it is on tmpfs, so a reboot wipes it). Generating new secrets would lose every"
+    error "stored secret. Set them from 1Password, from the repo root on your machine:"
+    error "  server-config/dashboard-secrets.sh set <server>"
+    error "then run this script again. See docs/deployment-guide.md, \"Dashboard secrets\"."
+    error "Only if the old values are truly lost, rerun with ALLOW_NEW_DASHBOARD_SECRETS=1."
+    exit 1
+fi
+
 # =============================================================================
 # Step 1: Collect configuration
 # =============================================================================
@@ -135,7 +161,11 @@ echo "Homepage URL:          https://dashboard.${DOMAIN}"
 echo "Authorization callback URL: https://dashboard.${DOMAIN}/api/auth/callback"
 echo ""
 prompt GITHUB_CLIENT_ID "GitHub OAuth App Client ID"
-prompt_secret GITHUB_CLIENT_SECRET "GitHub OAuth App Client Secret"
+if [[ -n "$DASHBOARD_SECRETS_PRESENT" ]]; then
+    success "Using the dashboard secrets already set in $DASHBOARD_SECRETS_FILE."
+else
+    prompt_secret GITHUB_CLIENT_SECRET "GitHub OAuth App Client Secret"
+fi
 prompt GITHUB_ORG "GitHub organization (users must be members to login)"
 echo ""
 
@@ -297,9 +327,12 @@ fi
 # =============================================================================
 header "Step 3: Generate Secrets"
 
-info "Generating JWT secret..."
-JWT_SECRET=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
-success "JWT secret generated."
+if [[ -z "$DASHBOARD_SECRETS_PRESENT" ]]; then
+    info "Generating JWT secret and secrets encryption key..."
+    JWT_SECRET=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+    SECRETS_ENCRYPTION_KEY=$(head -c 32 /dev/urandom | base64)
+    success "JWT secret and secrets encryption key generated."
+fi
 
 mkdir -p /var/secrets/claude
 
@@ -374,9 +407,7 @@ info "Writing dashboard.env..."
 cat > /var/secrets/dashboard.env << ENVEOF
 LISTEN_ADDR=0.0.0.0:3200
 DATABASE_URL=postgresql:///dashboard?host=/run/postgresql&user=dashboard
-JWT_SECRET=${JWT_SECRET}
 GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
-GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
 GITHUB_REDIRECT_URI=https://dashboard.${DOMAIN}/api/auth/callback
 GITHUB_ORG=${GITHUB_ORG}
 PREVIEW_DOMAIN=${DOMAIN}
@@ -388,6 +419,25 @@ GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
 ENVEOF
 chmod 600 /var/secrets/dashboard.env
 success "dashboard.env written."
+
+if [[ -n "$DASHBOARD_SECRETS_PRESENT" ]]; then
+    success "$DASHBOARD_SECRETS_FILE already present, leaving it as is."
+else
+    info "Writing $DASHBOARD_SECRETS_FILE (tmpfs)..."
+    install -d -m 700 "$(dirname "$DASHBOARD_SECRETS_FILE")"
+    (
+        # Only for sd_quote, the same quoting the set command writes.
+        source "$SERVER_CONFIG/dashboard-secrets.sh"
+        umask 077
+        {
+            printf 'SECRETS_ENCRYPTION_KEY=%s\n' "$(sd_quote "$SECRETS_ENCRYPTION_KEY")"
+            printf 'JWT_SECRET=%s\n' "$(sd_quote "$JWT_SECRET")"
+            printf 'GITHUB_CLIENT_SECRET=%s\n' "$(sd_quote "$GITHUB_CLIENT_SECRET")"
+        } > "$DASHBOARD_SECRETS_FILE"
+    )
+    DASHBOARD_SECRETS_GENERATED=1
+    success "$DASHBOARD_SECRETS_FILE written."
+fi
 
 info "Writing preview.env..."
 cat > /var/secrets/preview.env << ENVEOF
@@ -552,6 +602,20 @@ echo "  Events:  Pull requests"
 echo ""
 echo -e "${BOLD}Next Steps:${NC}"
 echo ""
+if [[ -n "${DASHBOARD_SECRETS_GENERATED:-}" ]]; then
+    echo -e "  ${RED}${BOLD}0. Save the dashboard secrets in 1Password now.${NC}"
+    echo "     $DASHBOARD_SECRETS_FILE is on tmpfs: a reboot wipes it, and the"
+    echo "     dashboard stays down until the values are set again from 1Password."
+    echo "     Losing SECRETS_ENCRYPTION_KEY makes every stored secret unreadable."
+    echo "     From the repo root on your machine, copy each value to the clipboard"
+    echo "     and paste it into the field of the same name in the 1Password app"
+    echo "     (vault Tekton, item key-tekton-00):"
+    for name in SECRETS_ENCRYPTION_KEY JWT_SECRET GITHUB_CLIENT_SECRET; do
+        echo "       server-config/dashboard-secrets.sh copy $SERVER_IP $name | pbcopy"
+    done
+    echo "     Clear the clipboard afterwards. See docs/deployment-guide.md, \"Dashboard secrets\"."
+    echo ""
+fi
 echo -e "  1. Log into the dashboard and go to ${CYAN}Settings → AI Provider${NC}"
 echo "     to configure your Anthropic or OpenRouter API key."
 echo "     Each user must do this before running tasks."

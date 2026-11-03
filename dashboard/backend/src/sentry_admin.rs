@@ -13,22 +13,11 @@ const ISSUE_COLUMNS: &str = "id, source_id, sentry_issue_id, sentry_short_id, se
      TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at";
 
 fn encrypt_token(state: &crate::AppState, token: &str) -> Result<String, AppError> {
-    if state.config.secrets_encryption_key.is_empty() {
-        return Err(AppError::BadRequest(
-            "SECRETS_ENCRYPTION_KEY is not configured".into(),
-        ));
-    }
     crate::secrets::encrypt_secret(&state.config.secrets_encryption_key, token)
 }
 
 async fn ensure_github_user(state: &crate::AppState, login: &str) -> Result<(), AppError> {
-    let _: String = sqlx::query_scalar("SELECT github_token FROM users WHERE github_login = $1")
-        .bind(login)
-        .fetch_one(&state.db)
-        .await
-        .map_err(|_| {
-            AppError::BadRequest(format!("User '{login}' not found or has no GitHub token"))
-        })?;
+    crate::intake_admin::run_as_user_token(state, login).await?;
     Ok(())
 }
 

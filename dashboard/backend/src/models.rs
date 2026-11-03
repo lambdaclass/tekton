@@ -8,6 +8,10 @@ pub struct Claims {
     pub name: String,
     pub role: String,
     pub exp: usize,
+    /// `users.session_version` at mint time; bumping the column revokes the
+    /// session. Tokens minted before this field existed decode as 0.
+    #[serde(default)]
+    pub sv: i32,
 }
 
 #[derive(Debug, Serialize)]

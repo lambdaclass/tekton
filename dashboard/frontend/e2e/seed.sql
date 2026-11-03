@@ -51,14 +51,17 @@ CREATE TABLE IF NOT EXISTS users (
     github_login TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     email TEXT,
-    github_token TEXT NOT NULL,
+    github_token TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     role TEXT NOT NULL DEFAULT 'member',
     ssh_public_key TEXT,
     ai_provider TEXT,
     ai_api_key_encrypted TEXT,
-    ai_model TEXT
+    ai_model TEXT,
+    session_version INT NOT NULL DEFAULT 0,
+    membership_checked_at TIMESTAMPTZ,
+    github_token_encrypted TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_actions (
@@ -161,11 +164,19 @@ CREATE TABLE IF NOT EXISTS global_ai_config (
 -- Seed: Users
 -- ============================================================
 
-INSERT INTO users (github_login, name, email, github_token, role)
+-- github_token_encrypted holds ghp_fake_<user>_token encrypted with the e2e
+-- SECRETS_ENCRYPTION_KEY ("test-encryption-key-32chars-ok!"): AES-256-GCM
+-- under SHA-256 of the key, base64(nonce || ciphertext || tag). The backend
+-- may already be running when this is seeded, so tokens can't be left in
+-- plaintext for its startup migration to encrypt.
+INSERT INTO users (github_login, name, email, github_token_encrypted, role)
 VALUES
-    ('testadmin',  'Test Admin',  'admin@test.com',  'ghp_fake_admin_token',  'admin'),
-    ('testmember', 'Test Member', 'member@test.com', 'ghp_fake_member_token', 'member'),
-    ('testviewer', 'Test Viewer', 'viewer@test.com', 'ghp_fake_viewer_token', 'viewer');
+    ('testadmin',  'Test Admin',  'admin@test.com',  'Xl3voPD9LkffF3FNSXuINt9JsZoxwLo0ntMi8fWn4kvoiXflIdLKO0JG2PHyfoLJ',  'admin'),
+    ('testmember', 'Test Member', 'member@test.com', 'iIVhAdT36bJBRcAgGn1Iuj7iFcTLWUNupF2JrgAO6tzl0biHtYnbjDmKy36S6jfzbw==', 'member'),
+    ('testviewer', 'Test Viewer', 'viewer@test.com', '7Gj+RM51y1TY0vRjirSTC+mWFc7RVZju9Pt3okelj+hDkzmHRJxT2mjKjsGZLdQN6A==', 'viewer'),
+    -- Only the role-change e2e test touches this user: a role change revokes
+    -- the user's sessions, so it must not be one the other tests log in as.
+    ('testrolechange', 'Test Role Change', 'rolechange@test.com', 'nZUh3jCBXnGwMxoXUtQ8Rh+jS0AolFmhSTbHZc4cbCyIDhc02zJCxlNTqnLF+un7NyyTyf8=', 'member');
 
 -- ============================================================
 -- Seed: Tasks (various states)

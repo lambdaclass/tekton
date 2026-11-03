@@ -11,6 +11,7 @@ mod models;
 mod policies;
 mod previews;
 mod public_config;
+mod repo_sync;
 mod secrets;
 mod sentry;
 mod sentry_admin;
@@ -43,8 +44,9 @@ pub struct AppState {
     pub task_channels: TaskChannels,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+// Sync on purpose: Config::from_env removes the secrets from the process
+// environment, which is only sound before any other thread exists.
+fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -53,7 +55,14 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::from_env()?;
-    let db = db::init_pool(&config.database_url).await?;
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(config))
+}
+
+async fn run(config: Config) -> anyhow::Result<()> {
+    let db = db::init_pool(&config.database_url, &config.secrets_encryption_key).await?;
     let listen_addr = config.listen_addr.clone();
     let static_dir = config.static_dir.clone();
 
@@ -217,7 +226,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/ws/tasks/{id}", get(ws::task_output_ws));
 
     // Conditionally add test-only endpoints when TEST_MODE=true
-    let api = if std::env::var("TEST_MODE").as_deref() == Ok("true") {
+    let api = if auth::test_mode_enabled() {
         tracing::warn!("TEST_MODE enabled — test-only endpoints are active");
         api.route("/auth/test-login", post(auth::test_login))
             .route("/test/intake/sync", post(test_intake_sync))
@@ -244,6 +253,9 @@ async fn main() -> anyhow::Result<()> {
             "/internal/preview-logs/{slug}",
             get(ws::internal_preview_logs),
         );
+
+    // Strip GitHub tokens left in agent remotes by older versions (best effort, background)
+    tokio::spawn(repo_sync::scrub_agent_remotes());
 
     // Recover tasks that were in-progress before the server restarted
     tasks::recover_interrupted_tasks(

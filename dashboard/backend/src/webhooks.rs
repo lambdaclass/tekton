@@ -50,11 +50,13 @@ struct GraphQLError {
 }
 
 async fn get_github_token(state: &AppState, github_login: &str) -> Result<String, AppError> {
-    sqlx::query_scalar("SELECT github_token FROM users WHERE github_login = $1")
-        .bind(github_login)
-        .fetch_one(&state.db)
-        .await
-        .map_err(|_| AppError::Auth("User not found".to_string()))
+    crate::auth::load_github_token(
+        &state.db,
+        &state.config.secrets_encryption_key,
+        github_login,
+    )
+    .await?
+    .ok_or_else(|| AppError::Auth("No GitHub token on file; sign in again".to_string()))
 }
 
 #[derive(Debug, Serialize, Clone)]
