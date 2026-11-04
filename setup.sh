@@ -10,6 +10,7 @@ set -euo pipefail
 # Usage:
 #   ./setup.sh                 # Full setup (NixOS install + configure)
 #   ./setup.sh --skip-install  # Skip NixOS install (server already running)
+#   ./setup.sh --install-only  # Stop after NixOS install (e.g. to snapshot it)
 #
 # Flow:
 #   Phase 1: Gather info (server IP, SSH key, rescue-mode hardware detection)
@@ -596,15 +597,20 @@ setup_server() {
 
 # -- Main ---------------------------------------------------------------------
 SKIP_INSTALL="n"
+INSTALL_ONLY="n"
 
 main() {
     # Parse flags
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --skip-install) SKIP_INSTALL="y"; shift ;;
+            --install-only) INSTALL_ONLY="y"; shift ;;
             *) fatal "Unknown argument: $1" ;;
         esac
     done
+    if [[ "$SKIP_INSTALL" == "y" && "$INSTALL_ONLY" == "y" ]]; then
+        fatal "--skip-install and --install-only can't be used together."
+    fi
 
     echo -e "${BOLD}${CYAN}"
     echo "  ╔══════════════════════════════════════════════════════════╗"
@@ -619,6 +625,11 @@ main() {
         info "Skipping NixOS installation (--skip-install)."
     else
         install_nixos
+    fi
+    if [[ "$INSTALL_ONLY" == "y" ]]; then
+        success "NixOS installed. Stopping before server setup (--install-only)."
+        info "Continue later with: ./setup.sh --skip-install"
+        return
     fi
     setup_server
 }
