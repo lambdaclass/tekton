@@ -79,7 +79,7 @@ preview build myorg/myapp feature-branch
 2. Tekton runs `nix build --impure --expr` to build the NixOS container closure and extract `system.build.previewMeta` (routing, service names, DB mode, host secrets)
 3. The container is created with `nixos-container create`, given a static IP on `10.100.0.0/24`
 4. Tekton writes two files into the container filesystem before it boots:
-   - `/etc/preview-token` — GitHub token for authenticated `git clone`/`git fetch`
+   - `/etc/preview-token` — GitHub token for authenticated `git clone`/`git fetch`. For webhook-started previews this is a GitHub App installation token that can only read this one repo and expires about an hour after it's written; `preview update` writes a fresh one.
    - `/etc/preview.env` — preview metadata (`PREVIEW_REPO_URL`, `PREVIEW_BRANCH`, `PREVIEW_HOST`, `PREVIEW_URL`, forwarded host secrets)
 5. The container starts; the repo's `setupService` clones/builds the app, then `appServices` run the live process(es)
 6. Caddy is configured with routes from `previewMeta.routes` to proxy the subdomain to the container
@@ -124,14 +124,30 @@ The webhook:
 
 ### Webhook Configuration
 
-Environment variables in `/var/secrets/preview-webhook.env`:
+Environment variables in `/var/secrets/preview.env`:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `WEBHOOK_SECRET` | Yes | Secret for verifying webhook signatures |
+| `GITHUB_WEBHOOK_SECRET` | Yes | Secret for verifying webhook signatures |
 | `PREVIEW_DOMAIN` | Yes | Domain for preview URLs (e.g., `preview.example.com`) |
+| `GITHUB_APP_ID` | Yes | ID of the private GitHub App the webhook authenticates as |
+| `GITHUB_APP_INSTALLATION_ID` | Yes | The App's installation ID on your org |
+| `GITHUB_APP_PRIVATE_KEY_PATH` | Yes | Path to the App's private key; always `/var/secrets/github-app.pem` (root, `0400`) |
 | `WEBHOOK_PORT` | No | Port for webhook server (default: `3100`) |
-| `ALLOWED_REPOS` | No | Comma-separated `owner/repo` allowlist (empty = allow all) |
+| `ALLOWED_REPOS` | No | Comma-separated `owner/repo` allowlist (empty = allow all repos owned by the App installation's account) |
+
+`GITHUB_TOKEN` must **not** be set: PAT auth was removed, and the webhook refuses to start if it's there. See [Deployment Guide > GitHub App](deployment-guide.md#2-github-app).
+
+### GitHub tokens
+
+The webhook mints GitHub App installation tokens on demand. Each one expires after an hour and is limited to one repo and one permission:
+
+- PR description edits use `pull_requests: write` on the PR's repo.
+- `preview` gets `contents: read` tokens for the repo it's deploying from `GET http://127.0.0.1:3100/internal/token?repo=owner/name[&min_ttl=seconds]`. Only direct localhost requests are answered. The repo must match the `owner/name` format, be in `ALLOWED_REPOS` when that's set, and be owned by the installation's account.
+
+Tokens are cached per repo and permission set and reused while they have at least 5 minutes left. `preview create`/`update` request a token with at least 50 minutes left (`min_ttl=3000`) right before writing it into the container, since a long build can outlast the one fetched before it.
+
+Previews started from the dashboard still use the logged-in user's OAuth token, passed as `GITHUB_TOKEN` to `preview`.
 
 ## Troubleshooting
 
