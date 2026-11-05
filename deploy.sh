@@ -70,6 +70,76 @@ sync_code() {
     $SSH "cd ${REMOTE_SRC} && git fetch origin && git checkout ${CURRENT_BRANCH} && git reset --hard origin/${CURRENT_BRANCH}"
 }
 
+# ── GitHub App preflight ────────────────────────────────────────────────────
+# The preview webhook refuses to start with a leftover PAT or without the App
+# config, so check before installing anything. Only names, paths and modes are
+# inspected and printed; never values.
+
+preflight_github_app() {
+    info "Checking GitHub App configuration on the server..."
+    local problems rc=0
+    problems=$($SSH 'bash -s' <<'REMOTE'
+env_file=/var/secrets/preview.env
+key_file=/var/secrets/github-app.pem
+fail=0
+if [ ! -f "$env_file" ]; then
+    echo "  - $env_file is missing"
+    fail=1
+else
+    if grep -Eq '^[[:space:]]*(export[[:space:]]+)?GITHUB_TOKEN=' "$env_file"; then
+        echo "  - $env_file still sets GITHUB_TOKEN (the old PAT)"
+        fail=1
+    fi
+    for v in GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY_PATH; do
+        if ! grep -Eq "^[[:space:]]*(export[[:space:]]+)?${v}=.+" "$env_file"; then
+            echo "  - $env_file does not set $v"
+            fail=1
+        fi
+    done
+    if ! grep -Eq "^[[:space:]]*(export[[:space:]]+)?GITHUB_APP_PRIVATE_KEY_PATH=['\"]?${key_file}['\"]?[[:space:]]*$" "$env_file"; then
+        echo "  - GITHUB_APP_PRIVATE_KEY_PATH in $env_file is not $key_file"
+        fail=1
+    fi
+fi
+if [ ! -f "$key_file" ]; then
+    echo "  - $key_file is missing"
+    fail=1
+else
+    owner_mode=$(stat -c '%U:%G %a' "$key_file")
+    if [ "$owner_mode" != "root:root 400" ]; then
+        echo "  - $key_file is $owner_mode, expected root:root 400"
+        fail=1
+    fi
+fi
+exit "$fail"
+REMOTE
+) || rc=$?
+
+    if [[ $rc -eq 0 ]]; then
+        success "GitHub App configuration looks right."
+        return
+    fi
+    if [[ $rc -ne 1 ]]; then
+        error "Could not run the GitHub App preflight on ${SERVER} (exit ${rc})."
+    fi
+    echo -e "${RED}${BOLD}GitHub App preflight failed:${NC}" >&2
+    echo "$problems" >&2
+    cat >&2 <<'EOF'
+
+The preview webhook now authenticates as a GitHub App; PAT support was removed.
+Migrate before deploying (details: docs/deployment-guide.md, "Migrating from a PAT"):
+  1. Register a private GitHub App on the org and install it on the preview repos.
+  2. Copy its private key to /var/secrets/github-app.pem, then:
+       chown root:root /var/secrets/github-app.pem && chmod 0400 /var/secrets/github-app.pem
+  3. In /var/secrets/preview.env, delete the GITHUB_TOKEN line and add:
+       GITHUB_APP_ID=<app id>
+       GITHUB_APP_INSTALLATION_ID=<installation id>
+       GITHUB_APP_PRIVATE_KEY_PATH=/var/secrets/github-app.pem
+  4. Re-run this deploy, check a preview, then revoke the PAT on GitHub.
+EOF
+    error "Nothing was deployed."
+}
+
 # ── Dashboard (Rust backend + React frontend) ──────────────────────────────
 
 deploy_dashboard() {
@@ -167,6 +237,7 @@ deploy_nix_previews() {
 
 setup_repo
 sync_code
+preflight_github_app
 
 case "$COMPONENT" in
     all)
