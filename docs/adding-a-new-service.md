@@ -147,11 +147,17 @@ Tekton writes two files into the container filesystem before it boots.
 
 ### `/etc/preview-token` (mode 604)
 
-Contains a short-lived GitHub App installation token. Use it to authenticate
-`git clone` / `git fetch`. It can only read this repo and expires about an
-hour after it's written, so use it during setup only: don't keep it around for
-anything that runs later (periodic fetches, setup reruns after a restart). Each
-`preview update` writes a fresh token.
+Contains a GitHub token to authenticate `git clone` / `git fetch`. Use it
+during setup only: don't keep it around for anything that runs later (periodic
+fetches, setup reruns after a restart), and never send it anywhere but GitHub.
+
+- **Previews started by the PR webhook:** a GitHub App installation token that
+  can only read this repo and expires about an hour after it's written. Each
+  `preview update` writes a fresh one.
+- **Previews started from the dashboard:** currently the logged-in user's
+  GitHub OAuth token. It has the user's full `repo` scope and doesn't expire
+  soon, so treat this file as a high-value secret. Removing user tokens from
+  containers is tracked in #186.
 
 ```bash
 PREVIEW_TOKEN=$(cat /etc/preview-token 2>/dev/null || echo "")
