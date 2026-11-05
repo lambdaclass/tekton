@@ -30,3 +30,13 @@ jobs:
     uses: lambdaclass/actions/.github/workflows/ai-review-grok.yml@v1
     secrets:
       XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+
+  claude:
+    uses: lambdaclass/actions/.github/workflows/ai-review-claude.yml@v1
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  gemini:
+    uses: lambdaclass/actions/.github/workflows/ai-review-gemini.yml@v1
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
