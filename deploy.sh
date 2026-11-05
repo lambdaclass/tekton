@@ -96,7 +96,9 @@ else
             fail=1
         fi
     done
-    if ! grep -Eq "^[[:space:]]*(export[[:space:]]+)?GITHUB_APP_PRIVATE_KEY_PATH=['\"]?${key_file}['\"]?[[:space:]]*$" "$env_file"; then
+    # Only when it's set; a missing variable was already reported above.
+    if grep -Eq "^[[:space:]]*(export[[:space:]]+)?GITHUB_APP_PRIVATE_KEY_PATH=.+" "$env_file" &&
+        ! grep -Eq "^[[:space:]]*(export[[:space:]]+)?GITHUB_APP_PRIVATE_KEY_PATH=['\"]?${key_file}['\"]?[[:space:]]*$" "$env_file"; then
         echo "  - GITHUB_APP_PRIVATE_KEY_PATH in $env_file is not $key_file"
         fail=1
     fi
