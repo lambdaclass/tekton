@@ -384,6 +384,27 @@ gather_info() {
         fi
     fi
 
+    # GitHub App private key (required by the preview webhook)
+    echo ""
+    echo -e "The preview webhook authenticates to GitHub as a GitHub App."
+    echo -e "Its private key is uploaded to /var/secrets/github-app.pem (root, 0400)."
+    if [[ -n "${GITHUB_APP_PRIVATE_KEY_PATH:-}" ]]; then
+        if [[ ! -f "$GITHUB_APP_PRIVATE_KEY_PATH" ]]; then
+            fatal "GitHub App private key not found (from env): $GITHUB_APP_PRIVATE_KEY_PATH"
+        fi
+        success "GitHub App private key found (from env)."
+    elif confirm "Upload the GitHub App private key now?"; then
+        echo -en "${BOLD}Path to GitHub App private key (.pem):${NC} "
+        read -r GITHUB_APP_PRIVATE_KEY_PATH
+        if [[ -z "$GITHUB_APP_PRIVATE_KEY_PATH" ]] || [[ ! -f "$GITHUB_APP_PRIVATE_KEY_PATH" ]]; then
+            fatal "GitHub App private key not found: ${GITHUB_APP_PRIVATE_KEY_PATH:-<empty>}"
+        fi
+        success "GitHub App private key found."
+    else
+        GITHUB_APP_PRIVATE_KEY_PATH=""
+        warn "Skipping. The preview webhook won't start until the key is at /var/secrets/github-app.pem."
+    fi
+
     # --- Summary ---
     header "Configuration Summary"
     echo -e "  ${BOLD}Server IP:${NC}     $SERVER_IP"
@@ -397,6 +418,7 @@ gather_info() {
     echo -e "  ${BOLD}SSH Key:${NC}       ${SSH_KEY:0:50}..."
     local secrets_summary=""
     [[ -n "$ORIGIN_CERT_PATH" ]] && secrets_summary="Cloudflare cert"
+    [[ -n "$GITHUB_APP_PRIVATE_KEY_PATH" ]] && secrets_summary="${secrets_summary:+$secrets_summary, }GitHub App key"
     echo -e "  ${BOLD}Secrets:${NC}       ${secrets_summary:-none}"
     echo ""
 
@@ -561,6 +583,13 @@ setup_server() {
         scp $ssh_opts "$ORIGIN_CERT_PATH" root@"$SERVER_IP":/var/secrets/cloudflare-origin.pem
         scp $ssh_opts "$ORIGIN_KEY_PATH" root@"$SERVER_IP":/var/secrets/cloudflare-origin-key.pem
         success "Cloudflare Origin CA cert + key uploaded."
+    fi
+
+    if [[ -n "$GITHUB_APP_PRIVATE_KEY_PATH" ]]; then
+        info "Uploading GitHub App private key..."
+        # Streamed under umask 077 (not scp) so the key is never readable by others, even briefly.
+        ssh $ssh_opts root@"$SERVER_IP" "umask 077 && cat > /var/secrets/github-app.pem.tmp && chown root:root /var/secrets/github-app.pem.tmp && chmod 0400 /var/secrets/github-app.pem.tmp && mv -f /var/secrets/github-app.pem.tmp /var/secrets/github-app.pem" < "$GITHUB_APP_PRIVATE_KEY_PATH"
+        success "GitHub App private key uploaded to /var/secrets/github-app.pem."
     fi
 
 

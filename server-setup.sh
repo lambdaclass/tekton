@@ -11,6 +11,7 @@ set -euo pipefail
 #   - Repo cloned at /opt/src/ (done by setup.sh)
 #   - Secret files uploaded to /var/secrets/ (done by setup.sh):
 #     - cloudflare-origin.pem, cloudflare-origin-key.pem
+#     - github-app.pem (GitHub App private key, root 0400)
 #
 # Usage:
 #   cd /opt/src && ./server-setup.sh
@@ -155,6 +156,27 @@ else
 fi
 echo ""
 
+echo -e "${BOLD}--- GitHub App (preview webhook) ---${NC}"
+echo "The preview webhook authenticates to GitHub as a private GitHub App."
+echo "See docs/deployment-guide.md, \"GitHub App\", to register and install it."
+echo "App ID:          the App's settings page, General > About > App ID"
+echo "Installation ID: the number at the end of the installation's settings URL"
+echo "                 (github.com/organizations/<org>/settings/installations/<id>)"
+echo ""
+prompt GITHUB_APP_ID "GitHub App ID"
+while [[ ! "$GITHUB_APP_ID" =~ ^[0-9]+$ ]]; do
+    echo -ne "${RED}Must be numeric.${NC} "
+    GITHUB_APP_ID=""
+    prompt GITHUB_APP_ID "GitHub App ID"
+done
+prompt GITHUB_APP_INSTALLATION_ID "GitHub App installation ID"
+while [[ ! "$GITHUB_APP_INSTALLATION_ID" =~ ^[0-9]+$ ]]; do
+    echo -ne "${RED}Must be numeric.${NC} "
+    GITHUB_APP_INSTALLATION_ID=""
+    prompt GITHUB_APP_INSTALLATION_ID "GitHub App installation ID"
+done
+echo ""
+
 echo -e "${BOLD}--- SSH Key ---${NC}"
 echo "Your SSH public key for accessing agent/preview containers."
 echo ""
@@ -284,6 +306,7 @@ echo "  Disk 1:         $DISK_DEVICE_1"
 echo "  Domain:         $DOMAIN"
 echo "  GitHub Org:     $GITHUB_ORG"
 echo "  GitHub Client:  ${GITHUB_CLIENT_ID:0:20}..."
+echo "  GitHub App:     ID ${GITHUB_APP_ID}, installation ${GITHUB_APP_INSTALLATION_ID}"
 echo "  Allowed repos:  ${ALLOWED_REPOS:-<all>}"
 echo ""
 
@@ -395,6 +418,10 @@ GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
 PREVIEW_DOMAIN=${DOMAIN}
 WEBHOOK_PORT=3100
 ALLOWED_REPOS=${ALLOWED_REPOS}
+# GitHub App used by the preview webhook (no GITHUB_TOKEN: PAT auth was removed)
+GITHUB_APP_ID=${GITHUB_APP_ID}
+GITHUB_APP_INSTALLATION_ID=${GITHUB_APP_INSTALLATION_ID}
+GITHUB_APP_PRIVATE_KEY_PATH=/var/secrets/github-app.pem
 # SSH public key injected into preview containers (tekton uses this to grant SSH access)
 ADMIN_SSH_KEY=${SSH_KEY}
 # Add any repo-specific hostSecrets here, e.g.:
@@ -404,6 +431,19 @@ ADMIN_SSH_KEY=${SSH_KEY}
 ENVEOF
 chmod 600 /var/secrets/preview.env
 success "preview.env written."
+
+info "Checking GitHub App private key..."
+if [[ -f /var/secrets/github-app.pem ]]; then
+    if [[ "$(stat -c '%U:%G %a' /var/secrets/github-app.pem)" != "root:root 400" ]]; then
+        chown root:root /var/secrets/github-app.pem
+        chmod 0400 /var/secrets/github-app.pem
+        warn "Fixed /var/secrets/github-app.pem ownership/mode to root:root 0400."
+    fi
+    success "GitHub App private key present at /var/secrets/github-app.pem (root, 0400)."
+else
+    warn "/var/secrets/github-app.pem is missing. The preview webhook won't start until it's there."
+    warn "Upload it (e.g. re-run setup.sh, or copy it over) and run: chown root:root /var/secrets/github-app.pem && chmod 0400 /var/secrets/github-app.pem"
+fi
 
 info "Writing webhook Caddy route..."
 cat > /etc/caddy/previews/webhook.caddy << CADDYEOF
