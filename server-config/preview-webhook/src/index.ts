@@ -1,5 +1,6 @@
 import Fastify from "fastify";
-import { config, tokenProvider } from "./config.js";
+import { loadConfig, createTokenProvider } from "./config.js";
+import { registerInternalTokenRoute } from "./internal-token.js";
 import { verifySignature, parsePREvent } from "./github.js";
 import {
   prToSlug,
@@ -25,6 +26,9 @@ const rawBodyStore = new WeakMap<IncomingMessage, string>();
 
 async function main(): Promise<void> {
   console.log("Starting preview webhook server...");
+
+  const config = loadConfig();
+  const tokenProvider = createTokenProvider();
 
   const fastify = Fastify({
     logger: false,
@@ -52,26 +56,7 @@ async function main(): Promise<void> {
     return { status: "ok", uptime: process.uptime() };
   });
 
-  fastify.get("/internal/token", async (request, reply) => {
-    // Only allow direct localhost requests (not proxied through Caddy).
-    // Caddy reverse-proxies all paths on webhook.DOMAIN to localhost:3100,
-    // so request.ip is always 127.0.0.1.  We reject proxied requests by
-    // checking for X-Forwarded-For which Caddy always sets.
-    const remoteAddr = request.ip;
-    const isLocalhost = remoteAddr === "127.0.0.1" || remoteAddr === "::1" || remoteAddr === "::ffff:127.0.0.1";
-    const isProxied = !!request.headers["x-forwarded-for"];
-    if (!isLocalhost || isProxied) {
-      return reply.code(403).send({ error: "Forbidden: localhost only" });
-    }
-
-    try {
-      const token = await tokenProvider.getToken();
-      return { token, mode: tokenProvider.mode };
-    } catch (error) {
-      console.error("[internal/token] Failed to get token:", error);
-      return reply.code(500).send({ error: "Failed to obtain token" });
-    }
-  });
+  registerInternalTokenRoute(fastify, { tokenProvider, allowedRepos: config.allowedRepos });
 
   fastify.post("/webhook/github", async (request, reply) => {
     const eventType = request.headers["x-github-event"];
