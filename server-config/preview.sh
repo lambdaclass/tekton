@@ -15,20 +15,20 @@ SECRETS_FILE="/var/secrets/preview.env"
 SUBNET_PREFIX="10.100"
 CONFIG_CACHE_DIR="$PREVIEW_DIR/.config-cache"
 CLOSURE_CACHE_DIR="$PREVIEW_DIR/.closure-cache"
+# Minimum lifetime (seconds) of a GitHub App token handed to a container
+CONTAINER_TOKEN_MIN_TTL=3000
 
 # -- Load secrets -------------------------------------------------------------
 load_secrets() {
     if [[ -f "$SECRETS_FILE" ]]; then
-        # Save any caller-provided GITHUB_TOKEN (e.g. user OAuth from the dashboard)
-        # so it isn't overwritten by the server-wide token in the secrets file.
-        local _caller_token="${GITHUB_TOKEN:-}"
+        # A leftover PAT would override the caller's token; refuse instead.
+        if grep -q '^[[:space:]]*\(export[[:space:]]\+\)\?GITHUB_TOKEN=' "$SECRETS_FILE"; then
+            fatal "$SECRETS_FILE still sets GITHUB_TOKEN. PAT auth has been removed: delete that line and revoke the PAT (see docs/deployment-guide.md)."
+        fi
         set -a
         # shellcheck source=/dev/null
         source "$SECRETS_FILE"
         set +a
-        if [[ -n "$_caller_token" ]]; then
-            export GITHUB_TOKEN="$_caller_token"
-        fi
     fi
 }
 
@@ -163,24 +163,38 @@ drop_db() {
 
 # -- GitHub helpers -----------------------------------------------------------
 
+# Prints a GitHub token that can read <repo>.
+# Args: repo [min_ttl_seconds]
+# An explicit GITHUB_TOKEN (the logged-in user's OAuth token passed by the
+# dashboard) wins. Otherwise ask the preview webhook for a contents:read GitHub
+# App installation token scoped to <repo> with at least min_ttl seconds left.
 get_github_token() {
-    # Prefer an explicit GITHUB_TOKEN (e.g. the logged-in user's OAuth token
-    # passed by the dashboard) over the server-wide webhook token.
+    local repo="$1" min_ttl="${2:-}"
     if [[ -n "${GITHUB_TOKEN:-}" ]]; then
         info "Using token from environment (user OAuth)" >&2
         echo "$GITHUB_TOKEN"
         return
     fi
     local webhook_port="${WEBHOOK_PORT:-3100}"
-    local token_response
-    if token_response=$(curl -sf "http://127.0.0.1:${webhook_port}/internal/token" 2>/dev/null); then
-        local auth_mode
-        auth_mode=$(echo "$token_response" | jq -r '.mode')
-        info "Using token from webhook (auth mode: $auth_mode)" >&2
-        echo "$token_response" | jq -r '.token'
+    local -a query=(--data-urlencode "repo=${repo}")
+    if [[ -n "$min_ttl" ]]; then
+        query+=(--data-urlencode "min_ttl=${min_ttl}")
+    fi
+    local response http_code body
+    response=$(curl -s -G -w '\n%{http_code}' "${query[@]}" \
+        "http://127.0.0.1:${webhook_port}/internal/token" 2>/dev/null) || response=$'\n000'
+    http_code="${response##*$'\n'}"
+    body="${response%$'\n'*}"
+    if [[ "$http_code" == "200" ]]; then
+        local expires_at
+        expires_at=$(jq -r '.expires_at' <<< "$body")
+        info "Using GitHub App token for ${repo} (expires ${expires_at})" >&2
+        jq -r '.token' <<< "$body"
         return
     fi
-    fatal "No GitHub token available. Check $SECRETS_FILE or ensure the webhook is running."
+    local reason
+    reason=$(jq -r '.error // empty' <<< "$body" 2>/dev/null || true)
+    fatal "Could not get a GitHub App token for ${repo} from the preview webhook (HTTP ${http_code}${reason:+: $reason}). Check 'systemctl status preview-webhook' and the GITHUB_APP_* settings in $SECRETS_FILE."
 }
 
 get_commit_sha() {
@@ -544,7 +558,7 @@ cmd_build() {
     load_secrets
 
     local github_token
-    github_token=$(get_github_token)
+    github_token=$(get_github_token "$repo")
 
     local commit_sha
     commit_sha=$(get_commit_sha "$repo" "$branch" "$github_token")
@@ -606,9 +620,9 @@ cmd_create() {
         fatal "ADMIN_SSH_KEY not set in $SECRETS_FILE"
     fi
 
-    # Get GitHub token
+    # Get GitHub token (for the API calls before the build)
     local github_token
-    github_token=$(get_github_token)
+    github_token=$(get_github_token "$repo")
 
     # Get commit SHA (cache key for this deploy)
     local commit_sha
@@ -669,7 +683,9 @@ cmd_create() {
         --host-address "$host_ip" \
         --local-address "$local_ip"
 
-    # Write container environment files
+    # Write container environment files. App tokens live one hour and the build
+    # may have taken a while, so hand the container a fresh one.
+    github_token=$(get_github_token "$repo" "$CONTAINER_TOKEN_MIN_TTL")
     write_env_files "$slug" "$repo" "$branch" "$domain" "$host_ip" "$db_mode" "$db_pass" "$meta_file" "$github_token"
     echo "$commit_sha" > "$PREVIEW_DIR/${slug}.sha"
 
@@ -776,7 +792,7 @@ cmd_update() {
     fi
 
     local github_token
-    github_token=$(get_github_token)
+    github_token=$(get_github_token "$repo")
 
     # Fetch latest commit SHA from GitHub
     local new_sha
@@ -813,7 +829,8 @@ cmd_update() {
         # ── CODE-ONLY UPDATE (fast path) ──────────────────────────────────
         info "NixOS closure unchanged — doing code-only update"
 
-        # Refresh token inside the container
+        # Refresh token inside the container (fresh: the build may have taken a while)
+        github_token=$(get_github_token "$repo" "$CONTAINER_TOKEN_MIN_TTL")
         local container_root="/var/lib/nixos-containers/${slug}"
         local token_file="${container_root}/etc/preview-token"
         if [[ -f "$token_file" ]]; then
@@ -901,7 +918,8 @@ cmd_update() {
         # systemd needs to pick up the new container unit files before start
         systemctl daemon-reload
 
-        # Write environment files
+        # Write environment files with a fresh token (the build may have taken a while)
+        github_token=$(get_github_token "$repo" "$CONTAINER_TOKEN_MIN_TTL")
         write_env_files "$slug" "$repo" "$branch" "$domain" "$host_ip" "$new_db_mode" "$db_pass" "$meta_file" "$github_token"
 
         # Update SHA tracking

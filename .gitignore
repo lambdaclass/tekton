@@ -11,4 +11,5 @@ test-results/
 
 # Server stuff
 server-config/preview-webhook/dist
+server-config/preview-webhook/dist-test
 server-config/preview-webhook/node_modules

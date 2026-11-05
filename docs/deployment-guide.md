@@ -14,7 +14,7 @@ Complete guide to deploying Tekton from scratch and maintaining it afterwards.
 
 **External services (set up before or during install):**
 - [Cloudflare](https://dash.cloudflare.com) account with your domain added
-- [GitHub Personal Access Token](https://github.com/settings/tokens) with `repo` scope
+- A private [GitHub App](#2-github-app) owned by your org, for the preview webhook
 - [GitHub OAuth App](https://github.com/settings/developers) for dashboard login
 - Claude Max/Teams subscription
 
@@ -70,15 +70,35 @@ The wildcard record covers preview subdomains (e.g., `42.yourdomain.com`) and th
 
 **Important**: All records must be **proxied** (orange cloud). If set to "DNS only" (grey cloud), browsers will connect directly to your server and reject the Origin CA certificate.
 
-### 2. GitHub Personal Access Token
+### 2. GitHub App
 
-Create a Personal Access Token (classic) at [GitHub Settings > Developer settings > Personal access tokens > Tokens (classic)](https://github.com/settings/tokens):
+The preview webhook authenticates to GitHub as a GitHub App. For each request it mints an installation token that expires after one hour and is limited to one repo and the minimum permission:
 
-1. Click **Generate new token** > **Generate new token (classic)**
-2. Give it a descriptive name (e.g., "Preview Deployments")
-3. Select the **`repo`** scope (full control of private repositories)
-4. Click **Generate token**
-5. **Copy the token** — it's only shown once
+- `contents: read` to look up commits, read `preview-config.nix`, and clone inside the preview container;
+- `pull_requests: write` to add the preview link to the PR description.
+
+Personal Access Tokens are not supported. The webhook refuses to start if `GITHUB_TOKEN` is set in `preview.env`.
+
+**Register the App** at **Org settings > Developer settings > GitHub Apps > New GitHub App** (`https://github.com/organizations/<org>/settings/apps/new`):
+
+1. **GitHub App name**: e.g., "Tekton"
+2. **Homepage URL**: `https://dashboard.yourdomain.com`
+3. **Webhook**: uncheck **Active**. Previews are triggered by the per-repo webhooks (see [Post-setup](#step-3-post-setup)), not by App events.
+4. **Repository permissions**: set **Contents** to *Read-only* and **Pull requests** to *Read and write*. **Metadata** becomes *Read-only* automatically. Leave everything else at *No access*.
+5. **Where can this GitHub App be installed?**: **Only on this account**. A private App can't be installed by any other account.
+6. Click **Create GitHub App**.
+7. Note the **App ID** shown under **About** on the App's settings page.
+8. Under **Private keys**, click **Generate a private key**. A `.pem` file downloads. This is the most sensitive secret in the deployment: it can mint tokens for every repo the App is installed on. Keep it out of shared drives and chat, and delete your local copy once it's uploaded.
+
+**Install the App**: on the App's page, click **Install App**, choose your org, select **Only select repositories**, and pick the repos that should get previews. After installing, the browser lands on `https://github.com/organizations/<org>/settings/installations/<installation-id>`. The number at the end is the **installation ID**.
+
+Only repos owned by the installation's account can get tokens. If `ALLOWED_REPOS` lists repos from another owner, their previews will fail.
+
+The setup scripts ask for:
+- **Path to the App's private key** (`setup.sh`, local), uploaded to `/var/secrets/github-app.pem`, owned by root, mode `0400`
+- **App ID** and **installation ID** (`server-setup.sh`), written to `preview.env`
+
+**Rotating the key**: generate a new private key on the App's settings page, replace `/var/secrets/github-app.pem` (root, `0400`), run `systemctl restart preview-webhook`, check that a preview still gets created, then delete the old key on the App's settings page.
 
 ### 3. GitHub OAuth App
 
@@ -131,7 +151,7 @@ The script runs through 3 phases:
 **Phase 1: Gather information (local)**
 - Prompts for your server IP and selects your SSH key
 - SSHes into rescue mode to auto-detect: gateway IP, network interface (translates rescue `eth0` to predictable name like `enp3s0`), prefix length, disk devices, and kernel modules
-- Asks for optional secret file paths to upload (Cloudflare cert + key, GitHub PAT)
+- Asks for secret file paths to upload (Cloudflare cert + key, GitHub App private key)
 - Shows a summary and asks for confirmation
 
 With `--skip-install`, rescue-mode hardware detection is skipped (the server is already running NixOS).
@@ -145,14 +165,14 @@ Skipped with `--skip-install`.
 
 **Phase 3: Server setup**
 - Clones this repository on the server at `/opt/src/`
-- Uploads secret files to `/var/secrets/` (Cloudflare certs, GitHub PAT)
+- Uploads secret files to `/var/secrets/` (Cloudflare certs, GitHub App private key as `github-app.pem`, root `0400`)
 - SSHes into the server and runs `server-setup.sh` interactively
 
 #### What server-setup.sh does (runs on the server)
 
 The `server-setup.sh` script is the main server-side configuration tool. It prompts for all configuration values and handles the full build:
 
-1. **Configuration prompts**: domain, GitHub OAuth App credentials, GitHub organization, GitHub PAT, webhook secret, allowed repos, SSH public key
+1. **Configuration prompts**: domain, GitHub OAuth App credentials, GitHub organization, webhook secret, GitHub App ID and installation ID, allowed repos, SSH public key
 2. **Hardware detection**: auto-detects server IP, gateway, interface, disks, and kernel modules from the running system
 3. **Secret generation**: JWT secret, root SSH key
 4. **NixOS configuration**: substitutes all placeholders in `.nix` config files and installs to `/etc/nixos/`
@@ -199,8 +219,9 @@ After making changes to the codebase, use `deploy.sh` to update the server. It p
 
 1. Ensures a git clone exists at `/opt/src/` on the server (creates on first run)
 2. Pushes your current branch to origin and pulls it on the server
-3. Builds the requested components using `nix-shell` on the server
-4. Restarts affected services
+3. Checks the GitHub App configuration (`preflight_github_app`): `preview.env` must not set `GITHUB_TOKEN` and must set the three `GITHUB_APP_*` variables, and `/var/secrets/github-app.pem` must exist, owned by root, mode `0400`. On failure it prints the migration steps and stops before anything is installed. It only checks names, paths and modes, never values.
+4. Builds the requested components using `nix-shell` on the server
+5. Restarts affected services
 
 ### What each component does
 
@@ -215,6 +236,26 @@ After making changes to the codebase, use `deploy.sh` to update the server. It p
 - **Never scp `configuration.nix` or `agent-config.nix` directly** — the local copies have placeholder values. Either edit on the server or use `server-setup.sh` for a full reconfigure.
 - The deploy script automatically skips both template files.
 - First Rust build on a fresh server takes a while (downloading crates). Subsequent builds are fast.
+
+### Migrating from a PAT
+
+Servers set up before the GitHub App change have a Personal Access Token as `GITHUB_TOKEN` in `/var/secrets/preview.env`. `deploy.sh` refuses to deploy until it's replaced:
+
+1. **Create and install the App** as described in [GitHub App](#2-github-app), and note the App ID and installation ID.
+2. **Upload the key** to the server:
+   ```bash
+   scp tekton-app.private-key.pem root@<server-ip>:/var/secrets/github-app.pem
+   ssh root@<server-ip> 'chown root:root /var/secrets/github-app.pem && chmod 0400 /var/secrets/github-app.pem'
+   ```
+3. **Edit `/var/secrets/preview.env`** on the server: delete the `GITHUB_TOKEN=` line and add:
+   ```bash
+   GITHUB_APP_ID=<app-id>
+   GITHUB_APP_INSTALLATION_ID=<installation-id>
+   GITHUB_APP_PRIVATE_KEY_PATH=/var/secrets/github-app.pem
+   ```
+4. **Deploy**: `./deploy.sh <server-ip>`. The preflight should pass and `systemctl status preview-webhook` should show it running with `Auth mode: GitHub App` in its log.
+5. **Check it works**: open (or close and reopen) a PR on an installed repo, confirm the preview gets created, and confirm the PR description gets its preview link. The edit now shows the App (e.g. `tekton[bot]`) as the editor.
+6. **Revoke the PAT** on GitHub (**Settings > Developer settings > Personal access tokens**). Nothing on the server uses it anymore.
 
 ### Claude OAuth token refresh
 
@@ -302,7 +343,7 @@ Key points:
   preview.env                          # Preview webhook environment variables
   cloudflare-origin.pem                # Cloudflare Origin CA cert
   cloudflare-origin-key.pem            # Cloudflare Origin CA key
-  github-pat                            # GitHub Personal Access Token
+  github-app.pem                       # GitHub App private key (root, 0400)
   claude/
     oauth_token                        # Long-lived Claude OAuth token
 
@@ -354,12 +395,17 @@ STATIC_DIR=/opt/dashboard/static
 **`/var/secrets/preview.env`:**
 
 ```bash
-GITHUB_TOKEN=<personal-access-token>
 GITHUB_WEBHOOK_SECRET=<webhook-secret>
 PREVIEW_DOMAIN=yourdomain.com
 WEBHOOK_PORT=3100
 ALLOWED_REPOS=yourorg/repo1,yourorg/repo2
+GITHUB_APP_ID=<app-id>
+GITHUB_APP_INSTALLATION_ID=<installation-id>
+GITHUB_APP_PRIVATE_KEY_PATH=/var/secrets/github-app.pem
+ADMIN_SSH_KEY="ssh-ed25519 AAAA..."
 ```
+
+No `GITHUB_TOKEN`: the webhook refuses to start if it's set, and `preview` refuses to run.
 
 **`/var/secrets/claude/oauth_token`:**
 
@@ -413,6 +459,8 @@ Template files in the repo have placeholder values that `server-setup.sh` substi
 | Claude "Failed to read Claude OAuth token" | File `/var/secrets/claude/oauth_token` doesn't exist. Create it (see Claude OAuth section above). |
 | SSH asks for password | SSH key not baked into container config. Run `agent build` after config changes, then recreate. |
 | SSH host key warning | `ssh-keygen -R <container-ip>` |
+| Preview webhook won't start: "GITHUB_TOKEN is set" | Remove `GITHUB_TOKEN` from `/var/secrets/preview.env`. See [Migrating from a PAT](#migrating-from-a-pat). |
+| `preview create/update`: "Could not get a GitHub App token for owner/repo" | Check `journalctl -u preview-webhook`. HTTP 403 means the repo isn't in `ALLOWED_REPOS` or isn't owned by the App installation's account. HTTP 502 usually means the App isn't installed on that repo or the App ID, installation ID or key is wrong. HTTP 000 means the webhook isn't running. |
 | Push rejected / commit not verified | Commits are created via the GitHub GraphQL API using each user's OAuth token. Verify the user's token has `repo` scope (re-login to the dashboard to refresh it). |
 
 ### Network issues

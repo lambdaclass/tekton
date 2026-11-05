@@ -111,7 +111,7 @@ export async function addPreviewLinkToPR(
 ): Promise<void> {
   console.log(`[preview] Adding preview link to ${repo}#${prNumber}`);
   try {
-    const token = await provider.getToken();
+    const { token } = await provider.getToken({ repo, permissions: { pull_requests: "write" } });
     const body = await getPRBody(repo, prNumber, token);
     if (body === null) return;
 
@@ -131,7 +131,7 @@ export async function ensurePreviewLinkOnPR(
   provider: TokenProvider
 ): Promise<void> {
   try {
-    const token = await provider.getToken();
+    const { token } = await provider.getToken({ repo, permissions: { pull_requests: "write" } });
     const body = await getPRBody(repo, prNumber, token);
     if (body === null) return;
 

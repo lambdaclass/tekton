@@ -93,9 +93,13 @@ GitHub PR event
       → verifies HMAC-SHA256 signature
       → returns 202 immediately
       → background: runs `preview create/update/destroy` via shell
+        → `preview` gets a per-repo contents:read GitHub App token
+          from localhost:3100/internal/token
         → nixos-container create/start/stop/destroy
         → writes/removes Caddy route files
         → reloads Caddy
+      → adds the preview link to the PR description
+        (GitHub App token, pull_requests:write on that repo)
 ```
 
 ### Preview Request Flow
@@ -135,7 +139,9 @@ Browser: https://42.preview.example.com/api/users
 | `server-config/preview-webhook/src/index.ts` | Fastify server, webhook endpoint |
 | `server-config/preview-webhook/src/github.ts` | HMAC signature verification, PR event parsing |
 | `server-config/preview-webhook/src/preview.ts` | Shells out to `preview` CLI, adds PR links |
-| `server-config/preview-webhook/src/config.ts` | Environment variable loading |
+| `server-config/preview-webhook/src/config.ts` | Environment variable loading; refuses to start without the GitHub App config or with a `GITHUB_TOKEN` set |
+| `server-config/preview-webhook/src/auth.ts` | GitHub App token provider: mints installation tokens narrowed to one repo and permission set, cached per (repo, permissions) |
+| `server-config/preview-webhook/src/internal-token.ts` | `GET /internal/token?repo=`: localhost-only `contents:read` tokens for `preview.sh` |
 
 ### Initial Install
 
