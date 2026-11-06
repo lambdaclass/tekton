@@ -31,6 +31,8 @@ import {
   toggleSentrySource,
   listSentryIssues,
   testSentrySource,
+  listAgentContainers,
+  destroyAgentContainer,
 } from '@/lib/api';
 import type { PolicyPreset, IntakeSource, SentrySource, SentrySourceInput } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -47,10 +49,10 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
-import { Users, KeyRound, Shield, Building, Trash2, Plus, X, Settings, Zap, Eye, ScrollText, FlaskConical, Pencil, Info, Bug } from 'lucide-react';
+import { Users, KeyRound, Shield, Building, Trash2, Plus, X, Settings, Zap, Eye, ScrollText, FlaskConical, Pencil, Info, Bug, Container } from 'lucide-react';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Navigate } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 
 const ROLES = ['admin', 'member', 'viewer'] as const;
 
@@ -71,6 +73,7 @@ export default function Admin() {
       <OrgPoliciesSection queryClient={queryClient} />
       <IntakeSourcesSection queryClient={queryClient} />
       <SentrySourcesSection queryClient={queryClient} />
+      <AgentContainersSection queryClient={queryClient} />
     </div>
   );
 }
@@ -153,6 +156,98 @@ function UsersSection({ queryClient }: { queryClient: ReturnType<typeof useQuery
             login={repoDialogUser}
             onClose={() => setRepoDialogUser(null)}
           />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+const FINAL_STATUSES = ['completed', 'failed'];
+
+function AgentContainersSection({ queryClient }: { queryClient: ReturnType<typeof useQueryClient> }) {
+  const { data: agents, isLoading, error } = useQuery({
+    queryKey: ['admin-agents'],
+    queryFn: listAgentContainers,
+  });
+
+  const destroyMutation = useMutation({
+    mutationFn: destroyAgentContainer,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-agents'] });
+    },
+  });
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Container className="size-5" />
+          Agent containers
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <p className="text-muted-foreground text-sm">Loading containers...</p>
+        ) : error ? (
+          <p className="text-destructive text-sm">Failed to list containers: {(error as Error).message}</p>
+        ) : !agents?.length ? (
+          <p className="text-muted-foreground text-sm">No agent containers.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
+                  <th className="pb-2 pr-4 font-medium">Container</th>
+                  <th className="pb-2 pr-4 font-medium">Task</th>
+                  <th className="pb-2 pr-4 font-medium">Status</th>
+                  <th className="pb-2 pr-4 font-medium">Kept until</th>
+                  <th className="pb-2 font-medium" />
+                </tr>
+              </thead>
+              <tbody>
+                {agents.map((a) => {
+                  const live = a.task_status !== null && !FINAL_STATUSES.includes(a.task_status);
+                  return (
+                    <tr key={a.name} className="border-b border-border/50 hover:bg-secondary/40 transition-colors duration-100">
+                      <td className="py-2 pr-4 font-mono">{a.name}</td>
+                      <td className="py-2 pr-4">
+                        {a.task_id ? (
+                          <Link to={`/tasks/${a.task_id}`} className="hover:underline">
+                            {a.task_name || a.task_id.slice(0, 8)}
+                          </Link>
+                        ) : (
+                          <span className="text-muted-foreground">none</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-4">{a.task_status?.replace(/_/g, ' ') ?? '-'}</td>
+                      <td className="py-2 pr-4">
+                        {a.retained_until ? new Date(a.retained_until).toLocaleString() : '-'}
+                      </td>
+                      <td className="py-2 text-right">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={live || destroyMutation.isPending}
+                          title={live ? 'The task is still running; mark it done instead' : undefined}
+                          onClick={() => {
+                            if (window.confirm(`Destroy ${a.name}? A snapshot of its work is saved first.`)) {
+                              destroyMutation.mutate(a.name);
+                            }
+                          }}
+                        >
+                          <Trash2 className="size-3 mr-1" />
+                          Destroy
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {destroyMutation.error && (
+          <p className="mt-2 text-destructive text-sm">{(destroyMutation.error as Error).message}</p>
         )}
       </CardContent>
     </Card>

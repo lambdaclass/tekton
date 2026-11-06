@@ -19,6 +19,8 @@ import {
   MessageSquare,
   CheckCircle,
   Code,
+  Upload,
+  Trash2,
 } from 'lucide-react';
 import LogViewer from '@/components/LogViewer';
 import TaskChat from '@/components/TaskChat';
@@ -34,6 +36,7 @@ import {
   createPR,
   getTaskDiff,
   sendTaskMessage,
+  discardTaskAgent,
 } from '@/lib/api';
 import type { TaskAction } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -42,7 +45,8 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { statusVariant } from '@/lib/status';
 import { formatCost, timeAgo } from '@/lib/utils';
 
-const CHAT_STATUSES = ['awaiting_followup', 'running_claude', 'pushing', 'creating_preview'];
+const CHAT_STATUSES = ['awaiting_followup', 'push_failed', 'running_claude', 'pushing', 'creating_preview'];
+const IDLE_STATUSES = ['awaiting_followup', 'push_failed'];
 
 function defaultPanel(status: string | undefined): string {
   if (!status) return 'logs';
@@ -115,7 +119,26 @@ export default function TaskDetail() {
     },
   });
 
+  const retryPushMutation = useMutation({
+    mutationFn: () => sendTaskMessage(id!, '__retry_push__'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['task', id] });
+    },
+  });
+
+  const discardMutation = useMutation({
+    mutationFn: () => discardTaskAgent(id!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['task', id] });
+    },
+  });
+
   const isViewer = me?.role === 'viewer';
+  const canDiscard =
+    task &&
+    !isViewer &&
+    task.agent_retained_until &&
+    (task.status === 'completed' || task.status === 'failed');
   const showChat = task && CHAT_STATUSES.includes(task.status) && me && !isViewer;
   const canReopen = task && !isViewer && (task.status === 'completed' || task.status === 'failed');
   const canCreatePR =
@@ -192,7 +215,18 @@ export default function TaskDetail() {
               Parent: <span className="font-mono">{task.parent_task_id.slice(0, 8)}</span>
             </Link>
           )}
-          {task?.status === 'awaiting_followup' && !isViewer && (
+          {task?.status === 'push_failed' && !isViewer && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => retryPushMutation.mutate()}
+              disabled={retryPushMutation.isPending}
+            >
+              <Upload className="size-3.5 mr-1" />
+              {retryPushMutation.isPending ? 'Retrying...' : 'Retry push'}
+            </Button>
+          )}
+          {task && IDLE_STATUSES.includes(task.status) && !isViewer && (
             <Button
               size="sm"
               variant="outline"
@@ -202,6 +236,26 @@ export default function TaskDetail() {
             >
               <CheckCircle className="size-3.5 mr-1" />
               {markDoneMutation.isPending ? 'Completing...' : 'Mark Done'}
+            </Button>
+          )}
+          {canDiscard && (
+            <Button
+              size="sm"
+              variant="outline"
+              title={`Container kept until ${new Date(task.agent_retained_until!).toLocaleString()}`}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    "Destroy this task's agent container now? A snapshot of its work is saved on the server, but Reopen will start from a fresh clone.",
+                  )
+                ) {
+                  discardMutation.mutate();
+                }
+              }}
+              disabled={discardMutation.isPending}
+            >
+              <Trash2 className="size-3.5 mr-1" />
+              {discardMutation.isPending ? 'Discarding...' : 'Discard container'}
             </Button>
           )}
           {canReopen && (
@@ -285,7 +339,7 @@ export default function TaskDetail() {
           <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-card/50 shrink-0">
             <MessageSquare className="size-3.5 text-muted-foreground" />
             <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Conversation</span>
-            {task?.status === 'awaiting_followup' && (
+            {task && IDLE_STATUSES.includes(task.status) && (
               <span className="size-1.5 rounded-full bg-amber-400 animate-pulse" />
             )}
           </div>
@@ -446,6 +500,13 @@ export default function TaskDetail() {
                   <span className="text-destructive text-xs font-medium uppercase tracking-wider">Error</span>
                   <p className="mt-1 text-sm text-destructive/80">{task.error_message}</p>
                 </div>
+              )}
+
+              {canDiscard && (
+                <p className="mb-6 text-xs text-muted-foreground">
+                  The agent's container is kept until{' '}
+                  {new Date(task.agent_retained_until!).toLocaleString()}. Reopen continues from it.
+                </p>
               )}
 
               {/* Subtasks */}

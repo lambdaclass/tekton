@@ -25,6 +25,12 @@ export function statusVariant(status: string): {
         className: "text-muted-foreground",
         icon: Clock,
       };
+    case "push_failed":
+      return {
+        variant: "outline",
+        className: "text-red-700 dark:text-red-400/80 border-red-700/20 dark:border-red-400/20",
+        icon: Clock,
+      };
     case "awaiting_followup":
       return {
         variant: "outline",

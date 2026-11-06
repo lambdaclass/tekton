@@ -9,6 +9,8 @@ pending → creating_agent → cloning → running_claude → awaiting_followup 
                                           ↕
                                      (follow-up loop)
 
+pushing → push_failed → (retry push / follow-up) → pushing
+
 Any state → failed
 ```
 
@@ -21,12 +23,19 @@ Any state → failed
 | `awaiting_followup` | Claude finished; waiting for user feedback |
 | `pushing` | Pushing changes to GitHub |
 | `creating_preview` | Building a preview environment |
+| `push_failed` | Pushing the agent's changes failed. The container is kept so Retry push or a follow-up can deliver them |
 | `completed` | Terminal. Task finished successfully |
 | `failed` | Terminal. An error occurred at any stage |
 
 ### Follow-up loop
 
 After Claude produces its initial output the task enters `awaiting_followup`. When the user sends a follow-up message it cycles back to `running_claude`, then returns to `awaiting_followup` once Claude responds. This loop repeats until the user marks the task as complete, at which point it proceeds through `pushing` → `creating_preview` → `completed`.
+
+### Failures and the agent container
+
+A failed push does not fail the task. It moves to `push_failed` and the agent container is kept for `AGENT_RETENTION_PUSH_FAILED_HOURS`. The next successful push returns it to `awaiting_followup`. If the user marks it done, or the retention runs out, while the push is still failing, the task becomes `failed`.
+
+When a task fails after reaching `running_claude`, its container is kept for `AGENT_RETENTION_FAILED_HOURS` and Reopen continues in it. Failures before that point (`creating_agent`, `cloning`) destroy the container right away. Every other destroy saves a snapshot of the agent's work first; see the deployment guide.
 
 ## Intake Issue States
 

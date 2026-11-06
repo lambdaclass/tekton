@@ -372,6 +372,7 @@ VALUES
 
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS intake_issue_id BIGINT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS source_type TEXT DEFAULT 'manual';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS agent_retained_until TIMESTAMPTZ;
 
 -- ============================================================
 -- Intake: Create tables
