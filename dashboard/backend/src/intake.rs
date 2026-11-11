@@ -471,6 +471,7 @@ async fn poll_source(config: &Config, db: &PgPool, source: &IntakeSource) -> Res
         db,
         &config.secrets_encryption_key,
         &source.run_as_user,
+        AppError::Internal,
     )
     .await?;
 

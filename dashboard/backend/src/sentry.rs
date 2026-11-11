@@ -538,6 +538,7 @@ async fn poll_sentry_source(
         db,
         &config.secrets_encryption_key,
         &source.run_as_user,
+        AppError::Internal,
     )
     .await?;
 

@@ -45,13 +45,13 @@ pub(crate) async fn run_as_user_token(
     state: &crate::AppState,
     login: &str,
 ) -> Result<String, AppError> {
-    crate::auth::load_github_token(&state.db, &state.config.secrets_encryption_key, login)
-        .await?
-        .ok_or_else(|| {
-            AppError::BadRequest(format!(
-                "User '{login}' not found or has no usable GitHub token; they must sign in again"
-            ))
-        })
+    crate::auth::load_run_as_user_token(
+        &state.db,
+        &state.config.secrets_encryption_key,
+        login,
+        AppError::BadRequest,
+    )
+    .await
 }
 
 /// POST /api/admin/intake/sources

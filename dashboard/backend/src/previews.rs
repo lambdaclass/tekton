@@ -7,16 +7,6 @@ use crate::models::{CreatePreviewRequest, Preview};
 use crate::shell;
 use crate::AppState;
 
-async fn get_github_token(state: &AppState, github_login: &str) -> Result<String, AppError> {
-    crate::auth::load_github_token(
-        &state.db,
-        &state.config.secrets_encryption_key,
-        github_login,
-    )
-    .await?
-    .ok_or_else(|| AppError::Auth("No usable GitHub token on file; sign in again".to_string()))
-}
-
 pub async fn list_previews(
     _user: AuthUser,
     State(state): State<AppState>,
@@ -47,7 +37,7 @@ pub async fn create_preview(
     )
     .await?;
 
-    let github_token = get_github_token(&state, &user.0.sub).await?;
+    let github_token = crate::auth::github_token_for(&state, &user.0.sub).await?;
     let output = shell::create_preview(
         &state.config,
         &req.repo,
@@ -104,7 +94,7 @@ pub async fn update_preview(
     State(state): State<AppState>,
     Path(slug): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let github_token = get_github_token(&state, &user.0.sub).await?;
+    let github_token = crate::auth::github_token_for(&state, &user.0.sub).await?;
     let output = shell::update_preview(&state.config, &slug, &github_token).await?;
 
     // Audit: preview.updated

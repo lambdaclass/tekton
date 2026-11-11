@@ -27,33 +27,44 @@ fn extract_user_from_jar(jar: &CookieJar, state: &AppState) -> Option<Claims> {
 // ── Stored GitHub tokens ──
 
 /// The stored GitHub token for `login`, decrypted. The only way the backend
-/// reads a user's GitHub token. `None` when the user doesn't exist, has no
-/// token, or has one that won't decrypt (the key changed): in every case
-/// signing in again stores a fresh one.
-pub async fn load_github_token(
-    db: &PgPool,
-    key: &str,
-    login: &str,
-) -> Result<Option<String>, AppError> {
+/// reads a user's GitHub token. A user who doesn't exist, has no token, or has
+/// one that won't decrypt (the key changed) is an `AppError::Auth`: signing in
+/// again stores a fresh one.
+pub async fn load_github_token(db: &PgPool, key: &str, login: &str) -> Result<String, AppError> {
     let stored: Option<Option<String>> =
         sqlx::query_scalar("SELECT github_token_encrypted FROM users WHERE github_login = $1")
             .bind(login)
             .fetch_optional(db)
             .await?;
-    Ok(decrypt_github_token(key, login, stored.flatten()))
+    decrypt_github_token(key, login, stored.flatten()).ok_or_else(|| {
+        AppError::Auth(format!(
+            "No usable GitHub token on file for '{login}'; sign in again"
+        ))
+    })
 }
 
-/// For background jobs: the token of an intake or Sentry source's `run_as_user`.
+/// [`load_github_token`] for a request handler.
+pub async fn github_token_for(state: &AppState, login: &str) -> Result<String, AppError> {
+    load_github_token(&state.db, &state.config.secrets_encryption_key, login).await
+}
+
+/// The token of an intake or Sentry source's `run_as_user`. Their missing
+/// token isn't the caller's session problem, so it becomes `wrap(message)`:
+/// `Internal` for background jobs, `BadRequest` for admin pages.
 pub async fn load_run_as_user_token(
     db: &PgPool,
     key: &str,
     login: &str,
+    wrap: fn(String) -> AppError,
 ) -> Result<String, AppError> {
-    load_github_token(db, key, login).await?.ok_or_else(|| {
-        AppError::Internal(format!(
-            "run_as_user '{login}' not found or has no usable GitHub token; they must sign in again"
-        ))
-    })
+    load_github_token(db, key, login)
+        .await
+        .map_err(|e| match e {
+            AppError::Auth(_) => wrap(format!(
+                "run_as_user '{login}' not found or has no usable GitHub token; they must sign in again"
+            )),
+            other => other,
+        })
 }
 
 fn decrypt_github_token(key: &str, login: &str, encrypted: Option<String>) -> Option<String> {

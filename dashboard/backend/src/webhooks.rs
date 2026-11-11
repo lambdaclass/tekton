@@ -49,16 +49,6 @@ struct GraphQLError {
     message: String,
 }
 
-async fn get_github_token(state: &AppState, github_login: &str) -> Result<String, AppError> {
-    crate::auth::load_github_token(
-        &state.db,
-        &state.config.secrets_encryption_key,
-        github_login,
-    )
-    .await?
-    .ok_or_else(|| AppError::Auth("No usable GitHub token on file; sign in again".to_string()))
-}
-
 #[derive(Debug, Serialize, Clone)]
 pub struct RepoWebhookInfo {
     pub full_name: String,
@@ -71,7 +61,7 @@ pub async fn list_repos_with_webhook_status(
     user: MemberUser,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<RepoWebhookInfo>>, AppError> {
-    let token = get_github_token(&state, &user.0.sub).await?;
+    let token = crate::auth::github_token_for(&state, &user.0.sub).await?;
     let client = reqwest::Client::new();
     let org = &state.config.github_org;
     let webhook_url = format!(
@@ -210,7 +200,7 @@ pub async fn create_webhook(
     State(state): State<AppState>,
     Path((owner, repo)): Path<(String, String)>,
 ) -> Result<Json<RepoWebhookInfo>, AppError> {
-    let token = get_github_token(&state, &user.0.sub).await?;
+    let token = crate::auth::github_token_for(&state, &user.0.sub).await?;
     let client = reqwest::Client::new();
     let full_name = format!("{owner}/{repo}");
     let webhook_url = format!(
@@ -375,7 +365,7 @@ pub async fn delete_webhook(
     State(state): State<AppState>,
     Path((owner, repo, hook_id)): Path<(String, String, i64)>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let token = get_github_token(&state, &user.0.sub).await?;
+    let token = crate::auth::github_token_for(&state, &user.0.sub).await?;
     let client = reqwest::Client::new();
     let full_name = format!("{owner}/{repo}");
 

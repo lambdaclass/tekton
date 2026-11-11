@@ -73,13 +73,7 @@ async fn get_git_identity(
 
     let email = email.unwrap_or_else(|| format!("{github_login}@users.noreply.github.com"));
 
-    let token = auth::load_github_token(db, secrets_key, github_login)
-        .await?
-        .ok_or_else(|| {
-            AppError::Auth(format!(
-                "No usable GitHub token on file for '{github_login}'; they must sign in again"
-            ))
-        })?;
+    let token = auth::load_github_token(db, secrets_key, github_login).await?;
 
     Ok(GitIdentity { token, name, email })
 }
