@@ -41,8 +41,20 @@ async fn encrypt_legacy_github_tokens(pool: &PgPool, key: &str) -> anyhow::Resul
         .execute(pool)
         .await?;
     }
-    if !rows.is_empty() {
-        tracing::info!("Encrypted {} stored GitHub token(s)", rows.len());
+    if rows.is_empty() {
+        return Ok(());
+    }
+    tracing::info!("Encrypted {} stored GitHub token(s)", rows.len());
+
+    // An UPDATE leaves the old row version, plaintext token included, in the
+    // table file until the space is reused. VACUUM FULL rewrites the table
+    // without them. It can't run in a transaction, hence raw_sql (simple
+    // protocol). Failing it doesn't undo the encryption, so it isn't fatal.
+    match sqlx::raw_sql("VACUUM FULL users").execute(pool).await {
+        Ok(_) => tracing::info!("Rewrote the users table to drop plaintext row versions"),
+        Err(e) => tracing::warn!(
+            "VACUUM FULL users failed ({e}); run it by hand to drop the plaintext row versions"
+        ),
     }
     Ok(())
 }
