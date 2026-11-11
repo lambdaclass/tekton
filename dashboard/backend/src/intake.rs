@@ -463,21 +463,16 @@ async fn poll_all_sources(config: &Arc<Config>, db: &PgPool) -> Result<(), AppEr
 
 /// Poll a single source: fetch external issues, deduplicate, insert new ones as `backlog`.
 /// No tasks are spawned here — that happens in `process_pending_issues()`.
-async fn poll_source(_config: &Config, db: &PgPool, source: &IntakeSource) -> Result<(), AppError> {
+async fn poll_source(config: &Config, db: &PgPool, source: &IntakeSource) -> Result<(), AppError> {
     let poll_start = std::time::Instant::now();
 
     // Get the GitHub token from the run_as_user's account
-    let api_token: String =
-        sqlx::query_scalar("SELECT github_token FROM users WHERE github_login = $1")
-            .bind(&source.run_as_user)
-            .fetch_one(db)
-            .await
-            .map_err(|_| {
-                AppError::Internal(format!(
-                    "run_as_user '{}' not found or has no GitHub token",
-                    source.run_as_user
-                ))
-            })?;
+    let api_token = crate::auth::load_run_as_user_token(
+        db,
+        &config.secrets_encryption_key,
+        &source.run_as_user,
+    )
+    .await?;
 
     // Fetch issues from provider
     let issues = match source.provider.as_str() {

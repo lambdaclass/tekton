@@ -381,6 +381,7 @@ Key points:
 LISTEN_ADDR=0.0.0.0:3200
 DATABASE_URL=sqlite:///var/lib/dashboard/dashboard.db
 JWT_SECRET=<random-64-char-hex-string>
+SECRETS_ENCRYPTION_KEY=<random-64-char-hex-string>
 GITHUB_CLIENT_ID=<from-github-oauth-app>
 GITHUB_CLIENT_SECRET=<from-github-oauth-app>
 GITHUB_REDIRECT_URI=https://dashboard.yourdomain.com/api/auth/callback
@@ -391,6 +392,13 @@ PREVIEW_BIN=/run/current-system/sw/bin/preview
 AGENT_BIN=/run/current-system/sw/bin/agent
 STATIC_DIR=/opt/dashboard/static
 ```
+
+#### Secrets encryption key
+
+`SECRETS_ENCRYPTION_KEY` is required: the dashboard won't start without it. It encrypts everything the dashboard stores for users at rest, including GitHub OAuth tokens, repo secrets, AI provider keys and Sentry tokens. The key is never stored in the database, so a database dump doesn't expose them.
+
+- **Never change or lose it on an existing install.** If you do, users must sign in again to store a fresh GitHub token, intake and Sentry sources fail until their `run_as_user` signs in again, and repo secrets, AI keys and Sentry tokens must be re-entered. Back it up separately from database backups.
+- **Upgrading from a version that stored GitHub tokens in plaintext:** set the key if it isn't set yet (`od -An -tx1 -N32 /dev/urandom | tr -d ' \n'`). If repo secrets, AI keys or Sentry sources are already configured, the key is already set, so keep it. The first start encrypts the stored tokens and clears the plaintext column. Backups, dumps and WAL archives taken before the upgrade still hold live tokens, so after the first start, run `VACUUM FULL users;` to drop the old row versions from the table files. If an old backup may have leaked, revoke the OAuth App's tokens on GitHub and have users sign in again. Rolling back to an older build after the upgrade breaks GitHub calls until each user signs in again, because the plaintext column is now empty.
 
 **`/var/secrets/preview.env`:**
 

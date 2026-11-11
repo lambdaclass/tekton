@@ -51,14 +51,15 @@ CREATE TABLE IF NOT EXISTS users (
     github_login TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     email TEXT,
-    github_token TEXT NOT NULL,
+    github_token TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     role TEXT NOT NULL DEFAULT 'member',
     ssh_public_key TEXT,
     ai_provider TEXT,
     ai_api_key_encrypted TEXT,
-    ai_model TEXT
+    ai_model TEXT,
+    github_token_encrypted TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_actions (
@@ -161,11 +162,16 @@ CREATE TABLE IF NOT EXISTS global_ai_config (
 -- Seed: Users
 -- ============================================================
 
-INSERT INTO users (github_login, name, email, github_token, role)
+-- github_token_encrypted holds ghp_fake_<user>_token encrypted with the e2e
+-- SECRETS_ENCRYPTION_KEY ("test-encryption-key-32chars-ok!"): AES-256-GCM
+-- under SHA-256 of the key, base64(nonce || ciphertext || tag). The backend
+-- may already be running when this is seeded, so tokens can't be left in
+-- plaintext for its startup migration to encrypt.
+INSERT INTO users (github_login, name, email, github_token_encrypted, role)
 VALUES
-    ('testadmin',  'Test Admin',  'admin@test.com',  'ghp_fake_admin_token',  'admin'),
-    ('testmember', 'Test Member', 'member@test.com', 'ghp_fake_member_token', 'member'),
-    ('testviewer', 'Test Viewer', 'viewer@test.com', 'ghp_fake_viewer_token', 'viewer');
+    ('testadmin',  'Test Admin',  'admin@test.com',  'UhgtqbIf2NYLW7FTiDGoNKsVmy/8xrDLzio6T+K7+dDP7nOZi1JSIKbDK1YEnj4y',  'admin'),
+    ('testmember', 'Test Member', 'member@test.com', 'g58L598Jm/AyYppNvNC0CiltHd3RyXOKy/2vHWqhzjgc689MswSPFR9jeDWolRSLMw==', 'member'),
+    ('testviewer', 'Test Viewer', 'viewer@test.com', 'vSU8I4IhxsM63habYXsAdqWoPFPn4IirxdOVqOxwpO3PLiWHKIUJ/ELysu/4MXfP+w==', 'viewer');
 
 -- ============================================================
 -- Seed: Tasks (various states)

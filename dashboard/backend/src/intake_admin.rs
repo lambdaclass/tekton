@@ -39,6 +39,21 @@ pub async fn list_sources(
     Ok(Json(sources))
 }
 
+/// The GitHub token of a source's `run_as_user`. A missing user, a missing
+/// token and an unreadable token are all the admin's input to fix.
+pub(crate) async fn run_as_user_token(
+    state: &crate::AppState,
+    login: &str,
+) -> Result<String, AppError> {
+    crate::auth::load_github_token(&state.db, &state.config.secrets_encryption_key, login)
+        .await?
+        .ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "User '{login}' not found or has no usable GitHub token; they must sign in again"
+            ))
+        })
+}
+
 /// POST /api/admin/intake/sources
 pub async fn create_source(
     admin: AdminUser,
@@ -46,16 +61,7 @@ pub async fn create_source(
     Json(req): Json<CreateIntakeSourceRequest>,
 ) -> Result<Json<IntakeSource>, AppError> {
     // Validate that run_as_user exists and has a GitHub token
-    let _: String = sqlx::query_scalar("SELECT github_token FROM users WHERE github_login = $1")
-        .bind(&req.run_as_user)
-        .fetch_one(&state.db)
-        .await
-        .map_err(|_| {
-            AppError::BadRequest(format!(
-                "User '{}' not found or has no GitHub token",
-                req.run_as_user
-            ))
-        })?;
+    run_as_user_token(&state, &req.run_as_user).await?;
 
     let config = req.config.unwrap_or(serde_json::json!({}));
     let target_base_branch = req.target_base_branch.unwrap_or_else(|| "main".into());
@@ -343,17 +349,7 @@ pub async fn test_poll_source(
     .ok_or_else(|| AppError::NotFound("Intake source not found".into()))?;
 
     // Get the GitHub token from the run_as_user's account
-    let api_token: String =
-        sqlx::query_scalar("SELECT github_token FROM users WHERE github_login = $1")
-            .bind(&source.run_as_user)
-            .fetch_one(&state.db)
-            .await
-            .map_err(|_| {
-                AppError::BadRequest(format!(
-                    "User '{}' not found or has no GitHub token",
-                    source.run_as_user
-                ))
-            })?;
+    let api_token = run_as_user_token(&state, &source.run_as_user).await?;
 
     // Use the same fetch_github_issues as the real daemon to ensure consistent results
     let issues = crate::intake::fetch_github_issues(&source, &api_token).await?;
