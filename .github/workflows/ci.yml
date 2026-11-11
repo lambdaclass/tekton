@@ -64,6 +64,30 @@ jobs:
       - name: Build (includes tsc)
         run: npm run build
 
+  trust-stores:
+    name: Trust stores (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        # The runner labels the other jobs use.
+        os: [ubuntu-latest, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: OS trust store has no removed eMudhra roots
+        if: always()
+        run: .github/scripts/check-emudhra-roots.sh os
+
+      - name: Node trust store has no removed eMudhra roots
+        if: always()
+        run: .github/scripts/check-emudhra-roots.sh node
+
   e2e:
     name: E2E Tests
     runs-on: ubuntu-24.04
@@ -112,6 +136,9 @@ jobs:
       - name: Build backend
         working-directory: dashboard/backend
         run: cargo build --release
+
+      - name: Backend binary has no removed eMudhra roots
+        run: .github/scripts/check-emudhra-roots.sh binary dashboard/backend/target/release/dashboard
 
       - name: Install frontend dependencies
         working-directory: dashboard/frontend
