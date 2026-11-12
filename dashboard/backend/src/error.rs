@@ -5,6 +5,9 @@ use serde_json::json;
 #[derive(Debug)]
 pub enum AppError {
     Auth(String),
+    /// The session is valid but the stored GitHub token isn't usable. Not a
+    /// 401, which the frontend turns into a bare "Not authenticated".
+    ReauthRequired(String),
     Forbidden(String),
     NotFound(String),
     BadRequest(String),
@@ -20,6 +23,7 @@ impl std::fmt::Display for AppError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Auth(msg) => write!(f, "Auth error: {msg}"),
+            Self::ReauthRequired(msg) => write!(f, "Reauth required: {msg}"),
             Self::Forbidden(msg) => write!(f, "Forbidden: {msg}"),
             Self::NotFound(msg) => write!(f, "Not found: {msg}"),
             Self::BadRequest(msg) => write!(f, "Bad request: {msg}"),
@@ -33,6 +37,7 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message, code) = match &self {
             Self::Auth(msg) => (StatusCode::UNAUTHORIZED, msg.clone(), None),
+            Self::ReauthRequired(msg) => (StatusCode::CONFLICT, msg.clone(), None),
             Self::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone(), None),
             Self::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone(), None),
             Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone(), None),

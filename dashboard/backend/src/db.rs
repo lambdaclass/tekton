@@ -178,12 +178,13 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
 
     // GitHub tokens are stored encrypted. The plaintext column is emptied at
     // startup (see encrypt_legacy_github_tokens) and can be dropped in a later release.
-    for col_sql in &[
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS github_token_encrypted TEXT",
-        "ALTER TABLE users ALTER COLUMN github_token DROP NOT NULL",
-    ] {
-        sqlx::query(col_sql).execute(pool).await?;
-    }
+    sqlx::query("ALTER TABLE users ADD COLUMN IF NOT EXISTS github_token_encrypted TEXT")
+        .execute(pool)
+        .await?;
+    // Fails once github_token is dropped, which is fine.
+    let _ = sqlx::query("ALTER TABLE users ALTER COLUMN github_token DROP NOT NULL")
+        .execute(pool)
+        .await;
 
     // Ensure at least one admin exists — promote the earliest user if none
     let admin_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users WHERE role = 'admin'")

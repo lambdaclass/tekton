@@ -326,7 +326,7 @@ success "JWT secret generated."
 
 # A new key would make every stored token and secret unreadable, so a re-run
 # keeps the existing one.
-SECRETS_ENCRYPTION_KEY=$(sed -n 's/^SECRETS_ENCRYPTION_KEY=//p' /var/secrets/dashboard.env 2>/dev/null | tail -n 1)
+SECRETS_ENCRYPTION_KEY=$(sed -n 's/^SECRETS_ENCRYPTION_KEY=//p' /var/secrets/dashboard.env 2>/dev/null | tail -n 1 || true)
 if [[ -n "$SECRETS_ENCRYPTION_KEY" ]]; then
     success "Keeping the existing secrets encryption key."
 else

@@ -48,7 +48,7 @@ export default defineConfig({
         "http://localhost:3200/api/auth/callback",
       GITHUB_ORG: process.env.GITHUB_ORG || "testorg",
       STATIC_DIR: process.env.STATIC_DIR || "../frontend/dist",
-      SECRETS_ENCRYPTION_KEY: "test-encryption-key-32chars-ok!",
+      SECRETS_ENCRYPTION_KEY: "test-encryption-key-32-chars-ok!",
       PREVIEW_DOMAIN: "preview.test.dev",
       TEST_MODE: "true",
     },

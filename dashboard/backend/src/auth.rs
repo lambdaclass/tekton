@@ -28,16 +28,26 @@ fn extract_user_from_jar(jar: &CookieJar, state: &AppState) -> Option<Claims> {
 
 /// The stored GitHub token for `login`, decrypted. The only way the backend
 /// reads a user's GitHub token. A user who doesn't exist, has no token, or has
-/// one that won't decrypt (the key changed) is an `AppError::Auth`: signing in
-/// again stores a fresh one.
+/// one that won't decrypt (the key changed) is an `AppError::ReauthRequired`:
+/// signing in again stores a fresh one.
 pub async fn load_github_token(db: &PgPool, key: &str, login: &str) -> Result<String, AppError> {
     let stored: Option<Option<String>> =
         sqlx::query_scalar("SELECT github_token_encrypted FROM users WHERE github_login = $1")
             .bind(login)
             .fetch_optional(db)
             .await?;
-    decrypt_github_token(key, login, stored.flatten()).ok_or_else(|| {
-        AppError::Auth(format!(
+    usable_github_token(key, login, stored.flatten())
+}
+
+/// Decrypts a `github_token_encrypted` value already read for `login`, failing
+/// as [`load_github_token`] does when there's no usable token.
+pub fn usable_github_token(
+    key: &str,
+    login: &str,
+    encrypted: Option<String>,
+) -> Result<String, AppError> {
+    decrypt_github_token(key, login, encrypted).ok_or_else(|| {
+        AppError::ReauthRequired(format!(
             "No usable GitHub token on file for '{login}'; sign in again"
         ))
     })
@@ -60,7 +70,7 @@ pub async fn load_run_as_user_token(
     load_github_token(db, key, login)
         .await
         .map_err(|e| match e {
-            AppError::Auth(_) => wrap(format!(
+            AppError::ReauthRequired(_) => wrap(format!(
                 "run_as_user '{login}' not found or has no usable GitHub token; they must sign in again"
             )),
             other => other,

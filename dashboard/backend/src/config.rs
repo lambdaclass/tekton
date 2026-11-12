@@ -66,10 +66,15 @@ impl Config {
 /// The key for everything encrypted at rest, GitHub tokens included. Required:
 /// without it users couldn't sign in, since their token can't be stored.
 fn secrets_encryption_key() -> anyhow::Result<String> {
-    match env::var("SECRETS_ENCRYPTION_KEY") {
-        Ok(key) if !key.is_empty() => Ok(key),
-        _ => anyhow::bail!(
-            "SECRETS_ENCRYPTION_KEY must be set: it encrypts stored GitHub tokens and secrets"
-        ),
+    let key = env::var("SECRETS_ENCRYPTION_KEY").unwrap_or_default();
+    let key = key.trim();
+    if key.len() < MIN_SECRETS_KEY_LEN {
+        anyhow::bail!(
+            "SECRETS_ENCRYPTION_KEY must be set to at least {MIN_SECRETS_KEY_LEN} characters \
+             (e.g. `od -An -tx1 -N32 /dev/urandom | tr -d ' \\n'`): it encrypts stored GitHub tokens and secrets"
+        );
     }
+    Ok(key.to_string())
 }
+
+const MIN_SECRETS_KEY_LEN: usize = 32;

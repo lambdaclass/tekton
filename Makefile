@@ -60,7 +60,7 @@ deps:
 		echo 'GITHUB_ORG=REPLACE_ME' >> $(ENV_FILE); \
 		echo 'PREVIEW_DOMAIN=localhost' >> $(ENV_FILE); \
 		echo 'STATIC_DIR=../frontend/dist' >> $(ENV_FILE); \
-		echo "SECRETS_ENCRYPTION_KEY=$$(openssl rand -base64 32)" >> $(ENV_FILE); \
+		echo "SECRETS_ENCRYPTION_KEY=$$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')" >> $(ENV_FILE); \
 	else \
 		echo "$(ENV_FILE) already exists, skipping."; \
 	fi
