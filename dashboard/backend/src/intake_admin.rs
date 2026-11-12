@@ -11,7 +11,7 @@ use crate::models::{
 const SOURCE_COLUMNS: &str = "id, name, provider, enabled, config, target_repo, \
      target_base_branch, label_filter, prompt_template, run_as_user, \
      poll_interval_secs, max_concurrent_tasks, max_tasks_per_poll, \
-     auto_create_pr, created_by, \
+     created_by, \
      TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
      TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at";
 
@@ -69,14 +69,13 @@ pub async fn create_source(
     let poll_interval_secs = req.poll_interval_secs.unwrap_or(300);
     let max_concurrent_tasks = req.max_concurrent_tasks.unwrap_or(3);
     let max_tasks_per_poll = req.max_tasks_per_poll.unwrap_or(5);
-    let auto_create_pr = req.auto_create_pr.unwrap_or(true);
 
     let source = sqlx::query_as::<_, IntakeSource>(&format!(
         "INSERT INTO intake_sources \
          (name, provider, config, target_repo, target_base_branch, \
           label_filter, prompt_template, run_as_user, poll_interval_secs, \
-          max_concurrent_tasks, max_tasks_per_poll, auto_create_pr, created_by) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+          max_concurrent_tasks, max_tasks_per_poll, created_by) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
          RETURNING {SOURCE_COLUMNS}"
     ))
     .bind(&req.name)
@@ -90,7 +89,6 @@ pub async fn create_source(
     .bind(poll_interval_secs)
     .bind(max_concurrent_tasks)
     .bind(max_tasks_per_poll)
-    .bind(auto_create_pr)
     .bind(&admin.0.sub)
     .fetch_one(&state.db)
     .await?;
@@ -162,10 +160,6 @@ pub async fn update_source(
         sets.push(format!("max_tasks_per_poll = ${param_idx}"));
         param_idx += 1;
     }
-    if req.auto_create_pr.is_some() {
-        sets.push(format!("auto_create_pr = ${param_idx}"));
-        param_idx += 1;
-    }
     if sets.is_empty() {
         return Err(AppError::BadRequest("No fields to update".into()));
     }
@@ -212,9 +206,6 @@ pub async fn update_source(
     }
     if let Some(max_tasks_per_poll) = req.max_tasks_per_poll {
         query = query.bind(max_tasks_per_poll);
-    }
-    if let Some(auto_create_pr) = req.auto_create_pr {
-        query = query.bind(auto_create_pr);
     }
     let source = query.fetch_optional(&state.db).await?;
 

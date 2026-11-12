@@ -7,6 +7,7 @@ mod error;
 mod intake;
 mod intake_admin;
 mod metrics;
+mod mirror;
 mod models;
 mod policies;
 mod previews;
