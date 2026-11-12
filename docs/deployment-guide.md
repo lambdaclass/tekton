@@ -297,7 +297,7 @@ No service restart needed — the dashboard reads the file on each task.
                      |
               Agent containers (a-XXXXXX)
               - Claude Code (auth via CLAUDE_CODE_OAUTH_TOKEN)
-              - Git operations (verified commits via GitHub GraphQL API)
+              - No GitHub credentials (git goes through the host mirror)
               - Created per task, destroyed after completion
 ```
 
@@ -307,7 +307,7 @@ When a user submits a task via the dashboard:
 
 ```
 1. Create agent container (a-{short_id})
-2. Clone repo, create branch claude/{short_id}
+2. Fetch the repo into the host mirror, push it into the agent over SSH, create the task branch
 3. Run Claude (stream-json) -> commit locally -> push via GitHub API -> create preview (t-{short_id}) -> screenshot
 4. Follow-up loop:
    a. Status -> awaiting_followup
@@ -321,6 +321,8 @@ Key points:
 - Agent and preview containers have different prefixes (`a-` for agents, `t-` for previews)
 - Push + preview happen after each Claude run, not just at the end
 - Pushes use the GitHub GraphQL `createCommitOnBranch` mutation, producing verified (signed) commits attributed to the logged-in user
+- The GitHub token never enters the agent container. The agent has passwordless sudo, so nothing inside it can be kept from Claude. Instead the backend fetches from GitHub into a root-owned bare mirror (`MIRROR_DIR`, default `/var/lib/dashboard/mirrors`) and pushes the commits into the agent's repo over SSH as `refs/remotes/origin/*`. The agent's `origin` is the plain `https://github.com/<repo>.git` URL, so it can't push.
+- Claude's system prompt tells it it can't push or open PRs. Whatever it leaves in the working tree is delivered: pushed, previewed and, for intake tasks, opened as a PR. An intake task that changes no files delivers nothing, so a prompt template that tells the agent not to modify files gives a report with no PR.
 - Claude's actions are streamed via `--output-format stream-json --verbose`
 - Claude authenticates via `CLAUDE_CODE_OAUTH_TOKEN` env var
 
@@ -390,6 +392,7 @@ PREVIEW_DOMAIN=yourdomain.com
 ALLOWED_REPOS=yourorg/repo1,yourorg/repo2
 PREVIEW_BIN=/run/current-system/sw/bin/preview
 AGENT_BIN=/run/current-system/sw/bin/agent
+# MIRROR_DIR=/var/lib/dashboard/mirrors   # optional: host-side bare mirrors of task repos
 STATIC_DIR=/opt/dashboard/static
 ```
 

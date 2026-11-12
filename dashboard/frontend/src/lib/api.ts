@@ -468,7 +468,6 @@ export interface IntakeSource {
   poll_interval_secs: number;
   max_concurrent_tasks: number;
   max_tasks_per_poll: number;
-  auto_create_pr: boolean;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -506,7 +505,7 @@ export const createIntakeSource = (data: {
   name: string; provider: string; target_repo: string;
   target_base_branch?: string; label_filter?: string[]; prompt_template?: string;
   run_as_user: string; poll_interval_secs?: number; max_concurrent_tasks?: number;
-  max_tasks_per_poll?: number; auto_create_pr?: boolean;
+  max_tasks_per_poll?: number;
   config?: Record<string, unknown>;
 }) => apiFetch<IntakeSource>('/api/admin/intake/sources', { method: 'POST', body: JSON.stringify(data) });
 export const updateIntakeSource = (id: number, data: Record<string, unknown>) =>
