@@ -58,24 +58,23 @@ struct GitIdentity {
     email: String,
 }
 
-async fn get_git_identity(db: &PgPool, github_login: &str) -> Result<GitIdentity, AppError> {
-    let row = sqlx::query_as::<_, (String, String, Option<String>)>(
-        "SELECT github_token, name, email FROM users WHERE github_login = $1",
+async fn get_git_identity(
+    db: &PgPool,
+    secrets_key: &str,
+    github_login: &str,
+) -> Result<GitIdentity, AppError> {
+    let (encrypted, name, email) = sqlx::query_as::<_, (Option<String>, String, Option<String>)>(
+        "SELECT github_token_encrypted, name, email FROM users WHERE github_login = $1",
     )
     .bind(github_login)
     .fetch_optional(db)
     .await?
     .ok_or_else(|| AppError::Auth(format!("User '{github_login}' not found in database")))?;
 
-    let email = row
-        .2
-        .unwrap_or_else(|| format!("{github_login}@users.noreply.github.com"));
+    let token = auth::usable_github_token(secrets_key, github_login, encrypted)?;
+    let email = email.unwrap_or_else(|| format!("{github_login}@users.noreply.github.com"));
 
-    Ok(GitIdentity {
-        token: row.0,
-        name: row.1,
-        email,
-    })
+    Ok(GitIdentity { token, name, email })
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -367,6 +366,9 @@ pub(crate) async fn spawn_task_internal(
         source_type,
         intake_issue_id,
     } = params;
+    // Before the insert, so a missing token doesn't leave the task stuck in pending.
+    let git_id = get_git_identity(&db, &config.secrets_encryption_key, &created_by).await?;
+
     let id = Uuid::new_v4().to_string();
     let short_id = id[..6].to_string();
 
@@ -409,8 +411,6 @@ pub(crate) async fn spawn_task_internal(
     .bind(&id)
     .fetch_one(&db)
     .await?;
-
-    let git_id = get_git_identity(&db, &created_by).await?;
 
     // Intake sources with auto_create_pr off never get a preview, so don't advertise one.
     if intake_auto_create_pr(&db, &id).await? != Some(false) {
@@ -513,6 +513,10 @@ pub async fn create_task(
     let base_branch = req.base_branch.as_deref().unwrap_or("main");
     let created_by = user.0.sub.clone();
 
+    // Before the insert, so a missing token doesn't leave the task stuck in pending.
+    let git_id =
+        get_git_identity(&state.db, &state.config.secrets_encryption_key, &created_by).await?;
+
     let image_url_json = req
         .image_urls
         .as_ref()
@@ -560,9 +564,6 @@ pub async fn create_task(
     .bind(&id)
     .fetch_one(&state.db)
     .await?;
-
-    // Get the user's git identity (GitHub token, name, email)
-    let git_id = get_git_identity(&state.db, &created_by).await?;
 
     // Save preview_slug and preview_url to the DB right away so the frontend can show the link
     let preview_slug = format!("t-{short_id}");
@@ -2368,7 +2369,8 @@ pub async fn list_branches(
         &state.config.github_org,
     )
     .await?;
-    let git_id = get_git_identity(&state.db, &user.0.sub).await?;
+    let git_id =
+        get_git_identity(&state.db, &state.config.secrets_encryption_key, &user.0.sub).await?;
 
     let client = reqwest::Client::new();
     let mut branches = Vec::new();
@@ -2728,7 +2730,8 @@ pub async fn reopen_task(
     let short_id = &id[..6];
 
     // Get the reopening user's git identity
-    let git_id = get_git_identity(&state.db, &user.0.sub).await?;
+    let git_id =
+        get_git_identity(&state.db, &state.config.secrets_encryption_key, &user.0.sub).await?;
 
     // Reset status and error
     update_task_status(&state.db, &id, "creating_agent", None).await?;
@@ -2842,7 +2845,8 @@ pub async fn get_task_diff(
         return Ok(Json(serde_json::json!({ "diff": "" })));
     };
 
-    let git_id = get_git_identity(&state.db, &user.0.sub).await?;
+    let git_id =
+        get_git_identity(&state.db, &state.config.secrets_encryption_key, &user.0.sub).await?;
     let client = reqwest::Client::new();
     let diff = match client
         .get(format!(
@@ -3237,19 +3241,20 @@ pub async fn recover_interrupted_tasks(
                     .await;
                     continue;
                 };
-                let git_id = match get_git_identity(&db, created_by).await {
-                    Ok(g) => g,
-                    Err(e) => {
-                        let _ = update_task_status(
-                            &db,
-                            &task.id,
-                            "failed",
-                            Some(&format!("Interrupted by dashboard restart: {e}")),
-                        )
-                        .await;
-                        continue;
-                    }
-                };
+                let git_id =
+                    match get_git_identity(&db, &config.secrets_encryption_key, created_by).await {
+                        Ok(g) => g,
+                        Err(e) => {
+                            let _ = update_task_status(
+                                &db,
+                                &task.id,
+                                "failed",
+                                Some(&format!("Interrupted by dashboard restart: {e}")),
+                            )
+                            .await;
+                            continue;
+                        }
+                    };
                 let short_id = task.id[..6].to_string();
                 let had_preview = task.preview_url.is_some();
                 let (tx, _) = broadcast::channel(1024);
@@ -3318,19 +3323,20 @@ pub async fn recover_interrupted_tasks(
                     .await;
                     continue;
                 };
-                let git_id = match get_git_identity(&db, created_by).await {
-                    Ok(g) => g,
-                    Err(e) => {
-                        let _ = update_task_status(
-                            &db,
-                            &task.id,
-                            "failed",
-                            Some(&format!("Interrupted by dashboard restart: {e}")),
-                        )
-                        .await;
-                        continue;
-                    }
-                };
+                let git_id =
+                    match get_git_identity(&db, &config.secrets_encryption_key, created_by).await {
+                        Ok(g) => g,
+                        Err(e) => {
+                            let _ = update_task_status(
+                                &db,
+                                &task.id,
+                                "failed",
+                                Some(&format!("Interrupted by dashboard restart: {e}")),
+                            )
+                            .await;
+                            continue;
+                        }
+                    };
 
                 // Insert system message explaining the interruption
                 let _ = save_system_message(
@@ -3593,7 +3599,8 @@ pub async fn create_pr(
         ));
     }
 
-    let git_id = get_git_identity(&state.db, &user.0.sub).await?;
+    let git_id =
+        get_git_identity(&state.db, &state.config.secrets_encryption_key, &user.0.sub).await?;
     open_pr_for_task(
         &state.db,
         &state.config.secrets_encryption_key,

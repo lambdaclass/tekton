@@ -24,6 +24,70 @@ fn extract_user_from_jar(jar: &CookieJar, state: &AppState) -> Option<Claims> {
         .map(|data| data.claims)
 }
 
+// ── Stored GitHub tokens ──
+
+/// The stored GitHub token for `login`, decrypted. The only way the backend
+/// reads a user's GitHub token. A user who doesn't exist, has no token, or has
+/// one that won't decrypt (the key changed) is an `AppError::ReauthRequired`:
+/// signing in again stores a fresh one.
+pub async fn load_github_token(db: &PgPool, key: &str, login: &str) -> Result<String, AppError> {
+    let stored: Option<Option<String>> =
+        sqlx::query_scalar("SELECT github_token_encrypted FROM users WHERE github_login = $1")
+            .bind(login)
+            .fetch_optional(db)
+            .await?;
+    usable_github_token(key, login, stored.flatten())
+}
+
+/// Decrypts a `github_token_encrypted` value already read for `login`, failing
+/// as [`load_github_token`] does when there's no usable token.
+pub fn usable_github_token(
+    key: &str,
+    login: &str,
+    encrypted: Option<String>,
+) -> Result<String, AppError> {
+    decrypt_github_token(key, login, encrypted).ok_or_else(|| {
+        AppError::ReauthRequired(format!(
+            "No usable GitHub token on file for '{login}'; sign in again"
+        ))
+    })
+}
+
+/// [`load_github_token`] for a request handler.
+pub async fn github_token_for(state: &AppState, login: &str) -> Result<String, AppError> {
+    load_github_token(&state.db, &state.config.secrets_encryption_key, login).await
+}
+
+/// The token of an intake or Sentry source's `run_as_user`. Their missing
+/// token isn't the caller's session problem, so it becomes `wrap(message)`:
+/// `Internal` for background jobs, `BadRequest` for admin pages.
+pub async fn load_run_as_user_token(
+    db: &PgPool,
+    key: &str,
+    login: &str,
+    wrap: fn(String) -> AppError,
+) -> Result<String, AppError> {
+    load_github_token(db, key, login)
+        .await
+        .map_err(|e| match e {
+            AppError::ReauthRequired(_) => wrap(format!(
+                "run_as_user '{login}' not found or has no usable GitHub token; they must sign in again"
+            )),
+            other => other,
+        })
+}
+
+fn decrypt_github_token(key: &str, login: &str, encrypted: Option<String>) -> Option<String> {
+    let encrypted = encrypted.filter(|e| !e.is_empty())?;
+    match crate::secrets::decrypt_secret(key, &encrypted) {
+        Ok(token) => Some(token).filter(|t| !t.is_empty()),
+        Err(e) => {
+            tracing::warn!("Stored GitHub token for {login} could not be decrypted: {e}");
+            None
+        }
+    }
+}
+
 // ── Extractor: authenticated user ──
 
 pub struct AuthUser(pub Claims);
@@ -128,19 +192,24 @@ pub async fn callback(
         .await?;
     let role_for_new_user = if user_count.0 == 0 { "admin" } else { "member" };
 
+    let encrypted_token = crate::secrets::encrypt_secret(
+        &state.config.secrets_encryption_key,
+        &token_resp.access_token,
+    )?;
     sqlx::query(
-        "INSERT INTO users (github_login, name, email, github_token, role)
+        "INSERT INTO users (github_login, name, email, github_token_encrypted, role)
          VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT(github_login) DO UPDATE SET
            name = EXCLUDED.name,
            email = EXCLUDED.email,
-           github_token = EXCLUDED.github_token,
+           github_token_encrypted = EXCLUDED.github_token_encrypted,
+           github_token = NULL,
            updated_at = NOW()",
     )
     .bind(&user_info.login)
     .bind(&name)
     .bind(&user_info.email)
-    .bind(&token_resp.access_token)
+    .bind(&encrypted_token)
     .bind(role_for_new_user)
     .execute(&state.db)
     .await?;
@@ -508,4 +577,38 @@ pub async fn set_user_repos(
     .await;
 
     Ok(axum::Json(req.repos))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn github_token_roundtrips_through_encryption() {
+        let enc = crate::secrets::encrypt_secret("key-a", "gho_secret").unwrap();
+        assert!(!enc.contains("gho_secret"));
+        assert_eq!(
+            decrypt_github_token("key-a", "u", Some(enc)),
+            Some("gho_secret".into())
+        );
+    }
+
+    #[test]
+    fn missing_github_token_is_none() {
+        assert_eq!(decrypt_github_token("key-a", "u", None), None);
+        assert_eq!(
+            decrypt_github_token("key-a", "u", Some(String::new())),
+            None
+        );
+    }
+
+    #[test]
+    fn undecryptable_github_token_is_none() {
+        let enc = crate::secrets::encrypt_secret("key-a", "gho_secret").unwrap();
+        assert_eq!(decrypt_github_token("key-b", "u", Some(enc)), None);
+        assert_eq!(
+            decrypt_github_token("key-a", "u", Some("not-base64!".into())),
+            None
+        );
+    }
 }

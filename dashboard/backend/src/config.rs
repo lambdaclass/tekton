@@ -51,8 +51,7 @@ impl Config {
             claude_config_dir: env::var("CLAUDE_CONFIG_DIR")
                 .unwrap_or_else(|_| "/var/secrets/claude".into()),
             chromium_bin: env::var("CHROMIUM_BIN").unwrap_or_else(|_| "chromium".into()),
-            secrets_encryption_key: env::var("SECRETS_ENCRYPTION_KEY")
-                .unwrap_or_else(|_| String::new()),
+            secrets_encryption_key: secrets_encryption_key()?,
             intake_enabled: env::var("INTAKE_ENABLED").unwrap_or_else(|_| "false".into()) == "true",
             intake_max_global_concurrent: env::var("INTAKE_MAX_GLOBAL_CONCURRENT")
                 .ok()
@@ -63,3 +62,19 @@ impl Config {
         })
     }
 }
+
+/// The key for everything encrypted at rest, GitHub tokens included. Required:
+/// without it users couldn't sign in, since their token can't be stored.
+fn secrets_encryption_key() -> anyhow::Result<String> {
+    let key = env::var("SECRETS_ENCRYPTION_KEY").unwrap_or_default();
+    let key = key.trim();
+    if key.len() < MIN_SECRETS_KEY_LEN {
+        anyhow::bail!(
+            "SECRETS_ENCRYPTION_KEY must be set to at least {MIN_SECRETS_KEY_LEN} characters \
+             (e.g. `od -An -tx1 -N32 /dev/urandom | tr -d ' \\n'`): it encrypts stored GitHub tokens and secrets"
+        );
+    }
+    Ok(key.to_string())
+}
+
+const MIN_SECRETS_KEY_LEN: usize = 32;

@@ -324,6 +324,17 @@ info "Generating JWT secret..."
 JWT_SECRET=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
 success "JWT secret generated."
 
+# A new key would make every stored token and secret unreadable, so a re-run
+# keeps the existing one.
+SECRETS_ENCRYPTION_KEY=$(sed -n 's/^SECRETS_ENCRYPTION_KEY=//p' /var/secrets/dashboard.env 2>/dev/null | tail -n 1 || true)
+if [[ -n "$SECRETS_ENCRYPTION_KEY" ]]; then
+    success "Keeping the existing secrets encryption key."
+else
+    info "Generating secrets encryption key..."
+    SECRETS_ENCRYPTION_KEY=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+    success "Secrets encryption key generated."
+fi
+
 mkdir -p /var/secrets/claude
 
 info "Ensuring root has an SSH key..."
@@ -398,6 +409,7 @@ cat > /var/secrets/dashboard.env << ENVEOF
 LISTEN_ADDR=0.0.0.0:3200
 DATABASE_URL=postgresql:///dashboard?host=/run/postgresql&user=dashboard
 JWT_SECRET=${JWT_SECRET}
+SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY}
 GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
 GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
 GITHUB_REDIRECT_URI=https://dashboard.${DOMAIN}/api/auth/callback

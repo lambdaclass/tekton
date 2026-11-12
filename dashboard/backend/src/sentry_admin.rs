@@ -22,13 +22,7 @@ fn encrypt_token(state: &crate::AppState, token: &str) -> Result<String, AppErro
 }
 
 async fn ensure_github_user(state: &crate::AppState, login: &str) -> Result<(), AppError> {
-    let _: String = sqlx::query_scalar("SELECT github_token FROM users WHERE github_login = $1")
-        .bind(login)
-        .fetch_one(&state.db)
-        .await
-        .map_err(|_| {
-            AppError::BadRequest(format!("User '{login}' not found or has no GitHub token"))
-        })?;
+    crate::intake_admin::run_as_user_token(state, login).await?;
     Ok(())
 }
 
