@@ -402,7 +402,8 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
             .execute(pool)
             .await;
 
-    // New sources push and open a PR by default; existing rows keep their stored value
+    // auto_create_pr is no longer read or written: intake tasks always push their changes
+    // and open a PR. The column can be dropped in a later release.
     let _ = sqlx::query("ALTER TABLE intake_sources ALTER COLUMN auto_create_pr SET DEFAULT true")
         .execute(pool)
         .await;

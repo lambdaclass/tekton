@@ -13,6 +13,8 @@ pub struct Config {
     pub allowed_repos: Vec<String>,
     pub preview_bin: String,
     pub agent_bin: String,
+    /// Where the host keeps bare mirrors of task repos (see `mirror.rs`).
+    pub mirror_dir: String,
     pub static_dir: String,
     pub claude_bin: String,
     pub claude_config_dir: String,
@@ -45,6 +47,8 @@ impl Config {
                 .unwrap_or_else(|_| "/run/current-system/sw/bin/preview".into()),
             agent_bin: env::var("AGENT_BIN")
                 .unwrap_or_else(|_| "/run/current-system/sw/bin/agent".into()),
+            mirror_dir: env::var("MIRROR_DIR")
+                .unwrap_or_else(|_| "/var/lib/dashboard/mirrors".into()),
             static_dir: env::var("STATIC_DIR").unwrap_or_else(|_| "./static".into()),
             claude_bin: env::var("CLAUDE_BIN")
                 .unwrap_or_else(|_| "/run/current-system/sw/bin/claude".into()),

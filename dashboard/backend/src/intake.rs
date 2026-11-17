@@ -401,7 +401,7 @@ async fn poll_all_sources(config: &Arc<Config>, db: &PgPool) -> Result<(), AppEr
     let sources = sqlx::query_as::<_, IntakeSource>(
         "SELECT id, name, provider, enabled, config, target_repo, target_base_branch, \
          label_filter, prompt_template, run_as_user, poll_interval_secs, \
-         max_concurrent_tasks, max_tasks_per_poll, auto_create_pr, \
+         max_concurrent_tasks, max_tasks_per_poll, \
          created_by, TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
          TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at \
          FROM intake_sources WHERE enabled = true",
