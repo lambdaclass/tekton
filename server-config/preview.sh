@@ -489,7 +489,37 @@ write_env_files() {
     chmod 644 "$env_file"
 }
 
+# Fails if systemd-machined's registration for the container is stale, i.e. its
+# Leader isn't the container's real init. `nixos-container run` resolves the
+# leader through machined, so with a stale registration every run fails with
+# "nsenter: reassociate to namespaces failed: No such process" (see #201).
+# Skips the check when either PID can't be read (e.g. the container is booting).
+# Args: slug
+check_machine_leader() {
+    local slug="$1"
+    local procs="/sys/fs/cgroup/machine.slice/container@${slug}.service/payload/init.scope/cgroup.procs"
+    local leader init
+    leader=$(machinectl show "$slug" -p Leader --value 2>/dev/null || true)
+    init=$(head -1 "$procs" 2>/dev/null || true)
+    [[ -n "$leader" && -n "$init" ]] || return 0
+    if [[ "$leader" != "$init" ]]; then
+        error "Container '$slug' has a stale systemd-machined registration (Leader $leader, but its init is $init)."
+        error "nixos-container run can't reach it; until the host is rebooted, use: nsenter -t $init -m -u -i -n -p -- <cmd>"
+        return 1
+    fi
+}
+
+# nixos-container run, after checking the container is reachable through machined.
+# Args: slug -- cmd...
+container_run() {
+    local slug="$1"
+    shift
+    check_machine_leader "$slug" || return 1
+    nixos-container run "$slug" "$@"
+}
+
 # Reads service names from meta JSON and starts them via nixos-container run.
+# Returns non-zero, after reporting why, if the services couldn't be started.
 # Args: slug meta_file
 start_container_services() {
     local slug="$1" meta_file="$2"
@@ -497,16 +527,28 @@ start_container_services() {
     setup_service=$(jq -r '.setupService' "$meta_file")
     local -a app_services
     readarray -t app_services < <(jq -r '.appServices[]' "$meta_file")
-    (
-        # `nixos-container start` returns before the container's network is usable;
-        # starting setup immediately makes its git clone fail with "Could not resolve host".
-        local i
-        for i in {1..30}; do
-            nixos-container run "$slug" -- getent hosts github.com &>/dev/null && break
-            sleep 2
-        done
-        nixos-container run "$slug" -- systemctl start "$setup_service" "${app_services[@]}"
-    ) &
+
+    # `nixos-container start` returns before the container's network is usable;
+    # starting setup immediately makes its git clone fail with "Could not resolve host".
+    local i resolved=0
+    for i in {1..30}; do
+        # A stale registration doesn't clear itself, so don't wait it out.
+        check_machine_leader "$slug" || return 1
+        if nixos-container run "$slug" -- getent hosts github.com &>/dev/null; then
+            resolved=1
+            break
+        fi
+        sleep 2
+    done
+    if [[ $resolved -eq 0 ]]; then
+        warn "Container '$slug' couldn't resolve github.com after 60s; starting its services anyway."
+    fi
+
+    # --no-block queues the jobs and returns, instead of waiting for setup to finish.
+    if ! container_run "$slug" -- systemctl start --no-block "$setup_service" "${app_services[@]}"; then
+        error "Failed to start services for '$slug': $setup_service ${app_services[*]}"
+        return 1
+    fi
 }
 
 # -- Meta helpers -------------------------------------------------------------
@@ -692,11 +734,16 @@ cmd_create() {
     # Start the container
     nixos-container start "$slug"
 
-    # Kick off setup and app services in background
-    start_container_services "$slug" "$meta_file"
+    # Queue setup and app services
+    local services_started=1
+    start_container_services "$slug" "$meta_file" || services_started=0
 
     # Write Caddy config from meta routes
     write_caddy_config "$slug" "$local_ip" "$domain" "$meta_file"
+
+    if [[ $services_started -eq 0 ]]; then
+        fatal "Preview '$slug' was created, but its services failed to start (see above)."
+    fi
 
     local preview_url="https://${slug}.${domain}"
 
@@ -847,12 +894,14 @@ cmd_update() {
         echo "$new_sha" > "$sha_file"
 
         # Signal the setup service to do a full rebuild
-        nixos-container run "$slug" -- su -s /bin/sh preview -c "touch /tmp/force-rebuild"
+        container_run "$slug" -- su -s /bin/sh preview -c "touch /tmp/force-rebuild" \
+            || fatal "Failed to signal a rebuild in '$slug'."
 
         local SETUP_SERVICE
         local -a APP_SERVICES
         read_service_names "$slug"
-        nixos-container run "$slug" -- systemctl restart "$SETUP_SERVICE" "${APP_SERVICES[@]}"
+        container_run "$slug" -- systemctl restart "$SETUP_SERVICE" "${APP_SERVICES[@]}" \
+            || fatal "Failed to restart services in '$slug'."
 
         success "Preview '$slug' is rebuilding (code-only). Check progress with: preview logs $slug --follow"
     else
@@ -929,13 +978,18 @@ cmd_update() {
         nixos-container start "$slug"
 
         # Start services
-        start_container_services "$slug" "$meta_file"
+        local services_started=1
+        start_container_services "$slug" "$meta_file" || services_started=0
 
         # Rewrite Caddy config from new meta
         write_caddy_config "$slug" "$local_ip" "$domain" "$meta_file"
 
         # Clean up
         rm -f "$old_meta_file"
+
+        if [[ $services_started -eq 0 ]]; then
+            fatal "Preview '$slug' was rebuilt, but its services failed to start (see above)."
+        fi
 
         success "Preview '$slug' rebuilt with new config. Check progress with: preview logs $slug --follow"
     fi
@@ -1006,7 +1060,7 @@ cmd_logs() {
         units+=("-u" "$svc")
     done
 
-    nixos-container run "$slug" -- journalctl "${units[@]}" --no-pager "${follow_args[@]}"
+    container_run "$slug" -- journalctl "${units[@]}" --no-pager "${follow_args[@]}"
 }
 
 cmd_help() {

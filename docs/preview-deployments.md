@@ -180,6 +180,16 @@ machinectl status <slug>
 journalctl -u container@<slug>
 ```
 
+### `preview` commands report a stale systemd-machined registration
+
+`preview logs`, `preview update` and `preview create` check that machined's `Leader` for the container is the container's real init before using `nixos-container run`. When it isn't, every `nixos-container run <slug>` fails with `nsenter: reassociate to namespaces failed: No such process`. This happens when the container's previous instance didn't finish shutting down, for example because processes were left running inside it. Clearing the registration takes a host reboot. Until then, reach the container through its real init:
+
+```bash
+init=$(head -1 /sys/fs/cgroup/machine.slice/container@<slug>.service/payload/init.scope/cgroup.procs)
+nsenter -t $init -m -u -i -n -p -- /run/current-system/sw/bin/systemctl start --no-block <setup-service> <app-services...>
+nsenter -t $init -m -u -i -n -p -- /run/current-system/sw/bin/journalctl -u <setup-service> -f --no-pager
+```
+
 ### Webhook not receiving events
 
 ```bash
