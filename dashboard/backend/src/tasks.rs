@@ -2017,22 +2017,21 @@ async fn sync_agent_to_remote(
 }
 
 /// Fetch the task branch from GitHub into the agent repo (through the host mirror) and
-/// return its head commit, or `None` if it couldn't be fetched (e.g. it doesn't exist yet).
+/// return its head commit, or `None` if it doesn't exist on GitHub yet.
 async fn fetch_remote_branch(
     ctx: &PipelineCtx<'_>,
     agent_name: &str,
     branch_name: &str,
-) -> Option<String> {
-    mirror::sync_to_agent(
+) -> Result<Option<String>, AppError> {
+    mirror::sync_branch_if_exists(
         ctx.config,
         ctx.repo,
         &ctx.git_id.token,
         agent_name,
-        &[branch_name],
+        branch_name,
     )
     .await
-    .ok()?
-    .pop()
+    .inspect_err(|e| tracing::error!("Could not fetch {branch_name} for {agent_name}: {e}"))
 }
 
 /// Rebase the agent's local branch onto `remote_head` unless it already contains it, and
@@ -2091,7 +2090,7 @@ async fn push_and_preview(
 
     // Diff against the branch as it is on GitHub right now: someone may have pushed to it,
     // and a stale ref makes createCommitOnBranch fail with STALE_DATA.
-    let remote_head = fetch_remote_branch(ctx, agent_name, branch_name).await;
+    let remote_head = fetch_remote_branch(ctx, agent_name, branch_name).await?;
     if let Some(oid) = &remote_head {
         if rebase_onto_remote_head(agent_name, oid).await? {
             log_and_send(
