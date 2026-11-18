@@ -494,12 +494,18 @@ write_env_files() {
 # leader through machined, so with a stale registration every run fails with
 # "nsenter: reassociate to namespaces failed: No such process" (see #201).
 # Skips the check when either PID can't be read (e.g. the container is booting).
+# Also fails for a slug `preview create` couldn't have produced, since the slug
+# goes into a sysfs path and a machinectl argument.
 # Args: slug
 check_machine_leader() {
     local slug="$1"
+    if [[ ! "$slug" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+        error "Invalid preview slug '$slug'."
+        return 1
+    fi
     local procs="/sys/fs/cgroup/machine.slice/container@${slug}.service/payload/init.scope/cgroup.procs"
     local leader init
-    leader=$(machinectl show "$slug" -p Leader --value 2>/dev/null || true)
+    leader=$(machinectl show -p Leader --value -- "$slug" 2>/dev/null || true)
     init=$(head -1 "$procs" 2>/dev/null || true)
     [[ -n "$leader" && -n "$init" ]] || return 0
     if [[ "$leader" != "$init" ]]; then
