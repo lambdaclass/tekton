@@ -1,7 +1,8 @@
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
+use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::process::{Child, Command};
 use tokio::sync::broadcast;
 
 use crate::config::Config;
@@ -60,45 +61,95 @@ async fn run_cmd_with_env(
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// Run a command and stream stdout lines to a broadcast channel.
+/// How long a streamed command's process group gets to exit after SIGTERM before it is
+/// SIGKILLed. `su` (inside `nixos-container run`) waits 2s before SIGKILLing its child.
+const STREAM_KILL_GRACE: Duration = Duration::from_secs(5);
+
+/// Owns a child spawned as a process-group leader and, unless the child has already been
+/// reaped, kills the whole group when dropped.
+///
+/// Killing only the child is not enough: `preview logs --follow` is bash → `nixos-container
+/// run` → nsenter → su → journalctl, and an orphaned journalctl keeps the preview's container
+/// from shutting down cleanly (#201). `su -c` moves journalctl into a new session, out of
+/// the group, but su's parent stays in the group and kills journalctl when it gets SIGTERM.
+struct ProcessGroupGuard {
+    child: Option<Child>,
+}
+
+impl ProcessGroupGuard {
+    fn child(&mut self) -> &mut Child {
+        self.child.as_mut().expect("child is only taken on drop")
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        // `id()` is None once the child has been reaped, and then its group id may be reused.
+        let Some(pid) = child.id() else {
+            return;
+        };
+        let pgid = pid as libc::pid_t;
+        // SAFETY: kill(2) has no memory-safety preconditions.
+        unsafe { libc::kill(-pgid, libc::SIGTERM) };
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    tokio::time::sleep(STREAM_KILL_GRACE).await;
+                    // The leader is reaped only by the `wait` below, so the group id is still ours.
+                    // SAFETY: as above.
+                    unsafe { libc::kill(-pgid, libc::SIGKILL) };
+                    let _ = child.wait().await;
+                });
+            }
+            Err(_) => {
+                // SAFETY: as above.
+                unsafe { libc::kill(-pgid, libc::SIGKILL) };
+            }
+        }
+    }
+}
+
+/// Forward each line read from `reader` to `tx` until EOF or a read error.
+async fn forward_lines<R: AsyncRead + Unpin>(reader: R, tx: broadcast::Sender<String>) {
+    let mut lines = BufReader::new(reader).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let _ = tx.send(line);
+    }
+}
+
+/// Run a command and stream its stdout and stderr lines to a broadcast channel.
 /// Returns when the command exits.
+///
+/// Dropping the returned future (e.g. aborting the task running it) kills the command's whole
+/// process group, so long-running commands like `preview logs --follow` don't outlive it.
 pub async fn run_cmd_streaming(
     cmd: &str,
     args: &[&str],
     tx: broadcast::Sender<String>,
 ) -> Result<(), AppError> {
     tracing::info!("Streaming: {cmd} {}", args.join(" "));
-    let mut child = Command::new(cmd)
+    let child = Command::new(cmd)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
+        .kill_on_drop(true)
         .spawn()
         .map_err(|e| AppError::Internal(format!("Failed to spawn {cmd}: {e}")))?;
+    let mut guard = ProcessGroupGuard { child: Some(child) };
 
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let stdout = guard.child().stdout.take().unwrap();
+    let stderr = guard.child().stderr.take().unwrap();
 
-    let tx2 = tx.clone();
-    let stdout_handle = tokio::spawn(async move {
-        let reader = BufReader::new(stdout);
-        let mut lines = reader.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let _ = tx.send(line);
-        }
-    });
+    // Read both pipes in this future rather than in spawned tasks, so that dropping it
+    // also closes them.
+    tokio::join!(forward_lines(stdout, tx.clone()), forward_lines(stderr, tx));
 
-    let stderr_handle = tokio::spawn(async move {
-        let reader = BufReader::new(stderr);
-        let mut lines = reader.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let _ = tx2.send(line);
-        }
-    });
-
-    let _ = stdout_handle.await;
-    let _ = stderr_handle.await;
-
-    let status = child
+    let status = guard
+        .child()
         .wait()
         .await
         .map_err(|e| AppError::Internal(format!("Failed to wait on {cmd}: {e}")))?;
@@ -793,6 +844,46 @@ fn format_tool_use(block: &serde_json::Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn process_exists(pid: libc::pid_t) -> bool {
+        // SAFETY: kill(2) with signal 0 only checks for existence.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[tokio::test]
+    async fn test_run_cmd_streaming_kills_process_group_on_drop() {
+        // The grandchild stands in for journalctl under `preview logs --follow`.
+        let (tx, mut rx) = broadcast::channel::<String>(16);
+        let handle = tokio::spawn(async move {
+            run_cmd_streaming("sh", &["-c", "sh -c 'echo $$; exec sleep 300'; true"], tx).await
+        });
+        let pid: libc::pid_t = rx.recv().await.unwrap().trim().parse().unwrap();
+        assert!(process_exists(pid));
+
+        handle.abort();
+        let _ = handle.await;
+
+        // A killed grandchild is reparented and reaped by init, so poll until it's gone. Stay
+        // well under STREAM_KILL_GRACE so this checks the SIGTERM path, not the SIGKILL fallback.
+        for _ in 0..40 {
+            if !process_exists(pid) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("grandchild {pid} outlived the aborted stream");
+    }
+
+    #[tokio::test]
+    async fn test_run_cmd_streaming_streams_stdout_and_stderr() {
+        let (tx, mut rx) = broadcast::channel::<String>(16);
+        run_cmd_streaming("sh", &["-c", "echo out; echo err >&2"], tx)
+            .await
+            .unwrap();
+        let mut lines = vec![rx.recv().await.unwrap(), rx.recv().await.unwrap()];
+        lines.sort();
+        assert_eq!(lines, ["err", "out"]);
+    }
 
     #[test]
     fn test_strip_ansi() {
