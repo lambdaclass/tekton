@@ -264,6 +264,30 @@ get_or_fetch_config() {
     echo "$cached_config"
 }
 
+# -- Per-preview lock ---------------------------------------------------------
+
+valid_slug() {
+    [[ "$1" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]
+}
+
+# Serialises create/update/destroy of one preview. The dashboard and the
+# webhook can run them at once, and the code sync that finishes last would
+# otherwise win even with an older commit. Held until the script exits, on fd
+# 7, which every command that enters a container closes (a process left
+# inside could otherwise hold the lock forever).
+lock_slug() {
+    local slug="$1"
+    valid_slug "$slug" || fatal "Invalid preview slug '$slug'."
+    [[ "${LOCKED_SLUG:-}" == "$slug" ]] && return 0
+    mkdir -p "$PREVIEW_DIR/.locks"
+    exec 7>"$PREVIEW_DIR/.locks/${slug}.lock"
+    if ! flock -n 7; then
+        info "Waiting for another operation on preview '$slug' to finish..." >&2
+        flock 7
+    fi
+    LOCKED_SLUG="$slug"
+}
+
 # -- Container access ---------------------------------------------------------
 
 # nixos-container run with an empty environment. Its `su` stays in the
@@ -271,7 +295,7 @@ get_or_fetch_config() {
 # inherited (the dashboard's or webhook's secrets) would be readable there.
 # Args: slug -- cmd...
 nc_run() {
-    env -i PATH="$PATH" nixos-container run "$@"
+    env -i PATH="$PATH" nixos-container run "$@" 7>&-
 }
 
 # Absolute /nix/store path of a host binary. Containers share the host's
@@ -304,7 +328,7 @@ run_as_preview() {
     timeout "$seconds" env -i PATH="$PATH" nixos-container run "$slug" -- \
         "$runuser_bin" -u preview -- \
         "$bash_bin" -c "export PATH='${tool_path}' HOME=/home/preview; cd /home/preview; ${script}" \
-        preview-sync "$@"
+        preview-sync "$@" 7>&-
 }
 
 # `nixos-container start` can return before activation has created the
@@ -318,12 +342,15 @@ wait_for_preview_user() {
         run_as_preview 30 "$slug" true </dev/null &>/dev/null && return 0
         sleep 1
     done
-    error "User 'preview' or its home doesn't exist in '$slug' after 30s."
+    error "User 'preview' or its home /home/preview doesn't exist in '$slug' (preview-config.nix must define them)."
     return 1
 }
 
 # -- Code sync ----------------------------------------------------------------
-# No GitHub credential ever enters a preview container. The host fetches each
+# Tekton never hands a GitHub credential to a preview container. (The repo's
+# preview-config.nix is still evaluated as root with --impure, so a malicious
+# config can read host files during the build; that needs the build sandboxed
+# and is tracked separately.) The host fetches each
 # branch into a root-only bare mirror with the GitHub App token, which reaches
 # git as an HTTP header through GIT_CONFIG_* env vars (never argv, a URL or a
 # file). It then streams a git bundle over stdin into a bare repo in the
@@ -336,6 +363,30 @@ wait_for_preview_user() {
 
 mirror_path() {
     echo "$REPO_CACHE_DIR/${1%%/*}/${1#*/}.git"
+}
+
+# The mirror ref that tracks <branch>. Branch names are hex-encoded into one
+# flat name: under refs/heads/, a previewed (later deleted) `feature` would
+# block `feature/x` from ever being fetched.
+mirror_branch_ref() {
+    echo "refs/tekton-branch/$(printf '%s' "$1" | od -An -tx1 | tr -d ' \n')"
+}
+
+# Drops <branch>'s mirror ref once no preview of <repo> tracks it, so the
+# mirror doesn't keep deleted branches' history forever. Best effort.
+# Args: repo branch
+mirror_forget_branch() {
+    local repo="$1" branch="$2" mirror slug _slot _host_ip _local_ip r b
+    mirror=$(mirror_path "$repo")
+    [[ -f "$mirror/HEAD" ]] || return 0
+    while IFS= read -r slug; do
+        read -r _slot _host_ip _local_ip r b 2>/dev/null < "$PREVIEW_DIR/$slug" || continue
+        [[ "$r" == "$repo" && "$b" == "$branch" ]] && return 0
+    done < <(list_slugs)
+    (
+        flock 8 || exit 1
+        git --git-dir "$mirror" update-ref -d "$(mirror_branch_ref "$branch")"
+    ) 8>"${mirror}.lock" 2>/dev/null || true
 }
 
 # Runs host git with the token as an HTTP header for this one process.
@@ -358,9 +409,10 @@ git_with_token() {
 mirror_fetch() {
     local repo="$1" branch="$2" commit_sha="$3" token="$4"
     [[ "$commit_sha" =~ ^[0-9a-f]{40}$ ]] || fatal "Invalid commit id '$commit_sha'."
-    local mirror url
+    local mirror url ref
     mirror=$(mirror_path "$repo")
     url=$(plain_repo_url "$repo")
+    ref=$(mirror_branch_ref "$branch")
     mkdir -p "$(dirname "$mirror")"
 
     info "Fetching ${repo}@${branch} into the host mirror..." >&2
@@ -369,7 +421,7 @@ mirror_fetch() {
         flock 8 || exit 1
         [[ -f "$mirror/HEAD" ]] || git init --quiet --bare "$mirror" || exit 1
         git_with_token "$token" --git-dir "$mirror" fetch --quiet --no-tags -- \
-            "$url" "+refs/heads/${branch}:refs/heads/${branch}" || exit 1
+            "$url" "+refs/heads/${branch}:${ref}" || exit 1
         if ! git --git-dir "$mirror" cat-file -e "${commit_sha}^{commit}" 2>/dev/null; then
             # Force-pushed away since we read the branch head: fetch it by id.
             git_with_token "$token" --git-dir "$mirror" fetch --quiet --no-tags -- \
@@ -501,17 +553,19 @@ scrub_preview() {
     local url
     url=$(plain_repo_url "$repo")
 
-    # Anything but a clean "up"/"down" is unknown; treating it as stopped would
-    # take the host-side path, which races a running container.
-    local status
-    status=$(timeout 30 nixos-container status "$slug" </dev/null 2>/dev/null) || status=""
-    case "$status" in
-        up)
+    # Decide from the unit itself: `nixos-container status` says "down" while
+    # the container is still starting (or auto-restarting), and its own
+    # services already run then. Only a unit that is fully inactive or failed
+    # takes the host-side path; anything in between is unknown.
+    local state
+    state=$(timeout 30 systemctl show -p ActiveState --value "container@${slug}" </dev/null 2>/dev/null) || state=""
+    case "$state" in
+        active)
             # A running container could swap a path between a host-side check
             # and the write, so the container cleans up after itself.
             check_machine_leader "$slug" || return 1
             timeout 120 env -i PATH="$PATH" nixos-container run "$slug" -- \
-                rm -f /etc/preview-token </dev/null || return 1
+                rm -f /etc/preview-token </dev/null 7>&- || return 1
             # shellcheck disable=SC2016  # expanded by the container-side bash
             run_as_preview 120 "$slug" '
                 [ -e app/.git ] || exit 0
@@ -519,7 +573,7 @@ scrub_preview() {
                 git -C app remote set-url origin "$1"' \
                 "$url" </dev/null || return 1
             ;;
-        down)
+        inactive|failed)
             # rm doesn't follow a symlink in the last component; the directory
             # is resolved and checked first.
             local etc_dir git_config current
@@ -535,7 +589,7 @@ scrub_preview() {
             fi
             ;;
         *)
-            warn "Can't scrub '$slug': couldn't tell whether its container is running." >&2
+            warn "Can't scrub '$slug': its container is ${state:-in an unknown state}; try again once it's up or stopped." >&2
             return 1
             ;;
     esac
@@ -959,6 +1013,8 @@ cmd_create() {
     # Sanitize slug (lowercase, alphanumeric + hyphens only)
     slug=$(echo "$slug" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | sed 's/--*/-/g' | sed 's/^-//' | sed 's/-$//')
 
+    lock_slug "$slug"
+
     if [[ -f "$PREVIEW_DIR/$slug" ]]; then
         fatal "Preview '$slug' already exists. Use 'preview destroy $slug' first."
     fi
@@ -1093,10 +1149,14 @@ cmd_destroy() {
     fi
 
     ensure_root
+    lock_slug "$slug"
 
     if [[ ! -f "$PREVIEW_DIR/$slug" ]]; then
         fatal "Preview '$slug' not found."
     fi
+
+    local _slot _host_ip _local_ip repo="" branch=""
+    read -r _slot _host_ip _local_ip repo branch < "$PREVIEW_DIR/$slug" || true
 
     info "Destroying preview '$slug'..."
 
@@ -1128,6 +1188,10 @@ cmd_destroy() {
           "$PREVIEW_DIR/${slug}.sha" \
           "$PREVIEW_DIR/${slug}.type"
 
+    if valid_repo "$repo" && valid_branch "$branch"; then
+        mirror_forget_branch "$repo" "$branch"
+    fi
+
     success "Preview '$slug' destroyed."
 }
 
@@ -1140,6 +1204,8 @@ cmd_update() {
     ensure_root
     ensure_dirs
     load_secrets
+    # Waits for a running create/update of this preview, then reads its state.
+    lock_slug "$slug"
 
     if [[ ! -f "$PREVIEW_DIR/$slug" ]]; then
         fatal "Preview '$slug' not found."
@@ -1331,7 +1397,11 @@ cmd_scrub_tokens() {
 
     local slug repo _slot _host_ip _local_ip _branch failed=0 total=0
     while IFS= read -r slug; do
-        read -r _slot _host_ip _local_ip repo _branch < "$PREVIEW_DIR/$slug"
+        # Destroyed (or still being created) since it was listed.
+        if ! read -r _slot _host_ip _local_ip repo _branch 2>/dev/null < "$PREVIEW_DIR/$slug" ||
+            [[ -z "$repo" ]]; then
+            continue
+        fi
         total=$((total + 1))
         if ! scrub_preview "$slug" "$repo"; then
             warn "Could not fully scrub '$slug'."
@@ -1421,8 +1491,8 @@ cmd_help() {
     echo "  Each repo ships a preview-config.nix at its root. tekton fetches it from"
     echo "  GitHub, builds a NixOS container closure from it (cached by commit SHA),"
     echo "  and runs the container. No repo-specific knowledge lives in tekton."
-    echo "  The host fetches the code and sends it into the container; no GitHub"
-    echo "  credential ever enters a container."
+    echo "  The host fetches the code with a GitHub App token and sends it into the"
+    echo "  container; the container is never given a GitHub credential."
     echo ""
     echo -e "${BOLD}Examples:${NC}"
     echo "  preview build myorg/myapp feature-branch"

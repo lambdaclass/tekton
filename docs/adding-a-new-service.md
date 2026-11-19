@@ -153,7 +153,10 @@ resolves `PREVIEW_REPO_URL` to that local copy. Clone or fetch it as usual:
 git clone --branch "$PREVIEW_BRANCH" --single-branch "$PREVIEW_REPO_URL" /home/preview/app
 ```
 
-The copy only has `PREVIEW_BRANCH`, at the commit being deployed. Configs
+The copy only has `PREVIEW_BRANCH`, at the commit being deployed: no other
+branches, tags or Git LFS objects, and submodules can't be fetched. It's set
+up for the `preview` user (home `/home/preview`), so the config must define
+that user and run the clone as it, as the template does. Configs
 written for the old `/etc/preview-token` file keep working: with the file gone
 they clone `https://x-access-token:@github.com/<repo>.git`, which resolves to
 the same copy. Other ways of putting a token into the URL don't, so switch

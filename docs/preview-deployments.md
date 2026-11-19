@@ -147,13 +147,15 @@ Tokens are cached per repo and permission set and reused while they have at leas
 
 ### Code delivery
 
-No GitHub credential ever enters a preview container:
+Tekton never gives a preview container a GitHub credential:
 
 1. `preview create`/`update` fetch the branch on the host into a root-only bare mirror, `/var/lib/preview-deploys/.repo-cache/<owner>/<repo>.git`. The App token reaches git as an HTTP header through `GIT_CONFIG_*` environment variables, never in argv, a URL or a file.
 2. Once the container is running, `preview` streams a git bundle of the deployed commit over stdin to git running as `preview` in the container, which stores it in `~preview/.tekton-src.git`. Updates send only the new commits, and fall back to the full history when the container doesn't have the previous one.
-3. A git `insteadOf` rule in `~preview/.gitconfig` points `PREVIEW_REPO_URL` (and `https://x-access-token:@github.com/<repo>.git`, what configs written for the old `/etc/preview-token` build now that the file is gone) at that bare repo. The setup service clones and fetches `PREVIEW_REPO_URL` as usual and gets the host's commits; it can't reach the repo on GitHub.
+3. A git `insteadOf` rule in `~preview/.gitconfig` points `PREVIEW_REPO_URL` (and `https://x-access-token:@github.com/<repo>.git`, what configs written for the old `/etc/preview-token` build now that the file is gone) at that bare repo. The setup service clones and fetches `PREVIEW_REPO_URL` as usual and gets the host's commits. The copy has only `PREVIEW_BRANCH` (no other branches or tags), and no Git LFS objects.
 
 Previews created by older tekton versions have a token in `/etc/preview-token` and in the app's git remote. `preview update` removes both before anything else, and `preview scrub-tokens` (run by `./deploy.sh <server> nix`) does it for every preview. Tokens those previews held may have been read by app code, so revoke them if that matters: App tokens expire within an hour, but user OAuth tokens don't.
+
+**Known gap:** the repo's `preview-config.nix` is still evaluated as root with `nix build --impure` on the host. A malicious config (an agent can write it) can read host files during evaluation, such as the GitHub App private key in `/var/secrets`, and put them in the container or send them out. Fixing that needs the build sandboxed and is tracked separately.
 
 To check a server, this should print nothing:
 
