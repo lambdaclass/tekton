@@ -275,13 +275,16 @@ valid_slug() {
 # otherwise win even with an older commit. Held until the script exits, on fd
 # 7, which every command that enters a container closes (a process left
 # inside could otherwise hold the lock forever).
+# With "nowait", returns 1 instead of waiting when the lock is taken.
+# Args: slug [nowait]
 lock_slug() {
-    local slug="$1"
+    local slug="$1" mode="${2:-}"
     valid_slug "$slug" || fatal "Invalid preview slug '$slug'."
     [[ "${LOCKED_SLUG:-}" == "$slug" ]] && return 0
     mkdir -p "$PREVIEW_DIR/.locks"
     exec 7>"$PREVIEW_DIR/.locks/${slug}.lock"
     if ! flock -n 7; then
+        [[ "$mode" == nowait ]] && return 1
         info "Waiting for another operation on preview '$slug' to finish..." >&2
         flock 7
     fi
@@ -582,10 +585,15 @@ scrub_preview() {
             fi
             [[ -e "$root/home/preview/app/.git" || -L "$root/home/preview/app/.git" ]] || return 0
             git_config=$(resolve_in_root "$root" home/preview/app/.git/config) || return 1
-            current=$(git config --file "$git_config" --get remote.origin.url 2>/dev/null || true)
+            # A FIFO or device planted there would hang or misdirect git.
+            if [[ ! -f "$git_config" ]]; then
+                warn "Skipping git remote scrub for '$slug': ${git_config} isn't a regular file." >&2
+                return 1
+            fi
+            current=$(timeout 30 git config --file "$git_config" --get remote.origin.url 2>/dev/null || true)
             if [[ -n "$current" && "$current" != "$url" ]]; then
                 # --file runs no hooks and reads no other config.
-                git config --file "$git_config" remote.origin.url "$url" || return 1
+                timeout 30 git config --file "$git_config" remote.origin.url "$url" || return 1
             fi
             ;;
         *)
@@ -1395,7 +1403,7 @@ list_slugs() {
 cmd_scrub_tokens() {
     ensure_root
 
-    local slug repo _slot _host_ip _local_ip _branch failed=0 total=0
+    local slug repo _slot _host_ip _local_ip _branch failed=0 total=0 busy=0 rc
     while IFS= read -r slug; do
         # Destroyed (or still being created) since it was listed.
         if ! read -r _slot _host_ip _local_ip repo _branch 2>/dev/null < "$PREVIEW_DIR/$slug" ||
@@ -1403,7 +1411,15 @@ cmd_scrub_tokens() {
             continue
         fi
         total=$((total + 1))
-        if ! scrub_preview "$slug" "$repo"; then
+        # Under the preview's lock, so a create/update can't start or swap the
+        # container mid-scrub. A subshell scopes the lock to this preview.
+        rc=0
+        ( lock_slug "$slug" nowait || exit 3; scrub_preview "$slug" "$repo" ) || rc=$?
+        if [[ $rc -eq 3 ]]; then
+            # Being created or updated; update scrubs before anything else.
+            info "Skipping '$slug': another operation on it is running."
+            busy=$((busy + 1))
+        elif [[ $rc -ne 0 ]]; then
             warn "Could not fully scrub '$slug'."
             failed=$((failed + 1))
         fi
@@ -1412,7 +1428,9 @@ cmd_scrub_tokens() {
     if [[ $failed -gt 0 ]]; then
         fatal "Scrubbed $((total - failed)) of $total previews; $failed failed (see warnings above)."
     fi
-    success "Scrubbed GitHub tokens from $total previews."
+    local note=""
+    [[ $busy -gt 0 ]] && note=" ($busy skipped: being created or updated)"
+    success "Scrubbed GitHub tokens from $((total - busy)) previews${note}."
 }
 
 cmd_list() {
@@ -1507,6 +1525,9 @@ cmd_help() {
 # GitHub access goes through the webhook's App token, never a caller's token,
 # and the repo's config is evaluated with --impure, so keep any out of reach.
 unset GITHUB_TOKEN
+# Host git reads repos an agent controls, as root: keep system and user git
+# config (helpers, hooks paths, includes) out of it.
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 
 command="${1:-help}"
 shift || true

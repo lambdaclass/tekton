@@ -254,6 +254,23 @@ pub async fn destroy_preview(config: &Config, slug: &str) -> Result<String, AppE
     run_cmd(&config.preview_bin, &["destroy", slug]).await
 }
 
+/// The repo a preview was created from, read from its tracking file. `None` if the slug isn't
+/// one `preview create` could have made, or there's no such preview.
+pub fn preview_repo(slug: &str) -> Option<String> {
+    let valid = !slug.is_empty()
+        && !slug.starts_with('-')
+        && !slug.ends_with('-')
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if !valid {
+        return None;
+    }
+    let content = std::fs::read_to_string(format!("/var/lib/preview-deploys/{slug}")).ok()?;
+    // Format: "slot host_ip local_ip repo branch"
+    content.split_whitespace().nth(3).map(String::from)
+}
+
 pub async fn update_preview(config: &Config, slug: &str) -> Result<String, AppError> {
     run_cmd(&config.preview_bin, &["update", slug]).await
 }

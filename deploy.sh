@@ -222,7 +222,7 @@ deploy_nix() {
     success "NixOS configs deployed."
     # Previews made by older versions kept a GitHub token inside the container.
     if $SSH "preview scrub-tokens"; then
-        success "Removed GitHub tokens older versions left in previews."
+        success "Removed the GitHub tokens older versions left in previews (/etc/preview-token, app git remote). Copies elsewhere are not covered: revoke exposed user tokens (#188)."
     else
         info "WARNING: some previews still hold GitHub tokens; rerun 'preview scrub-tokens' on the server."
     fi
