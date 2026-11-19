@@ -15,8 +15,9 @@ SECRETS_FILE="/var/secrets/preview.env"
 SUBNET_PREFIX="10.100"
 CONFIG_CACHE_DIR="$PREVIEW_DIR/.config-cache"
 CLOSURE_CACHE_DIR="$PREVIEW_DIR/.closure-cache"
-# Minimum lifetime (seconds) of a GitHub App token handed to a container
-CONTAINER_TOKEN_MIN_TTL=3000
+# Root-only bare mirrors of preview repos (see "Code sync" below)
+REPO_CACHE_DIR="$PREVIEW_DIR/.repo-cache"
+CONTAINERS_DIR="/var/lib/nixos-containers"
 
 # -- Load secrets -------------------------------------------------------------
 load_secrets() {
@@ -53,7 +54,8 @@ ensure_root() {
 }
 
 ensure_dirs() {
-    mkdir -p "$PREVIEW_DIR" "$CADDY_DIR" "$AGENT_DIR" "$CONFIG_CACHE_DIR" "$CLOSURE_CACHE_DIR"
+    mkdir -p "$PREVIEW_DIR" "$CADDY_DIR" "$AGENT_DIR" "$CONFIG_CACHE_DIR" "$CLOSURE_CACHE_DIR" "$REPO_CACHE_DIR"
+    chmod 700 "$REPO_CACHE_DIR"
 }
 
 # -- IP allocation (shared with agents) --------------------------------------
@@ -163,18 +165,39 @@ drop_db() {
 
 # -- GitHub helpers -----------------------------------------------------------
 
-# Prints a GitHub token that can read <repo>.
+valid_repo() {
+    local repo="$1" part
+    [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ && "$repo" != *.git ]] || return 1
+    for part in "${repo%%/*}" "${repo#*/}"; do
+        [[ "$part" != .* ]] || return 1
+    done
+}
+
+# Branch names go into git refspecs, paths and single-quoted values in
+# /etc/preview.env, so only allow names none of those treat specially.
+valid_branch() {
+    local branch="$1"
+    [[ "$branch" =~ ^[A-Za-z0-9._/+#@,=-]+$ ]] || return 1
+    case "$branch" in
+        [-/.]*|*/|*.|*.lock|*..*|*//*|*@\{*) return 1 ;;
+    esac
+}
+
+validate_repo_branch() {
+    valid_repo "$1" || fatal "Invalid repo name '$1' (expected owner/repo)."
+    valid_branch "$2" || fatal "Invalid branch name '$2'."
+}
+
+plain_repo_url() {
+    echo "https://github.com/$1.git"
+}
+
+# Prints a GitHub token that can read <repo>: a contents:read GitHub App
+# installation token scoped to <repo>, from the preview webhook, with at least
+# min_ttl seconds left. It is only ever used on the host.
 # Args: repo [min_ttl_seconds]
-# An explicit GITHUB_TOKEN (the logged-in user's OAuth token passed by the
-# dashboard) wins. Otherwise ask the preview webhook for a contents:read GitHub
-# App installation token scoped to <repo> with at least min_ttl seconds left.
 get_github_token() {
     local repo="$1" min_ttl="${2:-}"
-    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        info "Using token from environment (user OAuth)" >&2
-        echo "$GITHUB_TOKEN"
-        return
-    fi
     local webhook_port="${WEBHOOK_PORT:-3100}"
     local -a query=(--data-urlencode "repo=${repo}")
     if [[ -n "$min_ttl" ]]; then
@@ -239,6 +262,283 @@ get_or_fetch_config() {
     fi
 
     echo "$cached_config"
+}
+
+# -- Container access ---------------------------------------------------------
+
+# nixos-container run with an empty environment. Its `su` stays in the
+# container's PID namespace while the command runs, so whatever this script
+# inherited (the dashboard's or webhook's secrets) would be readable there.
+# Args: slug -- cmd...
+nc_run() {
+    env -i PATH="$PATH" nixos-container run "$@"
+}
+
+# Absolute /nix/store path of a host binary. Containers share the host's
+# /nix/store, so the path works inside them whatever the repo's config installs.
+store_bin() {
+    local bin
+    bin=$(command -v "$1") || { error "'$1' not found on the host."; return 1; }
+    [[ "$bin" == /nix/store/* ]] || bin=$(readlink -f "$bin")
+    if [[ "$bin" != /nix/store/* ]]; then
+        error "'$1' does not resolve into /nix/store (got '$bin')."
+        return 1
+    fi
+    echo "$bin"
+}
+
+# Runs a bash script as `preview` inside a running container, in /home/preview
+# with host git and coreutils on PATH. stdin is passed through. Killed after
+# `seconds` so a wedged container can't hang the caller.
+# Args: seconds slug script script-args...
+run_as_preview() {
+    local seconds="$1" slug="$2" script="$3"
+    shift 3
+    local bash_bin runuser_bin git_bin cat_bin tool_path
+    bash_bin=$(store_bin bash) || return 1
+    runuser_bin=$(store_bin runuser) || return 1
+    git_bin=$(store_bin git) || return 1
+    cat_bin=$(store_bin cat) || return 1
+    tool_path="$(dirname "$git_bin"):$(dirname "$cat_bin")"
+    check_machine_leader "$slug" || return 1
+    timeout "$seconds" env -i PATH="$PATH" nixos-container run "$slug" -- \
+        "$runuser_bin" -u preview -- \
+        "$bash_bin" -c "export PATH='${tool_path}' HOME=/home/preview; cd /home/preview; ${script}" \
+        preview-sync "$@"
+}
+
+# `nixos-container start` can return before activation has created the
+# preview user and its home.
+wait_for_preview_user() {
+    local slug="$1" i
+    for i in {1..30}; do
+        # A stale registration doesn't clear itself, so don't wait it out.
+        check_machine_leader "$slug" || return 1
+        # Fails until `preview` exists (runuser) and has a home (cd).
+        run_as_preview 30 "$slug" true </dev/null &>/dev/null && return 0
+        sleep 1
+    done
+    error "User 'preview' or its home doesn't exist in '$slug' after 30s."
+    return 1
+}
+
+# -- Code sync ----------------------------------------------------------------
+# No GitHub credential ever enters a preview container. The host fetches each
+# branch into a root-only bare mirror with the GitHub App token, which reaches
+# git as an HTTP header through GIT_CONFIG_* env vars (never argv, a URL or a
+# file). It then streams a git bundle over stdin into a bare repo in the
+# container owned by `preview` (~/.tekton-src.git). A git insteadOf rule there
+# points the repo's GitHub URL at that bare repo, so the setup service clones
+# and fetches PREVIEW_REPO_URL as before and gets the host's commits.
+#
+# The host never writes this into the container's rootfs, so a symlink planted
+# inside the container can't redirect a root write on the host.
+
+mirror_path() {
+    echo "$REPO_CACHE_DIR/${1%%/*}/${1#*/}.git"
+}
+
+# Runs host git with the token as an HTTP header for this one process.
+# Args: token git-args...
+git_with_token() {
+    local token="$1" basic
+    shift
+    basic=$(printf 'x-access-token:%s' "$token" | base64 -w0)
+    GIT_TERMINAL_PROMPT=0 \
+        GIT_HTTP_LOW_SPEED_LIMIT=1000 \
+        GIT_HTTP_LOW_SPEED_TIME=60 \
+        GIT_CONFIG_COUNT=1 \
+        GIT_CONFIG_KEY_0=http.https://github.com/.extraHeader \
+        GIT_CONFIG_VALUE_0="Authorization: Basic ${basic}" \
+        timeout 600 git "$@"
+}
+
+# Fetches <branch> into the repo's mirror and makes sure <commit_sha> is in it.
+# Args: repo branch commit_sha token
+mirror_fetch() {
+    local repo="$1" branch="$2" commit_sha="$3" token="$4"
+    [[ "$commit_sha" =~ ^[0-9a-f]{40}$ ]] || fatal "Invalid commit id '$commit_sha'."
+    local mirror url
+    mirror=$(mirror_path "$repo")
+    url=$(plain_repo_url "$repo")
+    mkdir -p "$(dirname "$mirror")"
+
+    info "Fetching ${repo}@${branch} into the host mirror..." >&2
+    # Each step checks its status: errexit is off when a caller tests this.
+    (
+        flock 8 || exit 1
+        [[ -f "$mirror/HEAD" ]] || git init --quiet --bare "$mirror" || exit 1
+        git_with_token "$token" --git-dir "$mirror" fetch --quiet --no-tags -- \
+            "$url" "+refs/heads/${branch}:refs/heads/${branch}" || exit 1
+        if ! git --git-dir "$mirror" cat-file -e "${commit_sha}^{commit}" 2>/dev/null; then
+            # Force-pushed away since we read the branch head: fetch it by id.
+            git_with_token "$token" --git-dir "$mirror" fetch --quiet --no-tags -- \
+                "$url" "$commit_sha" || exit 1
+        fi
+    ) 8>"${mirror}.lock" || fatal "Could not fetch ${repo}@${branch} (${commit_sha:0:8}) on the host."
+}
+
+# Writes a bundle of <commit_sha> (as <ref>) from the mirror. With base_sha,
+# the bundle only holds what base_sha lacks, and fails if base_sha isn't an
+# ancestor of commit_sha.
+# Args: mirror ref commit_sha bundle [base_sha]
+make_bundle() {
+    local mirror="$1" ref="$2" commit_sha="$3" bundle="$4" base_sha="${5:-}"
+    local -a revs=("$ref")
+    (
+        flock 8 || exit 1
+        if [[ -n "$base_sha" ]]; then
+            git --git-dir "$mirror" merge-base --is-ancestor "$base_sha" "$commit_sha" 2>/dev/null || exit 1
+            revs+=("^${base_sha}")
+        fi
+        git --git-dir "$mirror" update-ref "$ref" "$commit_sha" || exit 1
+        rc=0
+        git --git-dir "$mirror" bundle create --quiet "$bundle" "${revs[@]}" || rc=1
+        git --git-dir "$mirror" update-ref -d "$ref" || true
+        exit "$rc"
+    ) 8>"${mirror}.lock"
+}
+
+# Runs inside the container as `preview`, with the bundle on stdin.
+# Args: branch commit bundle-ref url url-with-empty-token
+# shellcheck disable=SC2016  # expanded by the container-side bash, not here
+CONTAINER_SYNC_SCRIPT='
+set -euo pipefail
+branch=$1 commit=$2 ref=$3 url=$4 empty_token_url=$5
+src=$HOME/.tekton-src.git
+[ -f "$src/HEAD" ] || git init --quiet --bare "$src"
+bundle=$(mktemp "$HOME/.tekton-bundle.XXXXXX")
+trap '\''rm -f "$bundle"'\'' EXIT
+cat > "$bundle"
+# Fails when the bundle is incremental and its base commit is missing here.
+git -C "$src" bundle verify --quiet "$bundle" >/dev/null 2>&1
+git -C "$src" fetch --quiet --no-tags "$bundle" "+$ref:refs/heads/$branch"
+[ "$(git -C "$src" rev-parse "refs/heads/$branch")" = "$commit" ]
+git -C "$src" symbolic-ref HEAD "refs/heads/$branch"
+# Clones and fetches of the repo read from $src. The second URL is what
+# configs written for /etc/preview-token build now that the file is gone.
+git config --global --unset-all "url.$src.insteadOf" || true
+git config --global --add "url.$src.insteadOf" "$url"
+git config --global --add "url.$src.insteadOf" "$empty_token_url"
+# Previews from older tekton versions kept a token in the app remote.
+if [ -d app/.git ] && git -C app remote get-url origin >/dev/null 2>&1; then
+    git -C app remote set-url origin "$url"
+fi
+echo "Preview code is at ${commit:0:8}."
+'
+
+# Puts <commit_sha> of <branch> into the container's ~/.tekton-src.git, where
+# the setup service clones or fetches it from. The container must be running
+# and mirror_fetch must have brought the commit in. With base_sha (the commit
+# the container already has), sends only the new objects, falling back to the
+# full history if that fails.
+# Runs in a subshell so the EXIT trap removes the host bundle on any failure.
+# Args: slug repo branch commit_sha [base_sha]
+sync_code() (
+    local slug="$1" repo="$2" branch="$3" commit_sha="$4" base_sha="${5:-}"
+    local mirror url empty_token_url bundle ref
+    mirror=$(mirror_path "$repo")
+    url=$(plain_repo_url "$repo")
+    empty_token_url="https://x-access-token:@github.com/${repo}.git"
+    ref="refs/tekton-preview/${slug}"
+    bundle=$(mktemp "$REPO_CACHE_DIR/.bundle.XXXXXX")
+    trap 'rm -f "$bundle"' EXIT
+
+    wait_for_preview_user "$slug" || exit 1
+
+    info "Syncing ${commit_sha:0:8} into preview '$slug'..."
+    if [[ -n "$base_sha" && "$base_sha" != "$commit_sha" ]]; then
+        if make_bundle "$mirror" "$ref" "$commit_sha" "$bundle" "$base_sha" &&
+            run_as_preview 600 "$slug" "$CONTAINER_SYNC_SCRIPT" \
+                "$branch" "$commit_sha" "$ref" "$url" "$empty_token_url" < "$bundle"; then
+            exit 0
+        fi
+        warn "Incremental sync into '$slug' failed; sending the full history."
+    fi
+    make_bundle "$mirror" "$ref" "$commit_sha" "$bundle" || {
+        error "Could not bundle ${repo}@${commit_sha:0:8} from the host mirror."
+        exit 1
+    }
+    run_as_preview 600 "$slug" "$CONTAINER_SYNC_SCRIPT" \
+        "$branch" "$commit_sha" "$ref" "$url" "$empty_token_url" < "$bundle" || {
+        error "Could not sync code into preview '$slug'."
+        exit 1
+    }
+)
+
+# -- Token scrub --------------------------------------------------------------
+# Previews created by older tekton versions hold a GitHub token in
+# /etc/preview-token and in the app's git remote URL.
+
+# Resolves a path under a container root, following symlinks, and fails if it
+# doesn't exist or resolves outside the root.
+# Args: root relative-path
+resolve_in_root() {
+    local root="$1" rel="$2" resolved
+    resolved=$(realpath -e -P -- "$root/$rel" 2>/dev/null) || return 1
+    if [[ "$resolved" != "$root"/* ]]; then
+        warn "Refusing ${root}/${rel}: it resolves to ${resolved}, outside the container root." >&2
+        return 1
+    fi
+    echo "$resolved"
+}
+
+# Args: slug repo
+# Called in conditionals, so it checks every step instead of relying on errexit.
+scrub_preview() {
+    local slug="$1" repo="$2"
+    local containers root
+    containers=$(realpath -e -P -- "$CONTAINERS_DIR" 2>/dev/null) || return 0
+    root=$(realpath -e -P -- "$containers/$slug" 2>/dev/null) || return 0
+    if [[ "$root" != "$containers/"* ]]; then
+        warn "Refusing to scrub '$slug': its root resolves to ${root}." >&2
+        return 1
+    fi
+    if ! valid_repo "$repo"; then
+        warn "Can't scrub '$slug': invalid repo '$repo'." >&2
+        return 1
+    fi
+    local url
+    url=$(plain_repo_url "$repo")
+
+    # Anything but a clean "up"/"down" is unknown; treating it as stopped would
+    # take the host-side path, which races a running container.
+    local status
+    status=$(timeout 30 nixos-container status "$slug" </dev/null 2>/dev/null) || status=""
+    case "$status" in
+        up)
+            # A running container could swap a path between a host-side check
+            # and the write, so the container cleans up after itself.
+            check_machine_leader "$slug" || return 1
+            timeout 120 env -i PATH="$PATH" nixos-container run "$slug" -- \
+                rm -f /etc/preview-token </dev/null || return 1
+            # shellcheck disable=SC2016  # expanded by the container-side bash
+            run_as_preview 120 "$slug" '
+                [ -e app/.git ] || exit 0
+                git -C app remote get-url origin >/dev/null 2>&1 || exit 0
+                git -C app remote set-url origin "$1"' \
+                "$url" </dev/null || return 1
+            ;;
+        down)
+            # rm doesn't follow a symlink in the last component; the directory
+            # is resolved and checked first.
+            local etc_dir git_config current
+            if etc_dir=$(resolve_in_root "$root" etc); then
+                rm -f -- "$etc_dir/preview-token" || return 1
+            fi
+            [[ -e "$root/home/preview/app/.git" || -L "$root/home/preview/app/.git" ]] || return 0
+            git_config=$(resolve_in_root "$root" home/preview/app/.git/config) || return 1
+            current=$(git config --file "$git_config" --get remote.origin.url 2>/dev/null || true)
+            if [[ -n "$current" && "$current" != "$url" ]]; then
+                # --file runs no hooks and reads no other config.
+                git config --file "$git_config" remote.origin.url "$url" || return 1
+            fi
+            ;;
+        *)
+            warn "Can't scrub '$slug': couldn't tell whether its container is running." >&2
+            return 1
+            ;;
+    esac
 }
 
 # -- Nix closure building -----------------------------------------------------
@@ -431,13 +731,14 @@ generate_secret_base64() {
 
 # -- Container environment helpers --------------------------------------------
 
-# Writes /etc/preview-token and /etc/preview.env into the container root.
-# Args: slug repo branch domain host_ip db_mode db_pass meta_file github_token
+# Writes /etc/preview.env into the container root. Runs right after
+# `nixos-container create`, before the container first boots.
+# Args: slug repo branch domain host_ip db_mode db_pass meta_file
 write_env_files() {
     local slug="$1" repo="$2" branch="$3" domain="$4" host_ip="$5"
-    local db_mode="$6" db_pass="$7" meta_file="$8" github_token="$9"
+    local db_mode="$6" db_pass="$7" meta_file="$8"
 
-    local container_root="/var/lib/nixos-containers/${slug}"
+    local container_root="${CONTAINERS_DIR}/${slug}"
     mkdir -p "${container_root}/etc"
 
     local preview_host="${slug}.${domain}"
@@ -446,12 +747,7 @@ write_env_files() {
     local db_name="preview_${slug//-/_}"
     local db_user="preview_${slug//-/_}"
 
-    # /etc/preview-token — readable by preview user (604)
-    local token_file="${container_root}/etc/preview-token"
-    echo "$github_token" > "$token_file"
-    chmod 604 "$token_file"
-
-    # /etc/preview.env — readable by preview user (644); safe values only (no token).
+    # /etc/preview.env — readable by preview user (644); no GitHub credential.
     local env_file="${container_root}/etc/preview.env"
     {
         echo "PREVIEW_REPO_URL='https://github.com/${repo}.git'"
@@ -524,7 +820,7 @@ container_run() {
     local slug="$1"
     shift
     check_machine_leader "$slug" || return 1
-    nixos-container run "$slug" "$@"
+    nc_run "$slug" "$@"
 }
 
 # Reads service names from meta JSON and starts them via nixos-container run.
@@ -538,12 +834,12 @@ start_container_services() {
     readarray -t app_services < <(jq -r '.appServices[]' "$meta_file")
 
     # `nixos-container start` returns before the container's network is usable;
-    # starting setup immediately makes its git clone fail with "Could not resolve host".
+    # setup services that download dependencies fail with "Could not resolve host".
     local i resolved=0
     for i in {1..30}; do
         # A stale registration doesn't clear itself, so don't wait it out.
         check_machine_leader "$slug" || return 1
-        if nixos-container run "$slug" -- getent hosts github.com &>/dev/null; then
+        if nc_run "$slug" -- getent hosts github.com &>/dev/null; then
             resolved=1
             break
         fi
@@ -603,6 +899,7 @@ cmd_build() {
     if [[ -z "$repo" ]] || [[ -z "$branch" ]]; then
         fatal "Usage: preview build <owner/repo> <branch>"
     fi
+    validate_repo_branch "$repo" "$branch"
 
     ensure_root
     ensure_dirs
@@ -646,6 +943,7 @@ cmd_create() {
     if [[ -z "$repo" ]] || [[ -z "$branch" ]]; then
         fatal "Usage: preview create <owner/repo> <branch> [--slug <slug>]"
     fi
+    validate_repo_branch "$repo" "$branch"
 
     ensure_root
     ensure_dirs
@@ -671,7 +969,7 @@ cmd_create() {
         fatal "ADMIN_SSH_KEY not set in $SECRETS_FILE"
     fi
 
-    # Get GitHub token (for the API calls before the build)
+    # Get GitHub token (host-side only: it never enters the container)
     local github_token
     github_token=$(get_github_token "$repo")
 
@@ -683,6 +981,9 @@ cmd_create() {
     # Fetch config (cached by commit SHA)
     local config_file
     config_file=$(get_or_fetch_config "$repo" "$branch" "$commit_sha" "$github_token")
+
+    # Fetch the code now, while the token is fresh; it's sent in after the build.
+    mirror_fetch "$repo" "$branch" "$commit_sha" "$github_token"
 
     # Build closure (two parallel nix builds: toplevel + previewMeta)
     build_preview_closure "$config_file" "$commit_sha" "$admin_ssh_key"
@@ -734,26 +1035,29 @@ cmd_create() {
         --host-address "$host_ip" \
         --local-address "$local_ip"
 
-    # Write container environment files. App tokens live one hour and the build
-    # may have taken a while, so hand the container a fresh one.
-    github_token=$(get_github_token "$repo" "$CONTAINER_TOKEN_MIN_TTL")
-    write_env_files "$slug" "$repo" "$branch" "$domain" "$host_ip" "$db_mode" "$db_pass" "$meta_file" "$github_token"
+    # Write container environment files
+    write_env_files "$slug" "$repo" "$branch" "$domain" "$host_ip" "$db_mode" "$db_pass" "$meta_file"
     echo "$commit_sha" > "$PREVIEW_DIR/${slug}.sha"
 
     # Start the container
     nixos-container start "$slug"
 
-    # Queue setup and app services
-    local services_started=1
-    start_container_services "$slug" "$meta_file" || services_started=0
+    # Put the code in the container before setup runs, then queue setup and
+    # app services.
+    local started=1
+    if ! sync_code "$slug" "$repo" "$branch" "$commit_sha"; then
+        started=0
+    elif ! start_container_services "$slug" "$meta_file"; then
+        started=0
+    fi
 
     # Write Caddy config from meta routes
     write_caddy_config "$slug" "$local_ip" "$domain" "$meta_file"
 
-    if [[ $services_started -eq 0 ]]; then
+    if [[ $started -eq 0 ]]; then
         # Don't leave a half-created preview behind: the caller sees a failure
         # and its retry would stop at "already exists".
-        error "Preview '$slug' was created, but its services failed to start (see above). Removing it."
+        error "Preview '$slug' was created, but couldn't be started (see above). Removing it."
         cmd_destroy "$slug"
         exit 1
     fi
@@ -845,6 +1149,10 @@ cmd_update() {
     local slot host_ip local_ip repo branch
     read -r slot host_ip local_ip repo branch < "$PREVIEW_DIR/$slug"
 
+    # Remove any token left by older tekton versions, even if nothing changed.
+    scrub_preview "$slug" "$repo" || warn "Could not fully scrub GitHub tokens from '$slug'."
+    validate_repo_branch "$repo" "$branch"
+
     local domain="${PREVIEW_DOMAIN:-preview.example.com}"
     local admin_ssh_key="${ADMIN_SSH_KEY:-}"
     if [[ -z "$admin_ssh_key" ]]; then
@@ -872,9 +1180,10 @@ cmd_update() {
 
     info "Updating preview '$slug': ${old_sha:0:8} → ${new_sha:0:8}"
 
-    # Fetch config and build closure for the new commit
+    # Fetch config, code and build closure for the new commit
     local config_file
     config_file=$(get_or_fetch_config "$repo" "$branch" "$new_sha" "$github_token")
+    mirror_fetch "$repo" "$branch" "$new_sha" "$github_token"
     build_preview_closure "$config_file" "$new_sha" "$admin_ssh_key"
 
     # Determine whether the NixOS closure changed
@@ -889,19 +1198,9 @@ cmd_update() {
         # ── CODE-ONLY UPDATE (fast path) ──────────────────────────────────
         info "NixOS closure unchanged — doing code-only update"
 
-        # Refresh token inside the container (fresh: the build may have taken a while)
-        github_token=$(get_github_token "$repo" "$CONTAINER_TOKEN_MIN_TTL")
-        local container_root="/var/lib/nixos-containers/${slug}"
-        local token_file="${container_root}/etc/preview-token"
-        if [[ -f "$token_file" ]]; then
-            echo "$github_token" > "$token_file"
-        fi
-
-        # Refresh git remote URL so ongoing fetches use the fresh token
-        local git_config="${container_root}/home/preview/app/.git/config"
-        if [[ -f "$git_config" ]]; then
-            sed -i "s|x-access-token:[^@]*|x-access-token:${github_token}|" "$git_config"
-        fi
+        # Send the new commits in; setup fetches them on its rebuild.
+        sync_code "$slug" "$repo" "$branch" "$new_sha" "$old_sha" \
+            || fatal "Failed to sync code into '$slug'."
 
         # Signal the setup service to do a full rebuild
         container_run "$slug" -- su -s /bin/sh preview -c "touch /tmp/force-rebuild" \
@@ -980,16 +1279,19 @@ cmd_update() {
         # systemd needs to pick up the new container unit files before start
         systemctl daemon-reload
 
-        # Write environment files with a fresh token (the build may have taken a while)
-        github_token=$(get_github_token "$repo" "$CONTAINER_TOKEN_MIN_TTL")
-        write_env_files "$slug" "$repo" "$branch" "$domain" "$host_ip" "$new_db_mode" "$db_pass" "$meta_file" "$github_token"
+        write_env_files "$slug" "$repo" "$branch" "$domain" "$host_ip" "$new_db_mode" "$db_pass" "$meta_file"
 
         # Start the container
         nixos-container start "$slug"
 
-        # Start services
+        # Fresh rootfs: send the full history in before setup runs, then start
+        # services.
         local services_started=1
-        start_container_services "$slug" "$meta_file" || services_started=0
+        if ! sync_code "$slug" "$repo" "$branch" "$new_sha"; then
+            services_started=0
+        elif ! start_container_services "$slug" "$meta_file"; then
+            services_started=0
+        fi
 
         # Rewrite Caddy config from new meta
         write_caddy_config "$slug" "$local_ip" "$domain" "$meta_file"
@@ -998,7 +1300,7 @@ cmd_update() {
         rm -f "$old_meta_file"
 
         if [[ $services_started -eq 0 ]]; then
-            fatal "Preview '$slug' was rebuilt, but its services failed to start (see above)."
+            fatal "Preview '$slug' was rebuilt, but couldn't be started (see above)."
         fi
 
         # Record the commit only now, so a failed update is retried by the next one.
@@ -1008,25 +1310,51 @@ cmd_update() {
     fi
 }
 
+# Prints the slug of every preview (one per tracking file).
+list_slugs() {
+    local f name
+    for f in "$PREVIEW_DIR"/*; do
+        [[ -f "$f" ]] || continue
+        name=$(basename "$f")
+        # Skip hidden files and metadata files
+        [[ "$name" == .* ]]         && continue
+        [[ "$name" == *.type ]]     && continue
+        [[ "$name" == *.meta ]]     && continue
+        [[ "$name" == *.meta.old ]] && continue
+        [[ "$name" == *.sha ]]      && continue
+        echo "$name"
+    done
+}
+
+cmd_scrub_tokens() {
+    ensure_root
+
+    local slug repo _slot _host_ip _local_ip _branch failed=0 total=0
+    while IFS= read -r slug; do
+        read -r _slot _host_ip _local_ip repo _branch < "$PREVIEW_DIR/$slug"
+        total=$((total + 1))
+        if ! scrub_preview "$slug" "$repo"; then
+            warn "Could not fully scrub '$slug'."
+            failed=$((failed + 1))
+        fi
+    done < <(list_slugs)
+
+    if [[ $failed -gt 0 ]]; then
+        fatal "Scrubbed $((total - failed)) of $total previews; $failed failed (see warnings above)."
+    fi
+    success "Scrubbed GitHub tokens from $total previews."
+}
+
 cmd_list() {
     ensure_dirs
     load_secrets
 
     local domain="${PREVIEW_DOMAIN:-preview.example.com}"
-    local found=0
+    local found=0 name f
     echo -e "${BOLD}SLUG                STATUS          BRANCH                          URL${NC}"
 
-    for f in "$PREVIEW_DIR"/*; do
-        [[ -f "$f" ]] || continue
-        local name
-        name=$(basename "$f")
-        # Skip hidden files and metadata files
-        [[ "$name" == .* ]]    && continue
-        [[ "$name" == *.type ]] && continue
-        [[ "$name" == *.meta ]]     && continue
-        [[ "$name" == *.meta.old ]] && continue
-        [[ "$name" == *.sha ]]      && continue
-
+    while IFS= read -r name; do
+        f="$PREVIEW_DIR/$name"
         found=1
         read -r _slot _host_ip _local_ip _repo branch < "$f"
 
@@ -1039,7 +1367,7 @@ cmd_list() {
 
         local url="https://${name}.${domain}"
         printf "%-19s %-23b %-31s %s\n" "$name" "$status" "$branch" "$url"
-    done
+    done < <(list_slugs)
 
     if [[ $found -eq 0 ]]; then
         echo -e "  ${CYAN}(no previews)${NC}"
@@ -1086,12 +1414,15 @@ cmd_help() {
     echo "  list                                             List all preview deployments"
     echo "  logs <slug> [--follow]                           View preview build/app logs"
     echo "  build <owner/repo> <branch>                      Pre-build the preview closure"
+    echo "  scrub-tokens                                     Remove GitHub tokens older versions left in previews"
     echo "  help                                             Show this help"
     echo ""
     echo -e "${BOLD}How it works:${NC}"
     echo "  Each repo ships a preview-config.nix at its root. tekton fetches it from"
     echo "  GitHub, builds a NixOS container closure from it (cached by commit SHA),"
     echo "  and runs the container. No repo-specific knowledge lives in tekton."
+    echo "  The host fetches the code and sends it into the container; no GitHub"
+    echo "  credential ever enters a container."
     echo ""
     echo -e "${BOLD}Examples:${NC}"
     echo "  preview build myorg/myapp feature-branch"
@@ -1103,6 +1434,10 @@ cmd_help() {
 }
 
 # -- Main ---------------------------------------------------------------------
+# GitHub access goes through the webhook's App token, never a caller's token,
+# and the repo's config is evaluated with --impure, so keep any out of reach.
+unset GITHUB_TOKEN
+
 command="${1:-help}"
 shift || true
 
@@ -1113,6 +1448,7 @@ case "$command" in
     list)    cmd_list ;;
     logs)    cmd_logs "$@" ;;
     build)   cmd_build "$@" ;;
+    scrub-tokens) cmd_scrub_tokens ;;
     help|--help|-h) cmd_help ;;
     *)       fatal "Unknown command: $command. Run 'preview help' for usage." ;;
 esac

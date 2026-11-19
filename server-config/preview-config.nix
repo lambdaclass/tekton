@@ -32,7 +32,7 @@ in
   # Open port 3000 for the preview app
   networking.firewall.allowedTCPPorts = [ 3000 ];
 
-  # Setup preview: clone repo, install deps, build
+  # Setup preview: clone repo (from the copy tekton provides), install deps, build
   systemd.services.setup-preview = {
     description = "Setup preview deployment (clone, install, build)";
     # Not started at boot — triggered from host after container is up
@@ -61,28 +61,24 @@ in
       APP_DIR="/home/preview/app"
 
       # On container restart, skip setup if the app is already built.
-      # This avoids git fetch with expired tokens.
-      # Explicit rebuilds go through 'preview update' which clears the marker.
+      # Explicit rebuilds go through 'preview update' which sets the marker.
       if [ -d "$APP_DIR/node_modules" ] && [ ! -f /tmp/force-rebuild ]; then
         echo "App already built, skipping setup (container restart)."
         exit 0
       fi
       rm -f /tmp/force-rebuild
 
-      # Build authenticated URL from the root-only token file
-      PREVIEW_TOKEN=$(cat /etc/preview-token 2>/dev/null || echo "")
-      AUTHED_URL=$(echo "$PREVIEW_REPO_URL" | sed "s|https://|https://x-access-token:$PREVIEW_TOKEN@|")
-
+      # No GitHub credential is available here. Tekton sends the branch's code
+      # into the container before starting this service, and git reads
+      # PREVIEW_REPO_URL from that local copy.
       if [ -d "$APP_DIR/.git" ]; then
-        # Update: refresh remote URL with current token, then fetch latest
         echo "Updating existing repo..."
-        ${pkgs.git}/bin/git -C "$APP_DIR" remote set-url origin "$AUTHED_URL"
+        ${pkgs.git}/bin/git -C "$APP_DIR" remote set-url origin "$PREVIEW_REPO_URL"
         ${pkgs.git}/bin/git -C "$APP_DIR" fetch origin
         ${pkgs.git}/bin/git -C "$APP_DIR" reset --hard "origin/$PREVIEW_BRANCH"
       else
-        # Fresh clone
         echo "Cloning $PREVIEW_REPO_URL (branch: $PREVIEW_BRANCH)..."
-        ${pkgs.git}/bin/git clone --branch "$PREVIEW_BRANCH" --single-branch "$AUTHED_URL" "$APP_DIR"
+        ${pkgs.git}/bin/git clone --branch "$PREVIEW_BRANCH" --single-branch "$PREVIEW_REPO_URL" "$APP_DIR"
       fi
       cd "$APP_DIR"
 

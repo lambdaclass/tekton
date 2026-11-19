@@ -37,16 +37,9 @@ pub async fn create_preview(
     )
     .await?;
 
-    let github_token = crate::auth::github_token_for(&state, &user.0.sub).await?;
-    let output = shell::create_preview(
-        &state.config,
-        &req.repo,
-        &req.branch,
-        req.slug.as_deref(),
-        &github_token,
-    )
-    .await
-    .map_err(|e| classify_create_error(e, &req.repo, req.slug.as_deref()))?;
+    let output = shell::create_preview(&state.config, &req.repo, &req.branch, req.slug.as_deref())
+        .await
+        .map_err(|e| classify_create_error(e, &req.repo, req.slug.as_deref()))?;
 
     // Audit: preview.created
     crate::audit::log_event(
@@ -94,8 +87,7 @@ pub async fn update_preview(
     State(state): State<AppState>,
     Path(slug): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let github_token = crate::auth::github_token_for(&state, &user.0.sub).await?;
-    let output = shell::update_preview(&state.config, &slug, &github_token).await?;
+    let output = shell::update_preview(&state.config, &slug).await?;
 
     // Audit: preview.updated
     crate::audit::log_event(

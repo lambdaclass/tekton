@@ -234,41 +234,28 @@ fn parse_preview_list(output: &str, _domain: &str) -> Result<Vec<Preview>, AppEr
     Ok(previews)
 }
 
+/// `preview` reads the repo with the preview webhook's GitHub App token, on the host, so no
+/// user token is passed to it (or reaches the preview container).
 pub async fn create_preview(
     config: &Config,
     repo: &str,
     branch: &str,
     slug: Option<&str>,
-    github_token: &str,
 ) -> Result<String, AppError> {
     let mut args = vec!["create", repo, branch];
     if let Some(s) = slug {
         args.push("--slug");
         args.push(s);
     }
-    run_cmd_with_env(
-        &config.preview_bin,
-        &args,
-        &[("GITHUB_TOKEN", github_token)],
-    )
-    .await
+    run_cmd(&config.preview_bin, &args).await
 }
 
 pub async fn destroy_preview(config: &Config, slug: &str) -> Result<String, AppError> {
     run_cmd(&config.preview_bin, &["destroy", slug]).await
 }
 
-pub async fn update_preview(
-    config: &Config,
-    slug: &str,
-    github_token: &str,
-) -> Result<String, AppError> {
-    run_cmd_with_env(
-        &config.preview_bin,
-        &["update", slug],
-        &[("GITHUB_TOKEN", github_token)],
-    )
-    .await
+pub async fn update_preview(config: &Config, slug: &str) -> Result<String, AppError> {
+    run_cmd(&config.preview_bin, &["update", slug]).await
 }
 
 // ── Agent operations ──
