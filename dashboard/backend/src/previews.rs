@@ -136,12 +136,18 @@ async fn require_github_read(token: &str, repo: &str) -> Result<(), AppError> {
     }
     let resp = reqwest::Client::new()
         .get(format!("https://api.github.com/repos/{repo}"))
+        .timeout(std::time::Duration::from_secs(8))
         .header("User-Agent", "dashboard")
         .header("Accept", "application/vnd.github+json")
         .bearer_auth(token)
         .send()
         .await?;
     let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(AppError::ReauthRequired(
+            "GitHub rejected your saved token (expired or revoked); sign in again".into(),
+        ));
+    }
     if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::FORBIDDEN {
         return Err(AppError::Forbidden(format!(
             "Your GitHub account can't read '{repo}'"
@@ -149,7 +155,7 @@ async fn require_github_read(token: &str, repo: &str) -> Result<(), AppError> {
     }
     if !status.is_success() {
         return Err(AppError::Internal(format!(
-            "GitHub returned {status} checking access to '{repo}'"
+            "Checking your GitHub access to '{repo}' failed: GitHub returned {status}"
         )));
     }
     let body: serde_json::Value = resp.json().await?;

@@ -65,7 +65,9 @@ test.describe('Previews page', () => {
     await page.getByLabel('Branch').fill('feature-branch');
     await page.getByRole('button', { name: 'Create' }).click();
 
-    // API will fail since preview binary doesn't exist — should show error
-    await expect(page.getByText(/error|fail|Error|Failed/i).first()).toBeVisible({ timeout: 10000 });
+    // The dashboard first checks with the user's GitHub token that they can read the repo.
+    // The seeded token is fake, so GitHub rejects it (or, offline, the request fails); either
+    // way the form must show the error.
+    await expect(page.getByText(/sign in again|failed|error/i).first()).toBeVisible({ timeout: 15000 });
   });
 });
