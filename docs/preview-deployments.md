@@ -155,7 +155,7 @@ Tekton never gives a preview container a GitHub credential:
 
 Previews created by older tekton versions have a token in `/etc/preview-token` and in the app's git remote. `preview update` removes both before anything else, and `preview scrub-tokens` (run by `./deploy.sh <server> nix`) does it for every preview. Tokens those previews held may have been read by app code, so revoke them if that matters: App tokens expire within an hour, but user OAuth tokens don't.
 
-**Known gap:** the repo's `preview-config.nix` is still evaluated as root with `nix build --impure` on the host. A malicious config (an agent can write it) can read host files during evaluation, such as the GitHub App private key in `/var/secrets`, and put them in the container or send them out. Fixing that needs the build sandboxed and is tracked separately.
+**Known gap:** the repo's `preview-config.nix` is still evaluated as root with `nix build --impure` on the host. A malicious config (an agent can write it) can read host files during evaluation, such as the GitHub App private key in `/var/secrets`, and put them in the container or send them out. Fixing that needs the build sandboxed; see [#204](https://github.com/lambdaclass/tekton/issues/204).
 
 To check a server, this should print nothing:
 

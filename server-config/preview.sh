@@ -350,7 +350,7 @@ wait_for_preview_user() {
 # Tekton never hands a GitHub credential to a preview container. (The repo's
 # preview-config.nix is still evaluated as root with --impure, so a malicious
 # config can read host files during the build; that needs the build sandboxed
-# and is tracked separately.) The host fetches each
+# and is tracked in #204.) The host fetches each
 # branch into a root-only bare mirror with the GitHub App token, which reaches
 # git as an HTTP header through GIT_CONFIG_* env vars (never argv, a URL or a
 # file). It then streams a git bundle over stdin into a bare repo in the
