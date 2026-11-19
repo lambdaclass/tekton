@@ -504,11 +504,14 @@ check_machine_leader() {
         return 1
     fi
     local procs="/sys/fs/cgroup/machine.slice/container@${slug}.service/payload/init.scope/cgroup.procs"
-    local leader init
+    local leader init_procs init
     leader=$(machinectl show -p Leader --value -- "$slug" 2>/dev/null || true)
-    init=$(head -1 "$procs" 2>/dev/null || true)
-    [[ -n "$leader" && -n "$init" ]] || return 0
-    if [[ "$leader" != "$init" ]]; then
+    init_procs=$(cat "$procs" 2>/dev/null || true)
+    [[ -n "$leader" && -n "$init_procs" ]] || return 0
+    # init.scope can briefly hold other PIDs while the container boots, and the
+    # file isn't ordered, so look for the leader anywhere in it.
+    if ! grep -qx -- "$leader" <<< "$init_procs"; then
+        init=$(head -1 <<< "$init_procs")
         error "Container '$slug' has a stale systemd-machined registration (Leader $leader, but its init is $init)."
         error "nixos-container run can't reach it; until the host is rebooted, use: nsenter -t $init -m -u -i -n -p -- <cmd>"
         return 1
@@ -748,7 +751,11 @@ cmd_create() {
     write_caddy_config "$slug" "$local_ip" "$domain" "$meta_file"
 
     if [[ $services_started -eq 0 ]]; then
-        fatal "Preview '$slug' was created, but its services failed to start (see above)."
+        # Don't leave a half-created preview behind: the caller sees a failure
+        # and its retry would stop at "already exists".
+        error "Preview '$slug' was created, but its services failed to start (see above). Removing it."
+        cmd_destroy "$slug"
+        exit 1
     fi
 
     local preview_url="https://${slug}.${domain}"
@@ -896,9 +903,6 @@ cmd_update() {
             sed -i "s|x-access-token:[^@]*|x-access-token:${github_token}|" "$git_config"
         fi
 
-        # Update SHA tracking
-        echo "$new_sha" > "$sha_file"
-
         # Signal the setup service to do a full rebuild
         container_run "$slug" -- su -s /bin/sh preview -c "touch /tmp/force-rebuild" \
             || fatal "Failed to signal a rebuild in '$slug'."
@@ -908,6 +912,9 @@ cmd_update() {
         read_service_names "$slug"
         container_run "$slug" -- systemctl restart "$SETUP_SERVICE" "${APP_SERVICES[@]}" \
             || fatal "Failed to restart services in '$slug'."
+
+        # Record the commit only now, so a failed update is retried by the next one.
+        echo "$new_sha" > "$sha_file"
 
         success "Preview '$slug' is rebuilding (code-only). Check progress with: preview logs $slug --follow"
     else
@@ -977,9 +984,6 @@ cmd_update() {
         github_token=$(get_github_token "$repo" "$CONTAINER_TOKEN_MIN_TTL")
         write_env_files "$slug" "$repo" "$branch" "$domain" "$host_ip" "$new_db_mode" "$db_pass" "$meta_file" "$github_token"
 
-        # Update SHA tracking
-        echo "$new_sha" > "$sha_file"
-
         # Start the container
         nixos-container start "$slug"
 
@@ -996,6 +1000,9 @@ cmd_update() {
         if [[ $services_started -eq 0 ]]; then
             fatal "Preview '$slug' was rebuilt, but its services failed to start (see above)."
         fi
+
+        # Record the commit only now, so a failed update is retried by the next one.
+        echo "$new_sha" > "$sha_file"
 
         success "Preview '$slug' rebuilt with new config. Check progress with: preview logs $slug --follow"
     fi
