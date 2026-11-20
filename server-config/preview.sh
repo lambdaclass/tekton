@@ -173,11 +173,17 @@ valid_repo() {
     done
 }
 
-# Branch names go into git refspecs, paths and single-quoted values in
-# /etc/preview.env, so only allow names none of those treat specially.
+# Branch names go into git refspecs, the space-separated tracking file and
+# single-quoted values in /etc/preview.env. Accept any name git does (so
+# `fix(ui)/header` or non-ASCII names work), except the quoting and shell
+# characters a repo's own setup script might trip over.
 valid_branch() {
     local branch="$1"
-    [[ "$branch" =~ ^[A-Za-z0-9._/+#@,=-]+$ ]] || return 1
+    # What git forbids in a ref (~ ^ : ? * [ \), then ' " ` $ ; & | < >.
+    local bad='~^:?*[\'"'"'"`$;&|<>'
+    [[ -n "$branch" ]] || return 1
+    [[ "$branch" != *[[:cntrl:][:space:]]* ]] || return 1
+    [[ "$branch" != *["$bad"]* ]] || return 1
     case "$branch" in
         [-/.]*|*/|*.|*.lock|*..*|*//*|*@\{*) return 1 ;;
     esac
