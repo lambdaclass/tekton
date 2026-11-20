@@ -95,7 +95,10 @@ GitHub PR event
       → background: runs `preview create/update/destroy` via shell
         → `preview` gets a per-repo contents:read GitHub App token
           from localhost:3100/internal/token
+        → fetches the branch into a host mirror with it; the token
+          never enters the container
         → nixos-container create/start/stop/destroy
+        → streams a git bundle of the commit into the container
         → writes/removes Caddy route files
         → reloads Caddy
       → adds the preview link to the PR description

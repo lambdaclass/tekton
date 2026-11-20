@@ -78,10 +78,8 @@ preview build myorg/myapp feature-branch
 1. `preview create` fetches `preview-config.nix` from the repo at the given branch (via GitHub API, cached by commit SHA)
 2. Tekton runs `nix build --impure --expr` to build the NixOS container closure and extract `system.build.previewMeta` (routing, service names, DB mode, host secrets)
 3. The container is created with `nixos-container create`, given a static IP on `10.100.0.0/24`
-4. Tekton writes two files into the container filesystem before it boots:
-   - `/etc/preview-token` — GitHub token for authenticated `git clone`/`git fetch`. For webhook-started previews this is a GitHub App installation token that can only read this one repo and expires about an hour after it's written; `preview update` writes a fresh one.
-   - `/etc/preview.env` — preview metadata (`PREVIEW_REPO_URL`, `PREVIEW_BRANCH`, `PREVIEW_HOST`, `PREVIEW_URL`, forwarded host secrets)
-5. The container starts; the repo's `setupService` clones/builds the app, then `appServices` run the live process(es)
+4. Tekton writes `/etc/preview.env` into the container filesystem before it boots: preview metadata (`PREVIEW_REPO_URL`, `PREVIEW_BRANCH`, `PREVIEW_HOST`, `PREVIEW_URL`, forwarded host secrets)
+5. The container starts and tekton sends the branch's code in (see [Code delivery](#code-delivery)); then the repo's `setupService` clones/builds the app, and `appServices` run the live process(es)
 6. Caddy is configured with routes from `previewMeta.routes` to proxy the subdomain to the container
 
 ## GitHub Webhook Integration
@@ -145,9 +143,26 @@ The webhook mints GitHub App installation tokens on demand. Each one expires aft
 - PR description edits use `pull_requests: write` on the PR's repo.
 - `preview` gets `contents: read` tokens for the repo it's deploying from `GET http://127.0.0.1:3100/internal/token?repo=owner/name[&min_ttl=seconds]`. Only direct localhost requests are answered. The repo must match the `owner/name` format, be in `ALLOWED_REPOS` when that's set, and be owned by the installation's account.
 
-Tokens are cached per repo and permission set and reused while they have at least 5 minutes left. `preview create`/`update` request a token with at least 50 minutes left (`min_ttl=3000`) right before writing it into the container, since a long build can outlast the one fetched before it.
+Tokens are cached per repo and permission set and reused while they have at least 5 minutes left. Previews started from the dashboard use the same App token: the dashboard doesn't pass the user's token to `preview`, and `preview` ignores a `GITHUB_TOKEN` in its environment.
 
-Previews started from the dashboard still use the logged-in user's OAuth token, passed as `GITHUB_TOKEN` to `preview`.
+### Code delivery
+
+Tekton never gives a preview container a GitHub credential:
+
+1. `preview create`/`update` fetch the branch on the host into a root-only bare mirror, `/var/lib/preview-deploys/.repo-cache/<owner>/<repo>.git`. The App token reaches git as an HTTP header through `GIT_CONFIG_*` environment variables, never in argv, a URL or a file.
+2. Once the container is running, `preview` streams a git bundle of the deployed commit over stdin to git running as `preview` in the container, which stores it in `~preview/.tekton-src.git`. Updates send only the new commits, and fall back to the full history when the container doesn't have the previous one.
+3. A git `insteadOf` rule in `~preview/.gitconfig` points `PREVIEW_REPO_URL` (and `https://x-access-token:@github.com/<repo>.git`, what configs written for the old `/etc/preview-token` build now that the file is gone) at that bare repo. The setup service clones and fetches `PREVIEW_REPO_URL` as usual and gets the host's commits. The copy has only `PREVIEW_BRANCH` (no other branches or tags), and no Git LFS objects.
+
+Previews created by older tekton versions have a token in `/etc/preview-token` and in the app's git remote. `preview update` removes both before anything else, and `preview scrub-tokens` (run by `./deploy.sh <server> nix`) does it for every preview. Scrubbing removes those two copies but can't undo the exposure: app code in those previews could read the tokens, and copies may remain elsewhere (app files, logs, anything already sent out). App tokens expire within an hour. User OAuth tokens (dashboard-started previews) have the full `repo` scope and don't expire, so **revoke them** once this is deployed: revoke the OAuth app's user grants so everyone signs in again (tracked in #188).
+
+**Known gap:** the repo's `preview-config.nix` is still evaluated as root with `nix build --impure` on the host. A malicious config (an agent can write it) can read host files during evaluation, such as the GitHub App private key in `/var/secrets`, and put them in the container or send them out. Fixing that needs the build sandboxed; see [#204](https://github.com/lambdaclass/tekton/issues/204).
+
+To check a server, this should print nothing:
+
+```bash
+TOKEN_RE='gh[opsu]_[A-Za-z0-9]{30,}|x-access-token:[A-Za-z0-9_]{20,}'
+grep -rlE "$TOKEN_RE" /var/lib/nixos-containers/*/{home,etc,tmp,root,var/tmp} 2>/dev/null
+```
 
 ## Troubleshooting
 

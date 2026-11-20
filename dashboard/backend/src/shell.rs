@@ -234,41 +234,45 @@ fn parse_preview_list(output: &str, _domain: &str) -> Result<Vec<Preview>, AppEr
     Ok(previews)
 }
 
+/// `preview` reads the repo with the preview webhook's GitHub App token, on the host, so no
+/// user token is passed to it (or reaches the preview container).
 pub async fn create_preview(
     config: &Config,
     repo: &str,
     branch: &str,
     slug: Option<&str>,
-    github_token: &str,
 ) -> Result<String, AppError> {
     let mut args = vec!["create", repo, branch];
     if let Some(s) = slug {
         args.push("--slug");
         args.push(s);
     }
-    run_cmd_with_env(
-        &config.preview_bin,
-        &args,
-        &[("GITHUB_TOKEN", github_token)],
-    )
-    .await
+    run_cmd(&config.preview_bin, &args).await
 }
 
 pub async fn destroy_preview(config: &Config, slug: &str) -> Result<String, AppError> {
     run_cmd(&config.preview_bin, &["destroy", slug]).await
 }
 
-pub async fn update_preview(
-    config: &Config,
-    slug: &str,
-    github_token: &str,
-) -> Result<String, AppError> {
-    run_cmd_with_env(
-        &config.preview_bin,
-        &["update", slug],
-        &[("GITHUB_TOKEN", github_token)],
-    )
-    .await
+/// The repo a preview was created from, read from its tracking file. `None` if the slug isn't
+/// one `preview create` could have made, or there's no such preview.
+pub fn preview_repo(slug: &str) -> Option<String> {
+    let valid = !slug.is_empty()
+        && !slug.starts_with('-')
+        && !slug.ends_with('-')
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if !valid {
+        return None;
+    }
+    let content = std::fs::read_to_string(format!("/var/lib/preview-deploys/{slug}")).ok()?;
+    // Format: "slot host_ip local_ip repo branch"
+    content.split_whitespace().nth(3).map(String::from)
+}
+
+pub async fn update_preview(config: &Config, slug: &str) -> Result<String, AppError> {
+    run_cmd(&config.preview_bin, &["update", slug]).await
 }
 
 // ── Agent operations ──
