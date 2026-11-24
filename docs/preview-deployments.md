@@ -159,7 +159,7 @@ Previews created by older tekton versions have a token in `/etc/preview-token` a
 
 An agent can write the repo's `preview-config.nix`, and the host evaluates and builds it. So a config can't read host files (such as the GitHub App key in `/var/secrets`), environment variables or local services:
 
-- Evaluation runs in Nix's restricted mode, through `systemd-run` as a throwaway `DynamicUser`, with an empty environment and no network. Its root directory holds only `/nix/store`, the nix-daemon socket and Nix's config, so no host file is visible. The config only sees its own file (added to the store) and the nixpkgs pinned by `/etc/nixos/flake.lock`.
+- Evaluation runs in Nix's restricted mode, through `systemd-run` as a throwaway `DynamicUser`, with an empty environment and no network. Its root directory holds only `/nix/store` and the nix-daemon socket, so no host file is visible. The config only sees its own file (added to the store) and the nixpkgs pinned by `/etc/nixos/flake.lock`.
 - Builds run in nix-daemon's sandbox. A firewall chain keeps fixed-output builds, which share the host network, off loopback and private addresses (IP traffic only).
 
 See [Isolating preview builds](deployment-guide.md#isolating-preview-builds) for the details and the server setup.

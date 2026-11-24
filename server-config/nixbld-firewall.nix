@@ -3,10 +3,16 @@
 # so changes here reach existing servers on the next `./deploy.sh <server> nix`.
 { ... }:
 {
+  # The chain matches builds by the nixbld group: builds must run as nixbld
+  # users, in the sandbox, never unsandboxed as a fallback. preview.sh checks.
+  nix.settings.sandbox = true;
+  nix.settings.sandbox-fallback = false;
+
   # Nix builds of a repo's (untrusted) preview-config.nix run as nixbld users,
   # and fixed-output builds share the host network. Keep them off loopback
   # (/internal/secrets, /internal/token and Caddy's admin API trust it), the
-  # containers, and private and metadata addresses. There's no DNS exception:
+  # containers, and private and metadata addresses (also through NAT64, which
+  # maps IPv4 into 64:ff9b::/96 and 64:ff9b:1::/48). There's no DNS exception:
   # configuration.nix pins public resolvers. preview.sh refuses to build
   # without this chain.
   #
@@ -31,6 +37,8 @@
     -A tekton-nixbld -o lo -j REJECT
     -A tekton-nixbld -d fc00::/7 -j REJECT
     -A tekton-nixbld -d fe80::/10 -j REJECT
+    -A tekton-nixbld -d 64:ff9b::/96 -j REJECT
+    -A tekton-nixbld -d 64:ff9b:1::/48 -j REJECT
     COMMIT
     EOF
     for ipt in iptables ip6tables; do

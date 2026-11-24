@@ -615,8 +615,8 @@ scrub_preview() {
 # evaluation alone isn't enough, because getFlake "path:/some/dir" still copies
 # any directory the evaluator can read into the world-readable store. So
 # evaluation also runs as a throwaway user with an empty environment, no
-# network, and a root directory holding only the store, the daemon socket and
-# Nix's config (an allowlist, so no host file is readable). Builds run in
+# network, and a root directory holding only the store and the daemon socket
+# (an allowlist, so no host file is readable). Builds run in
 # nix-daemon's sandbox; fixed-output builds share the host network, so the
 # tekton-nixbld firewall chain keeps them off loopback (where /internal
 # endpoints trust the caller) and private addresses.
@@ -624,13 +624,16 @@ scrub_preview() {
 # The flake reference of the nixpkgs pinned in FLAKE_DIR's flake.lock, as a
 # locked store path: the same nixpkgs (and so the same closures) as before, and
 # readable in restricted mode. rev and lastModified feed the NixOS version label.
+# It reads flake.lock directly: `nix flake archive` or `metadata` would copy all
+# of FLAKE_DIR (configuration.nix included) into the world-readable store.
 locked_nixpkgs_ref() {
-    local flake="path:${FLAKE_DIR}" path locked ref
-    path=$(nix flake archive --json --no-update-lock-file "$flake" |
-        jq -er '.inputs.nixpkgs.path') || return 1
-    locked=$(nix flake metadata --json --no-update-lock-file "$flake" |
-        jq -er '.locks.nodes[.locks.nodes[.locks.root].inputs.nixpkgs].locked
-            | "lastModified=\(.lastModified)&rev=\(.rev)&narHash=\(.narHash | @uri)"') || return 1
+    local lock="${FLAKE_DIR}/flake.lock" path locked ref
+    path=$(nix eval --raw --impure --expr "
+        let lock = builtins.fromJSON (builtins.readFile ${lock});
+            node = lock.nodes.\${lock.nodes.\${lock.root}.inputs.nixpkgs};
+        in (builtins.fetchTree node.locked).outPath") || return 1
+    locked=$(jq -er '.nodes[.nodes[.root].inputs.nixpkgs].locked
+        | "lastModified=\(.lastModified)&rev=\(.rev)&narHash=\(.narHash | @uri)"' "$lock") || return 1
     ref="path:${path}?${locked}"
     # It is interpolated into a Nix string.
     [[ "$ref" =~ ^path:/nix/store/[a-z0-9]+-source\?lastModified=[0-9]+\&rev=[0-9a-f]{40}\&narHash=[A-Za-z0-9%._-]+$ ]] ||
@@ -645,10 +648,26 @@ require_build_firewall() {
             "$ipt" -w -C tekton-nixbld -o lo -j REJECT; } 2>/dev/null ||
             fatal "The tekton-nixbld firewall chain is missing (${ipt}), so a repo's preview-config.nix could reach local services from a Nix build. /etc/nixos/configuration.nix must import ./nixbld-firewall.nix (docs/deployment-guide.md, \"Upgrading an existing server\")."
     done
-    # The chain matches builds by the nixbld group; builds under dynamically
-    # allocated users would skip it.
+    # Every rule, not just the jump: keep in sync with nixbld-firewall.nix.
+    local rule
+    for rule in "-o lo" "-d 10.0.0.0/8" "-d 172.16.0.0/12" "-d 192.168.0.0/16" "-d 100.64.0.0/10" "-d 169.254.0.0/16"; do
+        # shellcheck disable=SC2086 # the rule is a list of iptables arguments
+        iptables -w -C tekton-nixbld $rule -j REJECT 2>/dev/null ||
+            fatal "The tekton-nixbld firewall chain lacks its '${rule}' rule. Run nixos-rebuild switch."
+    done
+    for rule in "-o lo" "-d fc00::/7" "-d fe80::/10" "-d 64:ff9b::/96" "-d 64:ff9b:1::/48"; do
+        # shellcheck disable=SC2086
+        ip6tables -w -C tekton-nixbld $rule -j REJECT 2>/dev/null ||
+            fatal "The tekton-nixbld firewall chain lacks its IPv6 '${rule}' rule. Run nixos-rebuild switch."
+    done
+    # The chain matches builds by the nixbld group, so builds must run as
+    # nixbld users, sandboxed, with no unsandboxed fallback.
+    [[ "$(nix config show build-users-group 2>/dev/null)" == nixbld ]] ||
+        fatal "Nix's build-users-group isn't nixbld, so the tekton-nixbld firewall chain doesn't apply to Nix builds."
     [[ "$(nix config show auto-allocate-uids 2>/dev/null || echo false)" == false ]] ||
         fatal "Nix's auto-allocate-uids is on, so Nix builds don't run in the nixbld group and the tekton-nixbld firewall chain doesn't apply to them. Turn it off."
+    [[ "$(nix config show sandbox 2>/dev/null)" == true && "$(nix config show sandbox-fallback 2>/dev/null)" == false ]] ||
+        fatal "Nix must run builds sandboxed with no fallback (sandbox = true, sandbox-fallback = false; set by nixbld-firewall.nix)."
 }
 
 # Runs `nix build` on an expression that imports <preview-config>.
@@ -661,14 +680,16 @@ untrusted_nix_build() {
     # caches. Unique, because both builds run at once.
     home="tekton-preview-eval-${BASHPID}-${RANDOM}"
     # An empty root directory: inside it the evaluator sees only the paths
-    # bound below. (TemporaryFileSystem=/ is silently ignored, so it can't do this.)
+    # bound below, not even the host's /etc/nix, so the features it needs are
+    # passed on the command line. (TemporaryFileSystem=/ is silently ignored,
+    # so it can't do this.)
     root=$(mktemp -d /run/tekton-preview-root.XXXXXX) || return 1
     chmod 0755 "$root"
     systemd-run --quiet --pipe --wait --collect \
         --property=DynamicUser=yes \
         "--property=RootDirectory=${root}" \
         --property=MountAPIVFS=yes \
-        "--property=BindReadOnlyPaths=/nix/store /nix/var/nix/daemon-socket /etc/nix /etc/static" \
+        "--property=BindReadOnlyPaths=/nix/store /nix/var/nix/daemon-socket" \
         --property=PrivateTmp=yes \
         --property=PrivateDevices=yes \
         --property=ProtectSystem=strict \
@@ -687,6 +708,7 @@ untrusted_nix_build() {
         "--setenv=HOME=/run/${home}" \
         --setenv=NIX_REMOTE=daemon \
         "$nix_bin" build --impure --no-link --print-out-paths \
+            --extra-experimental-features "nix-command flakes" \
             --option restrict-eval true \
             --option allowed-uris "" \
             -I "preview-config=${config_store}" \
