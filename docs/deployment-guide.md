@@ -227,7 +227,7 @@ After making changes to the codebase, use `deploy.sh` to update the server. It p
 
 - **`dashboard`** — Builds frontend (Node.js) and backend (Rust) from `/opt/src/dashboard/`, deploys to `/opt/dashboard/`, restarts the service
 - **`webhook`** — Copies webhook source to `/opt/preview-webhook/`, runs `npm ci && npm run build`, restarts the service
-- **`nix`** — Copies safe NixOS config files (not `configuration.nix` or `agent-config.nix`) to `/etc/nixos/`, runs `nixos-rebuild switch`
+- **`nix`** — Copies safe NixOS config files (not `configuration.nix` or `agent-config.nix`) to `/etc/nixos/`, runs `nixos-rebuild switch`, and warns if the `tekton-nixbld` firewall chain is missing (see [Isolating preview builds](#isolating-preview-builds))
 - **`nix-agents`** — Same as `nix`, plus rebuilds the agent container closure (`agent build`)
 - **`nix-previews`** — Same as `nix`, plus rebuilds the preview closure (`preview build`)
 
@@ -425,6 +425,23 @@ sk-ant-oat01-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 ```
 
 Just the raw token string, no newlines or quotes.
+
+### Isolating preview builds
+
+A repo's `preview-config.nix` is untrusted code (an agent can write it), and the host runs it: `preview` evaluates and builds it to make the container. Without isolation it could read the GitHub App key, `SECRETS_ENCRYPTION_KEY` or any other host secret, and copy it into the world-readable `/nix/store` or send it out. Two layers prevent that:
+
+- **Evaluation.** As root, `preview` resolves the trusted inputs: nixpkgs from `/etc/nixos/flake.lock`, as a locked store path, and the config, added to the store with `nix-store --add`. Then it evaluates through `systemd-run` as a throwaway `DynamicUser`, with an empty environment, Nix's `restrict-eval` on and `allowed-uris` empty, no network (`IPAddressDeny=any`, Unix sockets only), and `/var/secrets`, `/run/dashboard-secrets`, `/var/lib` and `/etc/nixos` inaccessible. Restricted evaluation alone isn't enough, because `builtins.getFlake "path:/some/dir"` still copies any directory the evaluator can read into the store. The closures are the same as before the isolation.
+- **Builds.** They run in nix-daemon's sandbox as `nixbld` users. Fixed-output builds share the host network, so the `tekton-nixbld` firewall chain in `configuration.nix` rejects their traffic to loopback (the dashboard's `/internal/secrets`, the webhook's `/internal/token` and Caddy's admin API trust loopback), and to private and link-local addresses (containers, cloud metadata). DNS is allowed.
+
+`preview` refuses to build while the chain is missing.
+
+For repo configs, this means a `preview-config.nix` can't read files outside the store, can't read environment variables (`builtins.getEnv` returns an empty string), and can't fetch at evaluation time (`builtins.fetchTarball`, `fetchGit`, `fetchurl`). Fetchers inside derivations (`pkgs.fetchurl`, `fetchFromGitHub`, …) still work.
+
+**Upgrading an existing server:** `deploy.sh` never copies `configuration.nix`, so copy the `networking.firewall.extraCommands` and `extraStopCommands` blocks from `server-config/configuration.nix` into `/etc/nixos/configuration.nix` on the server by hand. Then run `./deploy.sh <server> nix`. It warns if the chain is still missing. To check by hand:
+
+```bash
+for ipt in iptables ip6tables; do $ipt -w -C OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld && $ipt -w -C tekton-nixbld -o lo -j REJECT && echo "$ipt OK"; done
+```
 
 ### NixOS configuration placeholders
 

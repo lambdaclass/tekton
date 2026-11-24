@@ -220,6 +220,11 @@ deploy_nix() {
         cd /etc/nixos && nixos-rebuild switch
     "
     success "NixOS configs deployed."
+    # configuration.nix is never copied, so the chain may be missing on an
+    # upgraded server; preview.sh refuses to build until it is there.
+    if ! $SSH "iptables -w -C OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld && ip6tables -w -C OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld" 2>/dev/null; then
+        info "WARNING: the tekton-nixbld firewall chain is missing, so previews won't build until it is added to /etc/nixos/configuration.nix (docs/deployment-guide.md, \"Isolating preview builds\")."
+    fi
     # Previews made by older versions kept a GitHub token inside the container.
     if $SSH "preview scrub-tokens"; then
         success "Removed the GitHub tokens older versions left in previews (/etc/preview-token, app git remote). Copies elsewhere are not covered: revoke exposed user tokens (#188)."

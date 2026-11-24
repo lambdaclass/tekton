@@ -611,6 +611,68 @@ scrub_preview() {
 
 # -- Nix closure building -----------------------------------------------------
 
+# A repo's preview-config.nix is untrusted: an agent can write it. Restricted
+# evaluation alone isn't enough, because getFlake "path:/some/dir" still copies
+# any directory the evaluator can read into the world-readable store. So
+# evaluation also runs as a throwaway user with an empty environment, no
+# network, and the host's secret paths hidden. Builds run in nix-daemon's
+# sandbox; fixed-output builds share the host network, so the tekton-nixbld
+# firewall chain keeps them off loopback (where /internal endpoints trust the
+# caller) and private addresses.
+
+# The flake reference of the nixpkgs pinned in FLAKE_DIR's flake.lock, as a
+# locked store path: the same nixpkgs (and so the same closures) as before, and
+# readable in restricted mode. rev and lastModified feed the NixOS version label.
+locked_nixpkgs_ref() {
+    local flake="path:${FLAKE_DIR}" path locked ref
+    path=$(nix flake archive --json --no-update-lock-file "$flake" |
+        jq -er '.inputs.nixpkgs.path') || return 1
+    locked=$(nix flake metadata --json --no-update-lock-file "$flake" |
+        jq -er '.locks.nodes[.locks.nodes[.locks.root].inputs.nixpkgs].locked
+            | "lastModified=\(.lastModified)&rev=\(.rev)&narHash=\(.narHash | @uri)"') || return 1
+    ref="path:${path}?${locked}"
+    # It is interpolated into a Nix string.
+    [[ "$ref" =~ ^path:/nix/store/[a-z0-9]+-source\?lastModified=[0-9]+\&rev=[0-9a-f]{40}\&narHash=[A-Za-z0-9%._-]+$ ]] ||
+        return 1
+    echo "$ref"
+}
+
+require_build_firewall() {
+    local ipt
+    for ipt in iptables ip6tables; do
+        { "$ipt" -w -C OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld &&
+            "$ipt" -w -C tekton-nixbld -o lo -j REJECT; } 2>/dev/null ||
+            fatal "The tekton-nixbld firewall chain is missing (${ipt}), so a repo's preview-config.nix could reach local services from a Nix build. Add it to /etc/nixos/configuration.nix and run nixos-rebuild switch (docs/deployment-guide.md, \"Isolating preview builds\")."
+    done
+}
+
+# Runs `nix build` on an expression that imports <preview-config>.
+untrusted_nix_build() {
+    local config_store="$1" expr="$2" nix_bin
+    nix_bin=$(readlink -f "$(command -v nix)") || return 1
+    systemd-run --quiet --pipe --wait --collect \
+        --property=DynamicUser=yes \
+        --property=PrivateTmp=yes \
+        --property=PrivateDevices=yes \
+        --property=ProtectSystem=strict \
+        --property=ProtectHome=yes \
+        --property=ProtectProc=invisible \
+        --property=ProtectKernelTunables=yes \
+        --property=ProtectKernelModules=yes \
+        --property=ProtectControlGroups=yes \
+        --property=NoNewPrivileges=yes \
+        "--property=InaccessiblePaths=-/run/dashboard-secrets -/var/secrets -/var/lib -/etc/nixos" \
+        --property=IPAddressDeny=any \
+        --property=RestrictAddressFamilies=AF_UNIX \
+        --setenv=HOME=/tmp \
+        --setenv=NIX_REMOTE=daemon \
+        "$nix_bin" build --impure --no-link --print-out-paths \
+            --option restrict-eval true \
+            --option allowed-uris "" \
+            -I "preview-config=${config_store}" \
+            --expr "$expr" < /dev/null
+}
+
 # Builds toplevel + previewMeta for a repo's preview-config.nix.
 # Results are cached by commit SHA.  Both builds run in parallel.
 build_preview_closure() {
@@ -636,19 +698,26 @@ build_preview_closure() {
         return
     fi
 
+    require_build_firewall
+
+    # Trusted inputs are resolved here, as root; the untrusted evaluation only
+    # gets store paths.
+    local nixpkgs_ref config_store
+    nixpkgs_ref=$(locked_nixpkgs_ref) || fatal "Could not resolve nixpkgs from ${FLAKE_DIR}/flake.lock."
+    config_store=$(nix-store --add "$config_file") || fatal "Could not add ${config_file} to the store."
+
     # Both builds share the same nix expression structure; only the last `in` clause differs.
     # Use a heredoc so variable expansion is clean and the nix strings are unambiguous.
     local nix_modules
     nix_modules=$(cat <<NIXEOF
 let
-  flake    = builtins.getFlake "path:${FLAKE_DIR}";
-  nixpkgs  = flake.inputs.nixpkgs;
+  nixpkgs  = builtins.getFlake "${nixpkgs_ref}";
   pkgs     = import nixpkgs { system = "x86_64-linux"; config.allowUnfree = true; };
   nixosCfg = nixpkgs.lib.nixosSystem {
     system  = "x86_64-linux";
     modules = [
       { nixpkgs.pkgs = pkgs; }
-      (import ${config_file})
+      (import <preview-config>)
       { users.users.root.openssh.authorizedKeys.keys = [ "${admin_ssh_key}" ]; }
     ];
   };
@@ -667,14 +736,14 @@ NIXEOF
 
     if [[ $need_toplevel -eq 1 ]]; then
         info "Building container closure (${commit_sha:0:8})..." >&2
-        nix build --impure --no-link --print-out-paths --expr \
+        untrusted_nix_build "$config_store" \
             "${nix_modules} nixosCfg.config.system.build.toplevel" \
             > "$toplevel_tmp" 2>"$toplevel_err" &
         toplevel_pid=$!
     fi
 
     if [[ $need_meta -eq 1 ]]; then
-        nix build --impure --no-link --print-out-paths --expr \
+        untrusted_nix_build "$config_store" \
             "${nix_modules} nixosCfg.config.system.build.previewMeta" \
             > "$meta_tmp" 2>"$meta_err" &
         meta_pid=$!
@@ -1529,7 +1598,7 @@ cmd_help() {
 
 # -- Main ---------------------------------------------------------------------
 # GitHub access goes through the webhook's App token, never a caller's token,
-# and the repo's config is evaluated with --impure, so keep any out of reach.
+# so keep any out of reach of everything this script runs.
 unset GITHUB_TOKEN
 # Host git reads repos an agent controls, as root: keep system and user git
 # config (helpers, hooks paths, includes) out of it.

@@ -76,7 +76,7 @@ preview build myorg/myapp feature-branch
 ## How It Works
 
 1. `preview create` fetches `preview-config.nix` from the repo at the given branch (via GitHub API, cached by commit SHA)
-2. Tekton runs `nix build --impure --expr` to build the NixOS container closure and extract `system.build.previewMeta` (routing, service names, DB mode, host secrets)
+2. Tekton runs `nix build` to build the NixOS container closure and extract `system.build.previewMeta` (routing, service names, DB mode, host secrets). The config is evaluated in Nix's restricted mode, as a throwaway unprivileged user; see [Untrusted configs](#untrusted-configs)
 3. The container is created with `nixos-container create`, given a static IP on `10.100.0.0/24`
 4. Tekton writes `/etc/preview.env` into the container filesystem before it boots: preview metadata (`PREVIEW_REPO_URL`, `PREVIEW_BRANCH`, `PREVIEW_HOST`, `PREVIEW_URL`, forwarded host secrets)
 5. The container starts and tekton sends the branch's code in (see [Code delivery](#code-delivery)); then the repo's `setupService` clones/builds the app, and `appServices` run the live process(es)
@@ -155,7 +155,16 @@ Tekton never gives a preview container a GitHub credential:
 
 Previews created by older tekton versions have a token in `/etc/preview-token` and in the app's git remote. `preview update` removes both before anything else, and `preview scrub-tokens` (run by `./deploy.sh <server> nix`) does it for every preview. Scrubbing removes those two copies but can't undo the exposure: app code in those previews could read the tokens, and copies may remain elsewhere (app files, logs, anything already sent out). App tokens expire within an hour. User OAuth tokens (dashboard-started previews) have the full `repo` scope and don't expire, so **revoke them** once this is deployed: revoke the OAuth app's user grants so everyone signs in again (tracked in #188).
 
-**Known gap:** the repo's `preview-config.nix` is still evaluated as root with `nix build --impure` on the host. A malicious config (an agent can write it) can read host files during evaluation, such as the GitHub App private key in `/var/secrets`, and put them in the container or send them out. Fixing that needs the build sandboxed; see [#204](https://github.com/lambdaclass/tekton/issues/204).
+### Untrusted configs
+
+An agent can write the repo's `preview-config.nix`, and the host evaluates and builds it. So a config can't read host files (such as the GitHub App key in `/var/secrets`), environment variables or local services:
+
+- Evaluation runs in Nix's restricted mode, through `systemd-run` as a throwaway `DynamicUser`, with an empty environment, no network, and the host's secret paths hidden. The config only sees its own file (added to the store) and the nixpkgs pinned by `/etc/nixos/flake.lock`.
+- Builds run in nix-daemon's sandbox. A firewall chain keeps fixed-output builds, which share the host network, off loopback and private addresses.
+
+See [Isolating preview builds](deployment-guide.md#isolating-preview-builds) for the details and the server setup.
+
+**Breaking for repo configs (#204):** a config can't fetch anything at evaluation time. `builtins.fetchTarball`, `builtins.fetchGit` and `builtins.fetchurl` fail, as do `readFile` of host paths and imports of paths relative to the config. `builtins.getEnv` returns an empty string. Derivation fetchers (`pkgs.fetchurl`, `fetchFromGitHub`) still work.
 
 To check a server, this should print nothing:
 
