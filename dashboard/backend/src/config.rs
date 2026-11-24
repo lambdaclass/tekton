@@ -23,6 +23,8 @@ pub struct Config {
     pub intake_enabled: bool,
     pub intake_max_global_concurrent: i32,
     pub github_webhook_secret: String,
+    /// Base URL of the Slack Web API; tests point it at a mock server
+    pub slack_api_url: String,
 }
 
 impl Config {
@@ -63,7 +65,25 @@ impl Config {
                 .unwrap_or(10),
             github_webhook_secret: env::var("GITHUB_WEBHOOK_SECRET")
                 .unwrap_or_else(|_| String::new()),
+            slack_api_url: env::var("SLACK_API_URL")
+                .unwrap_or_else(|_| "https://slack.com/api".into()),
         })
+    }
+}
+
+impl Config {
+    /// The dashboard's public origin, for links in outgoing messages. GitHub
+    /// redirects back to the dashboard, so the OAuth callback URL carries it.
+    pub fn dashboard_url(&self) -> String {
+        origin_of(&self.github_redirect_uri)
+    }
+}
+
+fn origin_of(url: &str) -> String {
+    let after_scheme = url.find("://").map(|i| i + 3).unwrap_or(0);
+    match url[after_scheme..].find('/') {
+        Some(i) => url[..after_scheme + i].to_string(),
+        None => url.trim_end_matches('/').to_string(),
     }
 }
 
@@ -82,3 +102,24 @@ fn secrets_encryption_key() -> anyhow::Result<String> {
 }
 
 const MIN_SECRETS_KEY_LEN: usize = 32;
+
+#[cfg(test)]
+mod tests {
+    use super::origin_of;
+
+    #[test]
+    fn origin_drops_the_path() {
+        assert_eq!(
+            origin_of("https://dashboard.example.com/api/auth/callback"),
+            "https://dashboard.example.com"
+        );
+        assert_eq!(
+            origin_of("http://localhost:3200/api/auth/callback"),
+            "http://localhost:3200"
+        );
+        assert_eq!(
+            origin_of("https://dashboard.example.com"),
+            "https://dashboard.example.com"
+        );
+    }
+}

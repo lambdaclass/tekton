@@ -151,6 +151,9 @@ pub async fn start_intake_daemon(config: Arc<Config>, db: PgPool, task_channels:
             if let Err(e) = process_pending_issues(&config, &db, &task_channels).await {
                 tracing::error!("Intake process-pending cycle failed: {e}");
             }
+            if let Err(e) = crate::slack::notify_intake_updates(&config, &db).await {
+                tracing::error!("Intake Slack notification cycle failed: {e}");
+            }
             if let Err(e) = poll_all_sources(&config, &db).await {
                 tracing::error!("Intake poll cycle failed: {e}");
             }
@@ -398,14 +401,10 @@ struct PendingIssueRow {
 // ── Polling: fetch external issues → backlog ──
 
 async fn poll_all_sources(config: &Arc<Config>, db: &PgPool) -> Result<(), AppError> {
-    let sources = sqlx::query_as::<_, IntakeSource>(
-        "SELECT id, name, provider, enabled, config, target_repo, target_base_branch, \
-         label_filter, prompt_template, run_as_user, poll_interval_secs, \
-         max_concurrent_tasks, max_tasks_per_poll, \
-         created_by, TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at \
-         FROM intake_sources WHERE enabled = true",
-    )
+    let sources = sqlx::query_as::<_, IntakeSource>(&format!(
+        "SELECT {} FROM intake_sources WHERE enabled = true",
+        crate::intake_admin::SOURCE_COLUMNS
+    ))
     .fetch_all(db)
     .await?;
 

@@ -1240,6 +1240,8 @@ interface IntakeFormState {
   poll_interval_secs: number;
   max_concurrent_tasks: number;
   prompt_template: string;
+  slack_channel_id: string;
+  slack_bot_token: string;
 }
 
 const DEFAULT_PROMPT_TEMPLATE = `Implement the following based on this issue:
@@ -1262,6 +1264,8 @@ const INITIAL_INTAKE_FORM: IntakeFormState = {
   poll_interval_secs: 300,
   max_concurrent_tasks: 3,
   prompt_template: DEFAULT_PROMPT_TEMPLATE,
+  slack_channel_id: '',
+  slack_bot_token: '',
 };
 
 function IntakeSourceDialog({
@@ -1272,10 +1276,12 @@ function IntakeSourceDialog({
   setForm,
   onSubmit,
   mutation,
+  hasSlackToken = false,
 }: {
   mode: 'create' | 'edit';
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  hasSlackToken?: boolean;
   form: IntakeFormState;
   setForm: React.Dispatch<React.SetStateAction<IntakeFormState>>;
   onSubmit: (e: React.FormEvent) => void;
@@ -1438,6 +1444,45 @@ function IntakeSourceDialog({
               tell the agent not to modify files.
             </p>
           </div>
+          <div className="space-y-2">
+            <div className="flex items-center gap-1.5">
+              <Label htmlFor="intake-slack-channel">Slack Channel ID</Label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info className="h-4 w-4 text-muted-foreground cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent side="right" className="max-w-xs text-left">
+                  When an issue from this source is picked up, a message is posted to this channel.
+                  Status changes and the PR are posted in its thread. Find the ID under the channel's
+                  details in Slack, and invite the bot to the channel.
+                </TooltipContent>
+              </Tooltip>
+            </div>
+            <Input
+              id="intake-slack-channel"
+              placeholder="C0123456789"
+              value={form.slack_channel_id}
+              onChange={(e) => setForm((s) => ({ ...s, slack_channel_id: e.target.value }))}
+            />
+            <p className="text-xs text-muted-foreground">
+              Leave empty for no Slack messages{hasSlackToken ? ' (this also removes the bot token)' : ''}.
+            </p>
+          </div>
+          {form.slack_channel_id.trim() !== '' && (
+            <div className="space-y-2">
+              <Label htmlFor="intake-slack-token">Slack Bot Token</Label>
+              <Input
+                id="intake-slack-token"
+                type="password"
+                autoComplete="off"
+                placeholder={hasSlackToken ? 'Leave empty to keep the current token' : 'xoxb-...'}
+                required={!hasSlackToken}
+                value={form.slack_bot_token}
+                onChange={(e) => setForm((s) => ({ ...s, slack_bot_token: e.target.value }))}
+              />
+              <p className="text-xs text-muted-foreground">Needs the chat:write scope.</p>
+            </div>
+          )}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
@@ -1519,6 +1564,8 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
       poll_interval_secs: s.poll_interval_secs,
       max_concurrent_tasks: s.max_concurrent_tasks,
       prompt_template: s.prompt_template ?? DEFAULT_PROMPT_TEMPLATE,
+      slack_channel_id: s.slack_channel_id ?? '',
+      slack_bot_token: '',
     });
   };
 
@@ -1536,6 +1583,8 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
       run_as_user: editForm.run_as_user,
       poll_interval_secs: editForm.poll_interval_secs,
       max_concurrent_tasks: editForm.max_concurrent_tasks,
+      slack_channel_id: editForm.slack_channel_id.trim(),
+      slack_bot_token: editForm.slack_bot_token.trim() || undefined,
     };
     updateMutation.mutate({ id: editSource.id, data });
   };
@@ -1553,6 +1602,8 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
       run_as_user: newSource.run_as_user,
       poll_interval_secs: newSource.poll_interval_secs,
       max_concurrent_tasks: newSource.max_concurrent_tasks,
+      slack_channel_id: newSource.slack_channel_id.trim() || undefined,
+      slack_bot_token: newSource.slack_bot_token.trim() || undefined,
     });
   };
 
@@ -1594,7 +1645,12 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
                   <tr key={s.id} className="border-b border-border/50 hover:bg-secondary/40 transition-colors duration-100">
                     <td className="py-2 pr-4 font-mono">{s.name}</td>
                     <td className="py-2 pr-4">
-                      <Badge variant="secondary">{s.provider}</Badge>
+                      <div className="flex gap-1">
+                        <Badge variant="secondary">{s.provider}</Badge>
+                        {s.slack_channel_id && s.has_slack_token && (
+                          <Badge variant="outline" title={`Posts to Slack channel ${s.slack_channel_id}`}>Slack</Badge>
+                        )}
+                      </div>
                     </td>
                     <td className="py-2 pr-4 font-mono">{s.target_repo}</td>
                     <td className="py-2 pr-4">
@@ -1684,6 +1740,7 @@ function IntakeSourcesSection({ queryClient }: { queryClient: ReturnType<typeof 
           setForm={setEditForm}
           onSubmit={handleUpdate}
           mutation={updateMutation}
+          hasSlackToken={editSource?.has_slack_token ?? false}
         />
 
         {/* Test Poll Dialog */}

@@ -432,6 +432,15 @@ CREATE TABLE IF NOT EXISTS intake_poll_log (
     duration_ms INTEGER
 );
 
+-- The backend may already be running, so its migrations don't add these
+ALTER TABLE intake_sources ADD COLUMN IF NOT EXISTS slack_channel_id TEXT;
+ALTER TABLE intake_sources ADD COLUMN IF NOT EXISTS slack_bot_token_encrypted TEXT;
+ALTER TABLE intake_issues ADD COLUMN IF NOT EXISTS slack_channel TEXT;
+ALTER TABLE intake_issues ADD COLUMN IF NOT EXISTS slack_thread_ts TEXT;
+ALTER TABLE intake_issues ADD COLUMN IF NOT EXISTS slack_notified_task_id TEXT;
+ALTER TABLE intake_issues ADD COLUMN IF NOT EXISTS slack_notified_status TEXT;
+ALTER TABLE intake_issues ADD COLUMN IF NOT EXISTS slack_notified_pr_url TEXT;
+
 -- ============================================================
 -- Seed: Intake sources
 -- ============================================================
@@ -487,6 +496,26 @@ VALUES
     (1, 'SYNC-1', 'https://github.com/testorg/testrepo/issues/901', 'Sync test issue 1', 'task_created', 'task-sync-1', NOW() - INTERVAL '1 hour', NOW() - INTERVAL '30 minutes'),
     (1, 'SYNC-2', 'https://github.com/testorg/testrepo/issues/902', 'Sync test issue 2', 'review',       'task-sync-2', NOW() - INTERVAL '1 hour', NOW() - INTERVAL '30 minutes'),
     (1, 'SYNC-3', 'https://github.com/testorg/testrepo/issues/903', 'Sync test issue 3', 'backlog',      NULL,          NOW() - INTERVAL '1 hour', NOW() - INTERVAL '30 minutes');
+
+-- ============================================================
+-- Seed: Slack notification source, tasks and issues (intake-slack.spec.ts)
+-- ============================================================
+
+-- Created long ago so it lists after the other sources. The tasks are
+-- 'pending', a status intake sync never acts on, so other specs' syncs
+-- leave these issues alone.
+INSERT INTO intake_sources (name, provider, enabled, target_repo, run_as_user, poll_interval_secs, created_by, created_at, updated_at)
+VALUES ('Slack Notify', 'github', true, 'testorg/slackrepo', 'testadmin', 300, 'testadmin', NOW() - INTERVAL '30 days', NOW() - INTERVAL '30 days');
+
+INSERT INTO tasks (id, prompt, repo, base_branch, agent_name, status, created_by, name, created_at, updated_at)
+VALUES
+    ('task-slack-1',   'Slack test task',     'testorg/slackrepo', 'main', 'claude', 'pending', 'testadmin', 'Slack task 1',   NOW() - INTERVAL '1 hour', NOW() - INTERVAL '1 hour'),
+    ('task-slack-old', 'Slack existing task', 'testorg/slackrepo', 'main', 'claude', 'pending', 'testadmin', 'Slack task old', NOW() - INTERVAL '1 hour', NOW() - INTERVAL '1 hour');
+
+INSERT INTO intake_issues (source_id, external_id, external_url, external_title, status, task_id, created_at, updated_at)
+VALUES
+    ((SELECT id FROM intake_sources WHERE name = 'Slack Notify'), 'SLACK-1', 'https://github.com/testorg/slackrepo/issues/911', 'Slack test issue',    'backlog',      NULL,             NOW() - INTERVAL '1 hour', NOW() - INTERVAL '1 hour'),
+    ((SELECT id FROM intake_sources WHERE name = 'Slack Notify'), 'SLACK-2', 'https://github.com/testorg/slackrepo/issues/912', 'Slack existing work', 'task_created', 'task-slack-old', NOW() - INTERVAL '1 hour', NOW() - INTERVAL '1 hour');
 
 -- ============================================================
 -- Link tasks to intake issues

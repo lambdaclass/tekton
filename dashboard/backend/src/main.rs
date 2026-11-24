@@ -17,6 +17,7 @@ mod sentry;
 mod sentry_admin;
 mod settings;
 mod shell;
+mod slack;
 mod tasks;
 mod webhooks;
 mod ws;
@@ -222,6 +223,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("TEST_MODE enabled — test-only endpoints are active");
         api.route("/auth/test-login", post(auth::test_login))
             .route("/test/intake/sync", post(test_intake_sync))
+            .route("/test/intake/slack-notify", post(test_intake_slack_notify))
             .route("/test/tasks/{id}/status", patch(test_update_task_status))
             .route(
                 "/test/intake/issues/{id}/status",
@@ -292,8 +294,17 @@ async fn main() -> anyhow::Result<()> {
 // ── Test-only handlers (only reachable when TEST_MODE=true) ──
 
 #[derive(serde::Deserialize)]
-struct TestUpdateStatusBody {
+struct TestUpdateTaskBody {
     status: String,
+    pr_url: Option<String>,
+    pr_number: Option<i32>,
+}
+
+#[derive(serde::Deserialize)]
+struct TestUpdateIssueBody {
+    status: String,
+    /// Links the issue to a task, as picking it up does
+    task_id: Option<String>,
 }
 
 async fn test_intake_sync(
@@ -303,29 +314,45 @@ async fn test_intake_sync(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
+async fn test_intake_slack_notify(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Result<axum::http::StatusCode, error::AppError> {
+    slack::notify_intake_updates(&state.config, &state.db).await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
 async fn test_update_task_status(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
-    axum::Json(body): axum::Json<TestUpdateStatusBody>,
+    axum::Json(body): axum::Json<TestUpdateTaskBody>,
 ) -> Result<axum::http::StatusCode, error::AppError> {
-    sqlx::query("UPDATE tasks SET status = $1, updated_at = NOW() WHERE id = $2")
-        .bind(&body.status)
-        .bind(&id)
-        .execute(&state.db)
-        .await?;
+    sqlx::query(
+        "UPDATE tasks SET status = $1, pr_url = COALESCE($3, pr_url), \
+         pr_number = COALESCE($4, pr_number), updated_at = NOW() WHERE id = $2",
+    )
+    .bind(&body.status)
+    .bind(&id)
+    .bind(&body.pr_url)
+    .bind(body.pr_number)
+    .execute(&state.db)
+    .await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 async fn test_update_intake_issue_status(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Path(id): axum::extract::Path<i64>,
-    axum::Json(body): axum::Json<TestUpdateStatusBody>,
+    axum::Json(body): axum::Json<TestUpdateIssueBody>,
 ) -> Result<axum::http::StatusCode, error::AppError> {
-    sqlx::query("UPDATE intake_issues SET status = $1, error_message = NULL, updated_at = NOW() WHERE id = $2")
-        .bind(&body.status)
-        .bind(id)
-        .execute(&state.db)
-        .await?;
+    sqlx::query(
+        "UPDATE intake_issues SET status = $1, task_id = COALESCE($3, task_id), \
+         error_message = NULL, updated_at = NOW() WHERE id = $2",
+    )
+    .bind(&body.status)
+    .bind(id)
+    .bind(&body.task_id)
+    .execute(&state.db)
+    .await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 

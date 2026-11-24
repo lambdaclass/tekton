@@ -86,3 +86,18 @@ Two limits gate how many tasks can run at once:
 - **Per-source**: `max_concurrent_tasks` on each intake source — scoped to that source only.
 
 The daemon checks both before promoting a `pending` issue to `task_created`.
+
+### Slack notifications
+
+An intake source with a Slack channel ID and bot token (`chat:write`, set in Admin) posts a message to that channel when one of its issues is picked up. Each later change is a reply in that message's thread, and the message itself is edited to show the current status:
+
+| Change | Thread reply |
+|---|---|
+| `review` → `task_created` | Back in progress (follow-up sent) |
+| → `review` | Ready for review |
+| Linked task opens a PR | PR link |
+| → `done` | Done |
+| → `failed` | Failed, with the error |
+| Retried issue gets a new task | Picked up again |
+
+Each issue records what its thread last announced, and every daemon cycle posts the difference, so a failed Slack call is retried on the next cycle. Turning Slack on for a source doesn't announce work it already has in progress. `SLACK_API_URL` overrides the Slack API base URL (tests use a mock).
