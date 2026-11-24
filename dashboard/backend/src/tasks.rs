@@ -774,11 +774,8 @@ async fn run_task_pipeline(
         let repo2 = repo.to_string();
         let branch2 = branch_name.clone();
         let slug = format!("t-{short_id}");
-        let token = git_id.token.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                shell::create_preview(&config2, &repo2, &branch2, Some(&slug), &token).await
-            {
+            if let Err(e) = shell::create_preview(&config2, &repo2, &branch2, Some(&slug)).await {
                 tracing::warn!("Preview prewarm failed for {slug}: {e}");
             }
         });
@@ -2210,7 +2207,6 @@ async fn update_task_preview(
         task_id,
         short_id,
         repo,
-        git_id,
         ..
     } = ctx;
     let preview_slug = format!("t-{short_id}");
@@ -2224,14 +2220,7 @@ async fn update_task_preview(
             &format!("[STEP] Creating preview '{preview_slug}'..."),
         );
 
-        shell::create_preview(
-            config,
-            repo,
-            branch_name,
-            Some(&preview_slug),
-            &git_id.token,
-        )
-        .await?;
+        shell::create_preview(config, repo, branch_name, Some(&preview_slug)).await?;
 
         let preview_url = format!("https://{preview_slug}.{}", config.preview_domain);
         update_task_field(db, task_id, "preview_slug", &preview_slug).await?;
@@ -2244,7 +2233,7 @@ async fn update_task_preview(
             tx,
             &format!("[STEP] Updating preview '{preview_slug}'..."),
         );
-        let _ = shell::update_preview(config, &preview_slug, &git_id.token).await;
+        let _ = shell::update_preview(config, &preview_slug).await;
     }
 
     // Screenshot (fire-and-forget so it doesn't block the follow-up loop)

@@ -27,26 +27,11 @@ pub async fn create_preview(
         )));
     }
 
-    // Check per-user repo permission
-    auth::check_repo_permission(
-        &state.db,
-        &user.0.sub,
-        &req.repo,
-        &user.0.role,
-        &state.config.github_org,
-    )
-    .await?;
+    authorize_repo(&state, &user, &req.repo).await?;
 
-    let github_token = crate::auth::github_token_for(&state, &user.0.sub).await?;
-    let output = shell::create_preview(
-        &state.config,
-        &req.repo,
-        &req.branch,
-        req.slug.as_deref(),
-        &github_token,
-    )
-    .await
-    .map_err(|e| classify_create_error(e, &req.repo, req.slug.as_deref()))?;
+    let output = shell::create_preview(&state.config, &req.repo, &req.branch, req.slug.as_deref())
+        .await
+        .map_err(|e| classify_create_error(e, &req.repo, req.slug.as_deref()))?;
 
     // Audit: preview.created
     crate::audit::log_event(
@@ -94,8 +79,10 @@ pub async fn update_preview(
     State(state): State<AppState>,
     Path(slug): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let github_token = crate::auth::github_token_for(&state, &user.0.sub).await?;
-    let output = shell::update_preview(&state.config, &slug, &github_token).await?;
+    let repo = shell::preview_repo(&slug)
+        .ok_or_else(|| AppError::NotFound(format!("Preview '{slug}' not found")))?;
+    authorize_repo(&state, &user, &repo).await?;
+    let output = shell::update_preview(&state.config, &slug).await?;
 
     // Audit: preview.updated
     crate::audit::log_event(
@@ -112,6 +99,73 @@ pub async fn update_preview(
         "message": "Preview update triggered",
         "output": output.trim(),
     })))
+}
+
+/// Checks that `user` may preview `repo`: Tekton's own access rules, then GitHub's. `preview`
+/// reads the repo with the GitHub App token, which can read every repo the App is installed
+/// on, so the user's own token is what proves they can read this one. It's only used for this
+/// check and never reaches `preview`.
+async fn authorize_repo(state: &AppState, user: &MemberUser, repo: &str) -> Result<(), AppError> {
+    auth::check_repo_permission(
+        &state.db,
+        &user.0.sub,
+        repo,
+        &user.0.role,
+        &state.config.github_org,
+    )
+    .await?;
+    let token = auth::github_token_for(state, &user.0.sub).await?;
+    require_github_read(&token, repo).await
+}
+
+/// Whether `repo` is a plain `owner/name`, safe to put in an API path.
+fn valid_repo_name(repo: &str) -> bool {
+    let part_ok = |s: &str| {
+        !s.is_empty()
+            && !s.starts_with('.')
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    matches!(repo.split_once('/'), Some((owner, name)) if part_ok(owner) && part_ok(name))
+}
+
+/// Fails unless GitHub says `token`'s user can read `repo`.
+async fn require_github_read(token: &str, repo: &str) -> Result<(), AppError> {
+    if !valid_repo_name(repo) {
+        return Err(AppError::BadRequest(format!("Invalid repository '{repo}'")));
+    }
+    let resp = reqwest::Client::new()
+        .get(format!("https://api.github.com/repos/{repo}"))
+        .timeout(std::time::Duration::from_secs(8))
+        .header("User-Agent", "dashboard")
+        .header("Accept", "application/vnd.github+json")
+        .bearer_auth(token)
+        .send()
+        .await?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(AppError::ReauthRequired(
+            "GitHub rejected your saved token (expired or revoked); sign in again".into(),
+        ));
+    }
+    if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::FORBIDDEN {
+        return Err(AppError::Forbidden(format!(
+            "Your GitHub account can't read '{repo}'"
+        )));
+    }
+    if !status.is_success() {
+        return Err(AppError::Internal(format!(
+            "Checking your GitHub access to '{repo}' failed: GitHub returned {status}"
+        )));
+    }
+    let body: serde_json::Value = resp.json().await?;
+    if body["permissions"]["pull"].as_bool() == Some(true) {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden(format!(
+            "Your GitHub account can't read '{repo}'"
+        )))
+    }
 }
 
 /// Inspect the raw shell error from `create_preview` and return a user-friendly
@@ -192,4 +246,21 @@ fn classify_create_error(err: AppError, repo: &str, slug: Option<&str>) -> AppEr
 
     // Unrecognised — keep original Internal error
     err
+}
+
+#[cfg(test)]
+mod repo_name_tests {
+    use super::valid_repo_name;
+
+    #[test]
+    fn repo_names() {
+        for ok in ["o/r", "my-org/my.repo", "a_b/c-d"] {
+            assert!(valid_repo_name(ok), "{ok}");
+        }
+        for bad in [
+            "", "o", "o/", "/r", "o/r/x", "../r", "o/..", "o/.git", "o/r?x", "o/r#x", "o r/x",
+        ] {
+            assert!(!valid_repo_name(bad), "{bad:?}");
+        }
+    }
 }

@@ -143,27 +143,27 @@ Set to `[]` if you don't need extra subdomains.
 
 ## Environment available inside the container
 
-Tekton writes two files into the container filesystem before it boots.
+### The repo's code
 
-### `/etc/preview-token` (mode 604)
-
-Contains a GitHub token to authenticate `git clone` / `git fetch`. Use it
-during setup only: don't keep it around for anything that runs later (periodic
-fetches, setup reruns after a restart), and never send it anywhere but GitHub.
-
-- **Previews started by the PR webhook:** a GitHub App installation token that
-  can only read this repo and expires about an hour after it's written. Each
-  `preview update` writes a fresh one.
-- **Previews started from the dashboard:** currently the logged-in user's
-  GitHub OAuth token. It has the user's full `repo` scope and doesn't expire
-  soon, so treat this file as a high-value secret. Removing user tokens from
-  containers is tracked in #186.
+There is no GitHub credential in the container. Before starting the setup
+service, tekton sends the branch's code into the container, and git there
+resolves `PREVIEW_REPO_URL` to that local copy. Clone or fetch it as usual:
 
 ```bash
-PREVIEW_TOKEN=$(cat /etc/preview-token 2>/dev/null || echo "")
-AUTHED_URL=$(echo "$PREVIEW_REPO_URL" | sed "s|https://|https://x-access-token:$PREVIEW_TOKEN@|")
-git clone --depth 1 --branch "$PREVIEW_BRANCH" "$AUTHED_URL" /home/preview/app
+git clone --branch "$PREVIEW_BRANCH" --single-branch "$PREVIEW_REPO_URL" /home/preview/app
 ```
+
+The copy only has `PREVIEW_BRANCH`, at the commit being deployed: no other
+branches, tags or Git LFS objects, and submodules can't be fetched. It's set
+up for the `preview` user (home `/home/preview`), so the config must define
+that user and run the clone as it, as the template does. Configs
+written for the old `/etc/preview-token` file keep working: with the file gone
+they clone `https://x-access-token:@github.com/<repo>.git`, which resolves to
+the same copy. Other ways of putting a token into the URL don't, so switch
+them to the plain `PREVIEW_REPO_URL`. See
+[Code delivery](preview-deployments.md#code-delivery).
+
+Tekton also writes this file into the container filesystem before it boots:
 
 ### `/etc/preview.env` (mode 644)
 
