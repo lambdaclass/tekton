@@ -180,7 +180,7 @@ valid_repo() {
 valid_branch() {
     local branch="$1"
     # What git forbids in a ref (~ ^ : ? * [ \), then ' " ` $ ; & | < >.
-    local bad='~^:?*[\'"'"'"`$;&|<>'
+    local bad="~^:?*[\'"`$;&|<>"
     [[ -n "$branch" ]] || return 1
     [[ "$branch" != *[[:cntrl:][:space:]]* ]] || return 1
     [[ "$branch" != *["$bad"]* ]] || return 1
