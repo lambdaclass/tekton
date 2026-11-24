@@ -180,7 +180,7 @@ valid_repo() {
 valid_branch() {
     local branch="$1"
     # What git forbids in a ref (~ ^ : ? * [ \), then ' " ` $ ; & | < >.
-    local bad="~^:?*[\'"`$;&|<>"
+    local bad="~^:?*[\\'\"\`\$;&|<>"
     [[ -n "$branch" ]] || return 1
     [[ "$branch" != *[[:cntrl:][:space:]]* ]] || return 1
     [[ "$branch" != *["$bad"]* ]] || return 1
@@ -648,8 +648,13 @@ require_build_firewall() {
 
 # Runs `nix build` on an expression that imports <preview-config>.
 untrusted_nix_build() {
-    local config_store="$1" expr="$2" nix_bin
+    local config_store="$1" expr="$2" nix_bin home
     nix_bin=$(readlink -f "$(command -v nix)") || return 1
+    # Nix needs a HOME the user owns for its cache, or it falls back to the
+    # read-only /. A per-run runtime directory is owned by the throwaway user,
+    # and is deleted with the unit, so one config can't poison the next run's
+    # caches. Unique, because both builds run at once.
+    home="tekton-preview-eval-${BASHPID}-${RANDOM}"
     systemd-run --quiet --pipe --wait --collect \
         --property=DynamicUser=yes \
         --property=PrivateTmp=yes \
@@ -664,7 +669,8 @@ untrusted_nix_build() {
         "--property=InaccessiblePaths=-/run/dashboard-secrets -/var/secrets -/var/lib -/etc/nixos" \
         --property=IPAddressDeny=any \
         --property=RestrictAddressFamilies=AF_UNIX \
-        --setenv=HOME=/tmp \
+        "--property=RuntimeDirectory=${home}" \
+        "--setenv=HOME=/run/${home}" \
         --setenv=NIX_REMOTE=daemon \
         "$nix_bin" build --impure --no-link --print-out-paths \
             --option restrict-eval true \
