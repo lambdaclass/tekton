@@ -94,6 +94,8 @@ jobs:
       LISTEN_ADDR: 0.0.0.0:3200
       TEST_MODE: "true"
       SECRETS_ENCRYPTION_KEY: test-encryption-key-32-chars-ok!
+      # intake-slack.spec.ts serves a mock Slack API here
+      SLACK_API_URL: http://localhost:3299
     steps:
       - uses: actions/checkout@v4
 
