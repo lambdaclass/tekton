@@ -212,7 +212,7 @@ deploy_nix() {
     # preview-config.nix and *-preview-config.nix are repo-side templates, not deployed to the server
     $SSH "
         cd ${REMOTE_SRC}/server-config && \
-        for f in agent.sh preview.sh flake.nix; do
+        for f in agent.sh preview.sh flake.nix nixbld-firewall.nix; do
             if [ -f \"\$f\" ]; then
                 cp \"\$f\" /etc/nixos/\"\$f\"
             fi
@@ -220,10 +220,10 @@ deploy_nix() {
         cd /etc/nixos && nixos-rebuild switch
     "
     success "NixOS configs deployed."
-    # configuration.nix is never copied, so the chain may be missing on an
-    # upgraded server; preview.sh refuses to build until it is there.
+    # configuration.nix is never copied, so an upgraded server may not import
+    # nixbld-firewall.nix yet; preview.sh refuses to build until the chain is up.
     if ! $SSH "iptables -w -C OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld && ip6tables -w -C OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld" 2>/dev/null; then
-        info "WARNING: the tekton-nixbld firewall chain is missing, so previews won't build until it is added to /etc/nixos/configuration.nix (docs/deployment-guide.md, \"Isolating preview builds\")."
+        info "WARNING: the tekton-nixbld firewall chain is missing, so previews won't build. /etc/nixos/configuration.nix must import ./nixbld-firewall.nix: see \"Upgrading an existing server\" under \"Isolating preview builds\" in docs/deployment-guide.md."
     fi
     # Previews made by older versions kept a GitHub token inside the container.
     if $SSH "preview scrub-tokens"; then

@@ -227,7 +227,7 @@ After making changes to the codebase, use `deploy.sh` to update the server. It p
 
 - **`dashboard`** — Builds frontend (Node.js) and backend (Rust) from `/opt/src/dashboard/`, deploys to `/opt/dashboard/`, restarts the service
 - **`webhook`** — Copies webhook source to `/opt/preview-webhook/`, runs `npm ci && npm run build`, restarts the service
-- **`nix`** — Copies safe NixOS config files (not `configuration.nix` or `agent-config.nix`) to `/etc/nixos/`, runs `nixos-rebuild switch`, and warns if the `tekton-nixbld` firewall chain is missing (see [Isolating preview builds](#isolating-preview-builds))
+- **`nix`** — Copies safe NixOS config files (`agent.sh`, `preview.sh`, `flake.nix`, `nixbld-firewall.nix`; not `configuration.nix` or `agent-config.nix`) to `/etc/nixos/`, runs `nixos-rebuild switch`, and warns if the `tekton-nixbld` firewall chain is missing (see [Isolating preview builds](#isolating-preview-builds))
 - **`nix-agents`** — Same as `nix`, plus rebuilds the agent container closure (`agent build`)
 - **`nix-previews`** — Same as `nix`, plus rebuilds the preview closure (`preview build`)
 
@@ -431,16 +431,50 @@ Just the raw token string, no newlines or quotes.
 A repo's `preview-config.nix` is untrusted code (an agent can write it), and the host runs it: `preview` evaluates and builds it to make the container. Without isolation it could read the GitHub App key, `SECRETS_ENCRYPTION_KEY` or any other host secret, and copy it into the world-readable `/nix/store` or send it out. Two layers prevent that:
 
 - **Evaluation.** As root, `preview` resolves the trusted inputs: nixpkgs from `/etc/nixos/flake.lock`, as a locked store path, and the config, added to the store with `nix-store --add`. Then it evaluates through `systemd-run` as a throwaway `DynamicUser`, with an empty environment, Nix's `restrict-eval` on and `allowed-uris` empty, no network (`IPAddressDeny=any`, Unix sockets only), and `/var/secrets`, `/run/dashboard-secrets`, `/var/lib` and `/etc/nixos` inaccessible. Restricted evaluation alone isn't enough, because `builtins.getFlake "path:/some/dir"` still copies any directory the evaluator can read into the store. The closures are the same as before the isolation.
-- **Builds.** They run in nix-daemon's sandbox as `nixbld` users. Fixed-output builds share the host network, so the `tekton-nixbld` firewall chain in `configuration.nix` rejects their traffic to loopback (the dashboard's `/internal/secrets`, the webhook's `/internal/token` and Caddy's admin API trust loopback), and to private and link-local addresses (containers, cloud metadata). DNS is allowed.
+- **Builds.** They run in nix-daemon's sandbox as `nixbld` users. Fixed-output builds share the host network, so the `tekton-nixbld` firewall chain (`server-config/nixbld-firewall.nix`, imported by `configuration.nix`) rejects their traffic to loopback (the dashboard's `/internal/secrets`, the webhook's `/internal/token` and Caddy's admin API trust loopback), and to private and link-local addresses (containers, cloud metadata). DNS is allowed.
 
 `preview` refuses to build while the chain is missing.
 
 For repo configs, this means a `preview-config.nix` can't read files outside the store, can't read environment variables (`builtins.getEnv` returns an empty string), and can't fetch at evaluation time (`builtins.fetchTarball`, `fetchGit`, `fetchurl`). Fetchers inside derivations (`pkgs.fetchurl`, `fetchFromGitHub`, …) still work.
 
-**Upgrading an existing server:** `deploy.sh` never copies `configuration.nix`, so copy the `networking.firewall.extraCommands` and `extraStopCommands` blocks from `server-config/configuration.nix` into `/etc/nixos/configuration.nix` on the server by hand. Then run `./deploy.sh <server> nix`. It warns if the chain is still missing. To check by hand:
+#### Upgrading an existing server
+
+`deploy.sh` copies `nixbld-firewall.nix` to `/etc/nixos`, but it never touches `configuration.nix`, so an existing server has to import the file once by hand. Until it does, previews refuse to build. Run these from your laptop, in order:
+
+1. Set the server's address:
+
+   ```bash
+   SERVER=<server-ip>
+   ```
+
+2. Deploy, which copies `nixbld-firewall.nix` to `/etc/nixos`. It warns that the chain is missing; that's expected at this point.
+
+   ```bash
+   ./deploy.sh "$SERVER" nix
+   ```
+
+3. Back up `configuration.nix` to `configuration.nix.bak-nixbld` (unless that backup already exists), then add `./nixbld-firewall.nix` as the first entry of its `imports = [` list. If the import is already there, nothing changes. The command ends by printing the import line. If it prints nothing, your `imports` line has a different layout: add `./nixbld-firewall.nix` to the list by hand.
+
+   ```bash
+   ssh root@"$SERVER" '{ [ -e /etc/nixos/configuration.nix.bak-nixbld ] || cp /etc/nixos/configuration.nix /etc/nixos/configuration.nix.bak-nixbld; } && { grep -q "nixbld-firewall.nix" /etc/nixos/configuration.nix || sed -i "s|^  imports = \[$|&\n    ./nixbld-firewall.nix|" /etc/nixos/configuration.nix; } && grep -n "nixbld-firewall.nix" /etc/nixos/configuration.nix'
+   ```
+
+4. Rebuild, which creates the chain:
+
+   ```bash
+   ssh root@"$SERVER" 'cd /etc/nixos && nixos-rebuild switch'
+   ```
+
+5. Check the chain. This should print `iptables OK` and `ip6tables OK`:
+
+   ```bash
+   ssh root@"$SERVER" 'for ipt in iptables ip6tables; do $ipt -w -C OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld && $ipt -w -C tekton-nixbld -o lo -j REJECT && echo "$ipt OK"; done'
+   ```
+
+To undo, restore the backup and rebuild. Previews then refuse to build again:
 
 ```bash
-for ipt in iptables ip6tables; do $ipt -w -C OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld && $ipt -w -C tekton-nixbld -o lo -j REJECT && echo "$ipt OK"; done
+ssh root@"$SERVER" 'cp /etc/nixos/configuration.nix.bak-nixbld /etc/nixos/configuration.nix && cd /etc/nixos && nixos-rebuild switch'
 ```
 
 ### NixOS configuration placeholders
