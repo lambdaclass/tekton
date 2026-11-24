@@ -615,10 +615,11 @@ scrub_preview() {
 # evaluation alone isn't enough, because getFlake "path:/some/dir" still copies
 # any directory the evaluator can read into the world-readable store. So
 # evaluation also runs as a throwaway user with an empty environment, no
-# network, and the host's secret paths hidden. Builds run in nix-daemon's
-# sandbox; fixed-output builds share the host network, so the tekton-nixbld
-# firewall chain keeps them off loopback (where /internal endpoints trust the
-# caller) and private addresses.
+# network, and a root directory holding only the store, the daemon socket and
+# Nix's config (an allowlist, so no host file is readable). Builds run in
+# nix-daemon's sandbox; fixed-output builds share the host network, so the
+# tekton-nixbld firewall chain keeps them off loopback (where /internal
+# endpoints trust the caller) and private addresses.
 
 # The flake reference of the nixpkgs pinned in FLAKE_DIR's flake.lock, as a
 # locked store path: the same nixpkgs (and so the same closures) as before, and
@@ -642,21 +643,32 @@ require_build_firewall() {
     for ipt in iptables ip6tables; do
         { "$ipt" -w -C OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld &&
             "$ipt" -w -C tekton-nixbld -o lo -j REJECT; } 2>/dev/null ||
-            fatal "The tekton-nixbld firewall chain is missing (${ipt}), so a repo's preview-config.nix could reach local services from a Nix build. Add it to /etc/nixos/configuration.nix and run nixos-rebuild switch (docs/deployment-guide.md, \"Isolating preview builds\")."
+            fatal "The tekton-nixbld firewall chain is missing (${ipt}), so a repo's preview-config.nix could reach local services from a Nix build. /etc/nixos/configuration.nix must import ./nixbld-firewall.nix (docs/deployment-guide.md, \"Upgrading an existing server\")."
     done
+    # The chain matches builds by the nixbld group; builds under dynamically
+    # allocated users would skip it.
+    [[ "$(nix config show auto-allocate-uids 2>/dev/null || echo false)" == false ]] ||
+        fatal "Nix's auto-allocate-uids is on, so Nix builds don't run in the nixbld group and the tekton-nixbld firewall chain doesn't apply to them. Turn it off."
 }
 
 # Runs `nix build` on an expression that imports <preview-config>.
 untrusted_nix_build() {
-    local config_store="$1" expr="$2" nix_bin home
+    local config_store="$1" expr="$2" nix_bin home root rc=0
     nix_bin=$(readlink -f "$(command -v nix)") || return 1
     # Nix needs a HOME the user owns for its cache, or it falls back to the
     # read-only /. A per-run runtime directory is owned by the throwaway user,
     # and is deleted with the unit, so one config can't poison the next run's
     # caches. Unique, because both builds run at once.
     home="tekton-preview-eval-${BASHPID}-${RANDOM}"
+    # An empty root directory: inside it the evaluator sees only the paths
+    # bound below. (TemporaryFileSystem=/ is silently ignored, so it can't do this.)
+    root=$(mktemp -d /run/tekton-preview-root.XXXXXX) || return 1
+    chmod 0755 "$root"
     systemd-run --quiet --pipe --wait --collect \
         --property=DynamicUser=yes \
+        "--property=RootDirectory=${root}" \
+        --property=MountAPIVFS=yes \
+        "--property=BindReadOnlyPaths=/nix/store /nix/var/nix/daemon-socket /etc/nix /etc/static" \
         --property=PrivateTmp=yes \
         --property=PrivateDevices=yes \
         --property=ProtectSystem=strict \
@@ -666,9 +678,11 @@ untrusted_nix_build() {
         --property=ProtectKernelModules=yes \
         --property=ProtectControlGroups=yes \
         --property=NoNewPrivileges=yes \
-        "--property=InaccessiblePaths=-/run/dashboard-secrets -/var/secrets -/var/lib -/etc/nixos" \
         --property=IPAddressDeny=any \
         --property=RestrictAddressFamilies=AF_UNIX \
+        --property=MemoryMax=6G \
+        --property=TasksMax=512 \
+        --property=RuntimeMaxSec=3600 \
         "--property=RuntimeDirectory=${home}" \
         "--setenv=HOME=/run/${home}" \
         --setenv=NIX_REMOTE=daemon \
@@ -676,7 +690,10 @@ untrusted_nix_build() {
             --option restrict-eval true \
             --option allowed-uris "" \
             -I "preview-config=${config_store}" \
-            --expr "$expr" < /dev/null
+            --expr "$expr" < /dev/null || rc=$?
+    # Only empty mount points are left here: the mounts lived in the unit's namespace.
+    rm -rf --one-file-system "$root"
+    return "$rc"
 }
 
 # Builds toplevel + previewMeta for a repo's preview-config.nix.

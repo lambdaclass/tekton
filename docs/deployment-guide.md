@@ -430,12 +430,12 @@ Just the raw token string, no newlines or quotes.
 
 A repo's `preview-config.nix` is untrusted code (an agent can write it), and the host runs it: `preview` evaluates and builds it to make the container. Without isolation it could read the GitHub App key, `SECRETS_ENCRYPTION_KEY` or any other host secret, and copy it into the world-readable `/nix/store` or send it out. Two layers prevent that:
 
-- **Evaluation.** As root, `preview` resolves the trusted inputs: nixpkgs from `/etc/nixos/flake.lock`, as a locked store path, and the config, added to the store with `nix-store --add`. Then it evaluates through `systemd-run` as a throwaway `DynamicUser`, with an empty environment, Nix's `restrict-eval` on and `allowed-uris` empty, no network (`IPAddressDeny=any`, Unix sockets only), and `/var/secrets`, `/run/dashboard-secrets`, `/var/lib` and `/etc/nixos` inaccessible. Restricted evaluation alone isn't enough, because `builtins.getFlake "path:/some/dir"` still copies any directory the evaluator can read into the store. The closures are the same as before the isolation.
-- **Builds.** They run in nix-daemon's sandbox as `nixbld` users. Fixed-output builds share the host network, so the `tekton-nixbld` firewall chain (`server-config/nixbld-firewall.nix`, imported by `configuration.nix`) rejects their traffic to loopback (the dashboard's `/internal/secrets`, the webhook's `/internal/token` and Caddy's admin API trust loopback), and to private and link-local addresses (containers, cloud metadata). DNS is allowed.
+- **Evaluation.** As root, `preview` resolves the trusted inputs: nixpkgs from `/etc/nixos/flake.lock`, as a locked store path, and the config, added to the store with `nix-store --add`. Then it evaluates through `systemd-run` as a throwaway `DynamicUser`, with an empty environment, Nix's `restrict-eval` on and `allowed-uris` empty, and no network (`IPAddressDeny=any`, Unix sockets only). Its root directory is an empty, per-run directory, with only `/nix/store`, the nix-daemon socket and Nix's config (`/etc/nix`) bound in. That's an allowlist, so no host file is visible: not `/var/secrets`, `/opt` or anything else. Restricted evaluation alone isn't enough, because `builtins.getFlake "path:/some/dir"` still copies any directory the evaluator can read into the store. The evaluation is capped at 6 GB of memory, 512 tasks and one hour. The closures are the same as before the isolation.
+- **Builds.** They run in nix-daemon's sandbox as `nixbld` users. Fixed-output builds share the host network, so the `tekton-nixbld` firewall chain (`server-config/nixbld-firewall.nix`, imported by `configuration.nix`) rejects their traffic to loopback (the dashboard's `/internal/secrets`, the webhook's `/internal/token` and Caddy's admin API trust loopback), and to private and link-local addresses (containers, cloud metadata). There's no DNS exception, because `configuration.nix` pins public resolvers (1.1.1.1 and 1.0.0.1); a server using a resolver on loopback or a private address would need one. The chain is filled with one `iptables-restore` batch per address family, so a firewall start or reload never leaves it empty while a build is running. Stopping the firewall leaves the chain in place, so builds stay restricted. The chain only filters IP traffic: fixed-output builds can still connect to abstract Unix sockets in the host's network namespace (on a stock server, only udevd's internal one).
 
-`preview` refuses to build while the chain is missing.
+`preview` refuses to build while the chain is missing, or while Nix's `auto-allocate-uids` is on (builds would then run outside the `nixbld` group, and the chain wouldn't apply to them).
 
-For repo configs, this means a `preview-config.nix` can't read files outside the store, can't read environment variables (`builtins.getEnv` returns an empty string), and can't fetch at evaluation time (`builtins.fetchTarball`, `fetchGit`, `fetchurl`). Fetchers inside derivations (`pkgs.fetchurl`, `fetchFromGitHub`, …) still work.
+For repo configs, this means a `preview-config.nix` can't read host files outside the store, can't read environment variables (`builtins.getEnv` returns an empty string), and can't fetch at evaluation time (`builtins.fetchTarball`, `fetchGit`, `fetchurl`). Fetchers inside derivations (`pkgs.fetchurl`, `fetchFromGitHub`, …) still work.
 
 #### Upgrading an existing server
 
@@ -471,7 +471,7 @@ For repo configs, this means a `preview-config.nix` can't read files outside the
    ssh root@"$SERVER" 'for ipt in iptables ip6tables; do $ipt -w -C OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld && $ipt -w -C tekton-nixbld -o lo -j REJECT && echo "$ipt OK"; done'
    ```
 
-To undo, restore the backup and rebuild. Previews then refuse to build again:
+To undo, restore the backup and rebuild. The chain stays in place until the next reboot (stopping the firewall doesn't remove it), and after that previews refuse to build again:
 
 ```bash
 ssh root@"$SERVER" 'cp /etc/nixos/configuration.nix.bak-nixbld /etc/nixos/configuration.nix && cd /etc/nixos && nixos-rebuild switch'
