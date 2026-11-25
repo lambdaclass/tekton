@@ -4,6 +4,9 @@
 {
   imports = [
     (modulesPath + "/installer/scan/not-detected.nix")
+    # Keeps Nix builds of untrusted preview configs off local services. It's
+    # its own file so deploy.sh can update it; configuration.nix isn't copied.
+    ./nixbld-firewall.nix
   ];
 
   # Boot configuration

@@ -390,6 +390,7 @@ cp "$TMPDIR/agent-config.nix" /etc/nixos/agent-config.nix
 cp "$SERVER_CONFIG/preview.sh" /etc/nixos/preview.sh
 cp "$SERVER_CONFIG/agent.sh" /etc/nixos/agent.sh
 cp "$SERVER_CONFIG/flake.nix" /etc/nixos/flake.nix
+cp "$SERVER_CONFIG/nixbld-firewall.nix" /etc/nixos/nixbld-firewall.nix
 success "All NixOS configs installed."
 
 # =============================================================================

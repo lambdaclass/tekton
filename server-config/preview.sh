@@ -180,7 +180,7 @@ valid_repo() {
 valid_branch() {
     local branch="$1"
     # What git forbids in a ref (~ ^ : ? * [ \), then ' " ` $ ; & | < >.
-    local bad='~^:?*[\'"'"'"`$;&|<>'
+    local bad="~^:?*[\\'\"\`\$;&|<>"
     [[ -n "$branch" ]] || return 1
     [[ "$branch" != *[[:cntrl:][:space:]]* ]] || return 1
     [[ "$branch" != *["$bad"]* ]] || return 1
@@ -611,6 +611,127 @@ scrub_preview() {
 
 # -- Nix closure building -----------------------------------------------------
 
+# A repo's preview-config.nix is untrusted: an agent can write it. Restricted
+# evaluation alone isn't enough, because getFlake "path:/some/dir" still copies
+# any directory the evaluator can read into the world-readable store. So
+# evaluation also runs as a throwaway user with an empty environment, no
+# network, and a root directory holding only the store and the daemon socket
+# (an allowlist, so no host file is readable). Builds run in
+# nix-daemon's sandbox; fixed-output builds share the host network, so the
+# tekton-nixbld firewall chain keeps them off loopback (where /internal
+# endpoints trust the caller) and private addresses.
+
+# The flake reference of the nixpkgs pinned in FLAKE_DIR's flake.lock, as a
+# locked store path: the same nixpkgs (and so the same closures) as before, and
+# readable in restricted mode. rev and lastModified feed the NixOS version label.
+# It reads flake.lock directly: `nix flake archive` or `metadata` would copy all
+# of FLAKE_DIR (configuration.nix included) into the world-readable store.
+locked_nixpkgs_ref() {
+    local lock="${FLAKE_DIR}/flake.lock" path locked ref
+    path=$(nix eval --raw --impure --expr "
+        let lock = builtins.fromJSON (builtins.readFile ${lock});
+            node = lock.nodes.\${lock.nodes.\${lock.root}.inputs.nixpkgs};
+        in (builtins.fetchTree node.locked).outPath") || return 1
+    locked=$(jq -er '.nodes[.nodes[.root].inputs.nixpkgs].locked
+        | "lastModified=\(.lastModified)&rev=\(.rev)&narHash=\(.narHash | @uri)"' "$lock") || return 1
+    ref="path:${path}?${locked}"
+    # It is interpolated into a Nix string.
+    [[ "$ref" =~ ^path:/nix/store/[a-z0-9]+-source\?lastModified=[0-9]+\&rev=[0-9a-f]{40}\&narHash=[A-Za-z0-9%._-]+$ ]] ||
+        return 1
+    echo "$ref"
+}
+
+require_build_firewall() {
+    # A host with no IPv6 address anywhere (not even ::1) has no IPv6 traffic
+    # to filter, and nixbld-firewall.nix adds no IPv6 rules when
+    # networking.enableIPv6 is off.
+    local ipt ipts=(iptables)
+    if [[ -s /proc/net/if_inet6 ]]; then ipts+=(ip6tables); fi
+    for ipt in "${ipts[@]}"; do
+        { "$ipt" -w -C OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld &&
+            "$ipt" -w -C tekton-nixbld -o lo -j REJECT; } 2>/dev/null ||
+            fatal "The tekton-nixbld firewall chain is missing (${ipt}), so a repo's preview-config.nix could reach local services from a Nix build. /etc/nixos/configuration.nix must import ./nixbld-firewall.nix (docs/deployment-guide.md, \"Upgrading an existing server\")."
+    done
+    # Every rule, not just the jump: keep in sync with nixbld-firewall.nix.
+    local rule
+    for rule in "-o lo" "-d 10.0.0.0/8" "-d 172.16.0.0/12" "-d 192.168.0.0/16" "-d 100.64.0.0/10" "-d 169.254.0.0/16"; do
+        # shellcheck disable=SC2086 # the rule is a list of iptables arguments
+        iptables -w -C tekton-nixbld $rule -j REJECT 2>/dev/null ||
+            fatal "The tekton-nixbld firewall chain lacks its '${rule}' rule. Run nixos-rebuild switch."
+    done
+    if [[ ${#ipts[@]} -eq 2 ]]; then
+        for rule in "-o lo" "-d fc00::/7" "-d fe80::/10" "-d 64:ff9b::/96" "-d 64:ff9b:1::/48"; do
+            # shellcheck disable=SC2086
+            ip6tables -w -C tekton-nixbld $rule -j REJECT 2>/dev/null ||
+                fatal "The tekton-nixbld firewall chain lacks its IPv6 '${rule}' rule. Run nixos-rebuild switch."
+        done
+    fi
+    # The chain matches builds by the nixbld group, so builds must run as
+    # nixbld users, sandboxed, with no unsandboxed fallback.
+    [[ "$(nix config show build-users-group 2>/dev/null)" == nixbld ]] ||
+        fatal "Nix's build-users-group isn't nixbld, so the tekton-nixbld firewall chain doesn't apply to Nix builds."
+    [[ "$(nix config show auto-allocate-uids 2>/dev/null || echo false)" == false ]] ||
+        fatal "Nix's auto-allocate-uids is on, so Nix builds don't run in the nixbld group and the tekton-nixbld firewall chain doesn't apply to them. Turn it off."
+    [[ "$(nix config show sandbox 2>/dev/null)" == true && "$(nix config show sandbox-fallback 2>/dev/null)" == false ]] ||
+        fatal "Nix must run builds sandboxed with no fallback (sandbox = true, sandbox-fallback = false; set by nixbld-firewall.nix)."
+}
+
+# Runs `nix build` on an expression that imports <preview-config>.
+# Call it in the background (`&`): it sets traps, which must be that subshell's own.
+untrusted_nix_build() {
+    local config_store="$1" expr="$2" nix_bin unit root rc=0
+    nix_bin=$(readlink -f "$(command -v nix)") || return 1
+    # Names the unit and its runtime directory. Unique, because both builds
+    # run at once.
+    unit="tekton-preview-eval-${BASHPID}-${RANDOM}"
+    # Nix needs a HOME the user owns for its cache, or it falls back to the
+    # read-only /. A per-run runtime directory is owned by the throwaway user,
+    # and is deleted with the unit, so one config can't poison the next run's
+    # caches.
+    # An empty root directory: inside it the evaluator sees only the paths
+    # bound below, not even the host's /etc/nix, so the features it needs are
+    # passed on the command line. (TemporaryFileSystem=/ is silently ignored,
+    # so it can't do this.)
+    root=$(mktemp -d /run/tekton-preview-root.XXXXXX) || return 1
+    chmod 0755 "$root"
+    # The build is a systemd unit of its own, so killing `preview` doesn't
+    # stop it: stop it here. Only empty mount points are left in the root
+    # directory, since the mounts lived in the unit's namespace.
+    trap 'systemctl stop "${unit}.service" 2>/dev/null; rm -rf --one-file-system "$root"' EXIT
+    trap 'exit 143' TERM INT HUP
+    systemd-run --quiet --pipe --wait --collect "--unit=${unit}" \
+        --property=DynamicUser=yes \
+        "--property=RootDirectory=${root}" \
+        --property=MountAPIVFS=yes \
+        "--property=BindReadOnlyPaths=/nix/store /nix/var/nix/daemon-socket" \
+        --property=PrivateTmp=yes \
+        --property=PrivateDevices=yes \
+        --property=ProtectSystem=strict \
+        --property=ProtectHome=yes \
+        --property=ProtectProc=invisible \
+        --property=ProtectKernelTunables=yes \
+        --property=ProtectKernelModules=yes \
+        --property=ProtectControlGroups=yes \
+        --property=NoNewPrivileges=yes \
+        --property=IPAddressDeny=any \
+        --property=RestrictAddressFamilies=AF_UNIX \
+        --property=MemoryMax=6G \
+        --property=TasksMax=512 \
+        --property=RuntimeMaxSec=3600 \
+        "--property=RuntimeDirectory=${unit}" \
+        "--setenv=HOME=/run/${unit}" \
+        --setenv=NIX_REMOTE=daemon \
+        "$nix_bin" build --impure --no-link --print-out-paths \
+            --extra-experimental-features "nix-command flakes" \
+            --option restrict-eval true \
+            --option allowed-uris "" \
+            -I "preview-config=${config_store}" \
+            --expr "$expr" < /dev/null &
+    # In the background, so a signal runs the traps without waiting for it.
+    wait $! || rc=$?
+    return "$rc"
+}
+
 # Builds toplevel + previewMeta for a repo's preview-config.nix.
 # Results are cached by commit SHA.  Both builds run in parallel.
 build_preview_closure() {
@@ -636,19 +757,26 @@ build_preview_closure() {
         return
     fi
 
+    require_build_firewall
+
+    # Trusted inputs are resolved here, as root; the untrusted evaluation only
+    # gets store paths.
+    local nixpkgs_ref config_store
+    nixpkgs_ref=$(locked_nixpkgs_ref) || fatal "Could not resolve nixpkgs from ${FLAKE_DIR}/flake.lock."
+    config_store=$(nix-store --add "$config_file") || fatal "Could not add ${config_file} to the store."
+
     # Both builds share the same nix expression structure; only the last `in` clause differs.
     # Use a heredoc so variable expansion is clean and the nix strings are unambiguous.
     local nix_modules
     nix_modules=$(cat <<NIXEOF
 let
-  flake    = builtins.getFlake "path:${FLAKE_DIR}";
-  nixpkgs  = flake.inputs.nixpkgs;
+  nixpkgs  = builtins.getFlake "${nixpkgs_ref}";
   pkgs     = import nixpkgs { system = "x86_64-linux"; config.allowUnfree = true; };
   nixosCfg = nixpkgs.lib.nixosSystem {
     system  = "x86_64-linux";
     modules = [
       { nixpkgs.pkgs = pkgs; }
-      (import ${config_file})
+      (import <preview-config>)
       { users.users.root.openssh.authorizedKeys.keys = [ "${admin_ssh_key}" ]; }
     ];
   };
@@ -667,19 +795,22 @@ NIXEOF
 
     if [[ $need_toplevel -eq 1 ]]; then
         info "Building container closure (${commit_sha:0:8})..." >&2
-        nix build --impure --no-link --print-out-paths --expr \
+        untrusted_nix_build "$config_store" \
             "${nix_modules} nixosCfg.config.system.build.toplevel" \
             > "$toplevel_tmp" 2>"$toplevel_err" &
         toplevel_pid=$!
     fi
 
     if [[ $need_meta -eq 1 ]]; then
-        nix build --impure --no-link --print-out-paths --expr \
+        untrusted_nix_build "$config_store" \
             "${nix_modules} nixosCfg.config.system.build.previewMeta" \
             > "$meta_tmp" 2>"$meta_err" &
         meta_pid=$!
     fi
 
+    # Pass a signal on to the builds, so they stop their units, and wait for that.
+    # shellcheck disable=SC2046 # one pid per word
+    trap 'kill $(jobs -p) 2>/dev/null; wait; exit 143' TERM INT HUP
     local toplevel_rc=0 meta_rc=0
     if [[ $toplevel_pid -ne -1 ]]; then
         wait "$toplevel_pid" || toplevel_rc=$?
@@ -687,6 +818,7 @@ NIXEOF
     if [[ $meta_pid -ne -1 ]]; then
         wait "$meta_pid" || meta_rc=$?
     fi
+    trap - TERM INT HUP
 
     if [[ $need_toplevel -eq 1 ]] && [[ $toplevel_rc -ne 0 || ! -s "$toplevel_tmp" ]]; then
         cat "$toplevel_err" >&2
@@ -1529,7 +1661,7 @@ cmd_help() {
 
 # -- Main ---------------------------------------------------------------------
 # GitHub access goes through the webhook's App token, never a caller's token,
-# and the repo's config is evaluated with --impure, so keep any out of reach.
+# so keep any out of reach of everything this script runs.
 unset GITHUB_TOKEN
 # Host git reads repos an agent controls, as root: keep system and user git
 # config (helpers, hooks paths, includes) out of it.
