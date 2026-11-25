@@ -60,11 +60,12 @@ fn slack_value(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|v| !v.is_empty())
 }
 
-/// Encrypts a Slack bot token after checking it looks like one
+/// Encrypts a Slack bot token after checking it is one. A user token
+/// (xoxp-) would also post, but as that person and with their access.
 fn encrypt_slack_token(state: &crate::AppState, token: &str) -> Result<String, AppError> {
-    if !token.starts_with("xox") {
+    if !token.starts_with("xoxb-") {
         return Err(AppError::BadRequest(
-            "Slack bot tokens start with xoxb-".into(),
+            "Use the app's bot token, which starts with xoxb-".into(),
         ));
     }
     crate::secrets::encrypt_secret(&state.config.secrets_encryption_key, token)
