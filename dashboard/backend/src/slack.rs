@@ -19,7 +19,6 @@ use crate::error::AppError;
 
 /// Statuses that are announced; `backlog` and `pending` are not intake work yet
 const ANNOUNCED_STATUSES: &str = "('task_created', 'review', 'done', 'failed')";
-const MAX_ERROR_CHARS: usize = 500;
 
 static HTTP: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
@@ -152,7 +151,6 @@ struct IssueRow {
     external_title: String,
     external_url: Option<String>,
     status: String,
-    error_message: Option<String>,
     task_id: Option<String>,
     pr_url: Option<String>,
     pr_number: Option<i32>,
@@ -192,8 +190,31 @@ fn escape(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// `<url|label>`, or the bare label when `url` isn't http(s). URLs come from
+/// providers and tasks, so whatever could end the link early and inject
+/// markup (mentions, other links) is encoded.
 fn link(url: &str, label: &str) -> String {
-    format!("<{url}|{}>", escape(label))
+    let label = escape(label);
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return label;
+    }
+    let mut safe = String::with_capacity(url.len());
+    for c in url.chars() {
+        match c {
+            '<' => safe.push_str("%3C"),
+            '>' => safe.push_str("%3E"),
+            '|' => safe.push_str("%7C"),
+            '&' => safe.push_str("&amp;"),
+            c if c.is_whitespace() || c.is_control() => {
+                let mut buf = [0u8; 4];
+                for b in c.encode_utf8(&mut buf).bytes() {
+                    safe.push_str(&format!("%{b:02X}"));
+                }
+            }
+            c => safe.push(c),
+        }
+    }
+    format!("<{safe}|{label}>")
 }
 
 fn status_label(status: &str) -> (&'static str, &'static str) {
@@ -206,10 +227,15 @@ fn status_label(status: &str) -> (&'static str, &'static str) {
     }
 }
 
-fn pr_label(row: &IssueRow) -> String {
-    match row.pr_number {
+/// The PR, linked only when it's on GitHub: a task's PR URL can be set by hand
+fn pr_link(row: &IssueRow) -> String {
+    let label = match row.pr_number {
         Some(n) if n > 0 => format!("PR #{n}"),
         _ => "PR".into(),
+    };
+    match row.pr_url.as_deref() {
+        Some(url) if url.starts_with("https://github.com/") => link(url, &label),
+        _ => escape(&label),
     }
 }
 
@@ -230,8 +256,8 @@ fn parent_text(row: &IssueRow, dashboard_url: &str) -> String {
     if let Some(task_id) = &row.task_id {
         details.push(task_link(dashboard_url, task_id));
     }
-    if let Some(pr_url) = &row.pr_url {
-        details.push(link(pr_url, &pr_label(row)));
+    if row.pr_url.is_some() {
+        details.push(pr_link(row));
     }
     format!("{emoji} *{label}*: {title}\n{}", details.join(" · "))
 }
@@ -245,21 +271,20 @@ fn reply_text(reply: &Reply, row: &IssueRow, dashboard_url: &str) -> String {
                 task_link(dashboard_url, task)
             )
         }
-        Reply::PrOpened => format!(
-            ":link: Opened {}",
-            link(row.pr_url.as_deref().unwrap_or_default(), &pr_label(row))
-        ),
+        Reply::PrOpened => format!(":link: Opened {}", pr_link(row)),
         Reply::Status => match row.status.as_str() {
             "task_created" => {
                 ":arrows_counterclockwise: Back in progress: a follow-up was sent".into()
             }
             "review" => ":eyes: Ready for review".into(),
             "done" => ":white_check_mark: Done".into(),
-            "failed" => match row.error_message.as_deref().filter(|e| !e.is_empty()) {
-                Some(error) => {
-                    let error: String = error.chars().take(MAX_ERROR_CHARS).collect();
-                    format!(":x: Failed: {}", escape(&error))
-                }
+            // Errors can carry tokens, paths and hostnames, and the channel
+            // reaches more people than the dashboard, so they stay there
+            "failed" => match &row.task_id {
+                Some(task_id) => format!(
+                    ":x: Failed: details on the {}",
+                    task_link(dashboard_url, task_id)
+                ),
                 None => ":x: Failed".into(),
             },
             other => format!("Status: {}", escape(other)),
@@ -277,7 +302,7 @@ pub async fn notify_intake_updates(config: &Config, db: &PgPool) -> Result<(), A
     // already had when Slack was set up, so existing work isn't announced.
     let rows = sqlx::query_as::<_, IssueRow>(&format!(
         "SELECT i.id AS issue_id, i.external_title, i.external_url, i.status, \
-         i.error_message, i.task_id, t.pr_url, t.pr_number, \
+         i.task_id, t.pr_url, t.pr_number, \
          i.slack_channel, i.slack_thread_ts, i.slack_notified_task_id, \
          i.slack_notified_status, i.slack_notified_pr_url, \
          s.name AS source_name, s.target_repo, \
@@ -419,7 +444,6 @@ mod tests {
             external_title: "Fix <script> & stuff".into(),
             external_url: Some("https://github.com/o/r/issues/1".into()),
             status: status.into(),
-            error_message: None,
             task_id: Some("abc123".into()),
             pr_url: None,
             pr_number: None,
@@ -514,11 +538,42 @@ mod tests {
     }
 
     #[test]
-    fn failure_reply_carries_a_truncated_error() {
-        let mut r = row("failed");
-        r.error_message = Some("x".repeat(MAX_ERROR_CHARS + 50));
-        let text = reply_text(&Reply::Status, &r, "https://d");
-        assert_eq!(text, format!(":x: Failed: {}", "x".repeat(MAX_ERROR_CHARS)));
+    fn failure_reply_links_the_task_instead_of_the_error() {
+        assert_eq!(
+            reply_text(&Reply::Status, &row("failed"), "https://d"),
+            ":x: Failed: details on the <https://d/tasks/abc123|task>"
+        );
+    }
+
+    #[test]
+    fn urls_cannot_break_out_of_a_link() {
+        assert_eq!(
+            link(
+                "https://x|Approved> <!channel> <https://evil.example|Click",
+                "PR"
+            ),
+            "<https://x%7CApproved%3E%20%3C!channel%3E%20%3Chttps://evil.example%7CClick|PR>"
+        );
+        assert_eq!(
+            link("https://x/?a=1&b=2", "l"),
+            "<https://x/?a=1&amp;b=2|l>"
+        );
+    }
+
+    #[test]
+    fn only_http_urls_are_linked() {
+        assert_eq!(link("javascript:alert(1)", "t"), "t");
+        assert_eq!(link("slack://open", "<t>"), "&lt;t&gt;");
+    }
+
+    #[test]
+    fn pr_is_linked_only_on_github() {
+        let mut r = row("review");
+        r.pr_number = Some(3);
+        r.pr_url = Some("https://evil.example/pull/3".into());
+        assert_eq!(pr_link(&r), "PR #3");
+        r.pr_url = Some("https://github.com/o/r/pull/3".into());
+        assert_eq!(pr_link(&r), "<https://github.com/o/r/pull/3|PR #3>");
     }
 
     #[test]
