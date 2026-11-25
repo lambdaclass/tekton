@@ -421,6 +421,10 @@ PREVIEW_BIN=/run/current-system/sw/bin/preview
 AGENT_BIN=/run/current-system/sw/bin/agent
 STATIC_DIR=/opt/dashboard/static
 GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+# GitHub App that creates task branches, commits and intake PRs
+GITHUB_APP_ID=${GITHUB_APP_ID}
+GITHUB_APP_INSTALLATION_ID=${GITHUB_APP_INSTALLATION_ID}
+GITHUB_APP_PRIVATE_KEY_PATH=/var/secrets/github-app.pem
 ENVEOF
 chmod 600 /var/secrets/dashboard.env
 success "dashboard.env written."

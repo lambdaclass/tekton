@@ -72,10 +72,20 @@ The wildcard record covers preview subdomains (e.g., `42.yourdomain.com`) and th
 
 ### 2. GitHub App
 
-The preview webhook authenticates to GitHub as a GitHub App. For each request it mints an installation token that expires after one hour and is limited to one repo and the minimum permission:
+The preview webhook and the dashboard authenticate to GitHub as a GitHub App. For each request they mint an installation token that expires after one hour and is limited to one repo and the minimum permission.
+
+The preview webhook uses:
 
 - `contents: read` to look up commits, read `preview-config.nix`, and clone inside the preview container;
 - `pull_requests: write` to add the preview link to the PR description.
+
+The dashboard uses:
+
+- `contents: read` to fetch task repos into its host mirrors;
+- `contents: write` to create task branches and commits. GitHub signs these commits as the App (e.g. `tekton[bot]`), so they show as verified; each one carries `Co-authored-by` (the person the task ran for) and `Tekton-Task` trailers;
+- `pull_requests: write` to open the PRs of intake tasks, which nobody opens by hand.
+
+A PR opened with the dashboard's **Create PR** button still uses the clicking user's own OAuth token, so GitHub keeps them from approving it themselves.
 
 Personal Access Tokens are not supported. The webhook refuses to start if `GITHUB_TOKEN` is set in `preview.env`.
 
@@ -84,25 +94,25 @@ Personal Access Tokens are not supported. The webhook refuses to start if `GITHU
 1. **GitHub App name**: e.g., "Tekton"
 2. **Homepage URL**: `https://dashboard.yourdomain.com`
 3. **Webhook**: uncheck **Active**. Previews are triggered by the per-repo webhooks (see [Post-setup](#step-3-post-setup)), not by App events.
-4. **Repository permissions**: set **Contents** to *Read-only* and **Pull requests** to *Read and write*. **Metadata** becomes *Read-only* automatically. Leave everything else at *No access*.
+4. **Repository permissions**: set **Contents** and **Pull requests** to *Read and write*. **Metadata** becomes *Read-only* automatically. Leave everything else at *No access*.
 5. **Where can this GitHub App be installed?**: **Only on this account**. A private App can't be installed by any other account.
 6. Click **Create GitHub App**.
 7. Note the **App ID** shown under **About** on the App's settings page.
 8. Under **Private keys**, click **Generate a private key**. A `.pem` file downloads. This is the most sensitive secret in the deployment: it can mint tokens for every repo the App is installed on. Keep it out of shared drives and chat, and delete your local copy once it's uploaded.
 
-**Install the App**: on the App's page, click **Install App**, choose your org, select **Only select repositories**, and pick the repos that should get previews. After installing, the browser lands on `https://github.com/organizations/<org>/settings/installations/<installation-id>`. The number at the end is the **installation ID**.
+**Install the App**: on the App's page, click **Install App**, choose your org, select **Only select repositories**, and pick the repos that should get previews or tasks. After installing, the browser lands on `https://github.com/organizations/<org>/settings/installations/<installation-id>`. The number at the end is the **installation ID**.
 
-Only repos owned by the installation's account can get tokens. If `ALLOWED_REPOS` lists repos from another owner, their previews will fail.
+Only repos owned by the installation's account can get tokens. If `ALLOWED_REPOS` lists repos from another owner, their previews and tasks will fail.
 
 The setup scripts ask for:
 - **Path to the App's private key** (`setup.sh`, local), uploaded to `/var/secrets/github-app.pem`, owned by root, mode `0400`
-- **App ID** and **installation ID** (`server-setup.sh`), written to `preview.env`
+- **App ID** and **installation ID** (`server-setup.sh`), written to `preview.env` and `dashboard.env`
 
-**Rotating the key**: generate a new private key on the App's settings page, replace `/var/secrets/github-app.pem` (root, `0400`), run `systemctl restart preview-webhook`, check that a preview still gets created, then delete the old key on the App's settings page.
+**Rotating the key**: generate a new private key on the App's settings page, replace `/var/secrets/github-app.pem` (root, `0400`), run `systemctl restart preview-webhook dashboard`, check that a preview still gets created and a task still pushes, then delete the old key on the App's settings page.
 
 ### 3. GitHub OAuth App
 
-The dashboard uses GitHub OAuth for login. Users must be members of a specified GitHub organization to access it. Their OAuth token (with `repo` scope) is also used to create verified (signed) commits via the GitHub GraphQL API.
+The dashboard uses GitHub OAuth for login. Users must be members of a specified GitHub organization to access it. Their OAuth token is used for what must run with the person's own access: checking that they can read or push to a repo before a preview or task, listing branches, showing diffs, and opening a PR with **Create PR**. Task branches and commits use the [GitHub App](#2-github-app).
 
 1. Go to [GitHub Settings > Developer settings > OAuth Apps](https://github.com/settings/developers)
 2. Click **New OAuth App**
@@ -119,7 +129,7 @@ The setup script will prompt for:
 - **GitHub OAuth App Client Secret** — the secret from step 6
 - **GitHub organization** — only members of this org can log in (e.g., `lambdaclass`)
 
-**Important**: The OAuth App requests `repo` and `read:org` scopes. The `repo` scope is required so the dashboard can create branches and verified commits on behalf of each user via the GitHub API. The `read:org` scope is used to verify org membership.
+**Important**: The OAuth App requests `repo` and `read:org` scopes. The `repo` scope lets the dashboard check each user's access to private repos and open PRs as them. The `read:org` scope is used to verify org membership.
 
 ## First-Time Setup
 
@@ -257,6 +267,20 @@ Servers set up before the GitHub App change have a Personal Access Token as `GIT
 5. **Check it works**: open (or close and reopen) a PR on an installed repo, confirm the preview gets created, and confirm the PR description gets its preview link. The edit now shows the App (e.g. `tekton[bot]`) as the editor.
 6. **Revoke the PAT** on GitHub (**Settings > Developer settings > Personal access tokens**). Nothing on the server uses it anymore.
 
+### Moving task commits to the GitHub App
+
+Servers set up before the dashboard used the App have no `GITHUB_APP_*` lines in `/var/secrets/dashboard.env`, and `deploy.sh` refuses to deploy until they're added:
+
+1. **Grant the App write access**: on the App's settings page, under **Permissions & events > Repository permissions**, set **Contents** to *Read and write* (**Pull requests** should already be *Read and write*). The org owner then accepts the new permissions under **Org settings > GitHub Apps > Configure**.
+2. **Install it on the task repos**: on the same page, add every repo tasks or intake sources work on.
+3. **Edit `/var/secrets/dashboard.env`** on the server and add the same three lines as `preview.env`:
+   ```bash
+   GITHUB_APP_ID=<app-id>
+   GITHUB_APP_INSTALLATION_ID=<installation-id>
+   GITHUB_APP_PRIVATE_KEY_PATH=/var/secrets/github-app.pem
+   ```
+4. **Deploy**: `./deploy.sh <server-ip>`, then run a task and check that its commit shows as verified, authored by the App, with `Co-authored-by` and `Tekton-Task` trailers.
+
 ### Claude OAuth token refresh
 
 Claude Code authenticates via a long-lived OAuth token (valid for ~1 year) tied to your Claude Max/Teams subscription.
@@ -320,8 +344,9 @@ When a user submits a task via the dashboard:
 Key points:
 - Agent and preview containers have different prefixes (`a-` for agents, `t-` for previews)
 - Push + preview happen after each Claude run, not just at the end
-- Pushes use the GitHub GraphQL `createCommitOnBranch` mutation, producing verified (signed) commits attributed to the logged-in user
-- The GitHub token never enters the agent container. The agent has passwordless sudo, so nothing inside it can be kept from Claude. Instead the backend fetches from GitHub into a root-owned bare mirror (`MIRROR_DIR`, default `/var/lib/dashboard/mirrors`) and pushes the commits into the agent's repo over SSH as `refs/remotes/origin/*`. The agent's `origin` is the plain `https://github.com/<repo>.git` URL, so it can't push.
+- Pushes use the GitHub GraphQL `createCommitOnBranch` mutation with a GitHub App token, producing verified (signed) commits authored by the App, with `Co-authored-by: <requester>` and `Tekton-Task: <id>` trailers. Nothing in the task pipeline uses a user's OAuth token, so an intake source keeps working if its `run_as_user` token expires or is revoked
+- Before creating or reopening a task, the dashboard checks with the user's own token that GitHub lets them push to the repo, since the App can push to every repo it's installed on
+- No GitHub token enters the agent container. The agent has passwordless sudo, so nothing inside it can be kept from Claude. Instead the backend fetches from GitHub into a root-owned bare mirror (`MIRROR_DIR`, default `/var/lib/dashboard/mirrors`) and pushes the commits into the agent's repo over SSH as `refs/remotes/origin/*`. The agent's `origin` is the plain `https://github.com/<repo>.git` URL, so it can't push.
 - Claude's system prompt tells it it can't push or open PRs. Whatever it leaves in the working tree is delivered: pushed, previewed and, for intake tasks, opened as a PR. An intake task that changes no files delivers nothing, so a prompt template that tells the agent not to modify files gives a report with no PR.
 - Claude's actions are streamed via `--output-format stream-json --verbose`
 - Claude authenticates via `CLAUDE_CODE_OAUTH_TOKEN` env var
@@ -394,7 +419,12 @@ PREVIEW_BIN=/run/current-system/sw/bin/preview
 AGENT_BIN=/run/current-system/sw/bin/agent
 # MIRROR_DIR=/var/lib/dashboard/mirrors   # optional: host-side bare mirrors of task repos
 STATIC_DIR=/opt/dashboard/static
+GITHUB_APP_ID=<app-id>
+GITHUB_APP_INSTALLATION_ID=<installation-id>
+GITHUB_APP_PRIVATE_KEY_PATH=/var/secrets/github-app.pem
 ```
+
+The `GITHUB_APP_*` variables are required on a server: tasks fail without them. Leave all three out only in local development and tests, which never push. Setting only some of them, or a key the dashboard can't read, stops it from starting.
 
 #### Secrets encryption key
 
@@ -523,7 +553,7 @@ Template files in the repo have placeholder values that `server-setup.sh` substi
 | SSH host key warning | `ssh-keygen -R <container-ip>` |
 | Preview webhook won't start: "GITHUB_TOKEN is set" | Remove `GITHUB_TOKEN` from `/var/secrets/preview.env`. See [Migrating from a PAT](#migrating-from-a-pat). |
 | `preview create/update`: "Could not get a GitHub App token for owner/repo" | Check `journalctl -u preview-webhook`. HTTP 403 means the repo isn't in `ALLOWED_REPOS` or isn't owned by the App installation's account. HTTP 502 usually means the App isn't installed on that repo or the App ID, installation ID or key is wrong. HTTP 000 means the webhook isn't running. |
-| Push rejected / commit not verified | Commits are created via the GitHub GraphQL API using each user's OAuth token. Verify the user's token has `repo` scope (re-login to the dashboard to refresh it). |
+| Push rejected / commit not verified | Commits are created via the GitHub GraphQL API with a GitHub App token. Check that the App is installed on the repo with **Contents** set to *Read and write*, and that `dashboard.env` sets the `GITHUB_APP_*` variables. |
 
 ### Network issues
 
