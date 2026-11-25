@@ -24,6 +24,14 @@ For more complex setups (e.g. Elixir/Phoenix + React SPA monorepos with
 multiple frontends, container-local databases, and extra subdomains), use
 the minimal skeleton below as a starting point and expand from there.
 
+### What a config can't do
+
+The host evaluates the config in Nix's restricted mode, as an unprivileged user with no network (see [Isolating preview builds](deployment-guide.md#isolating-preview-builds)). So it can't:
+
+- fetch at evaluation time: `builtins.fetchTarball`, `builtins.fetchGit` and `builtins.fetchurl` fail. Use derivation fetchers (`pkgs.fetchurl`, `pkgs.fetchFromGitHub`) instead.
+- read host files (`builtins.readFile /some/path`) or import files next to it: the config is a single file.
+- read environment variables: `builtins.getEnv` returns an empty string. Use [`hostSecrets`](#hostsecrets) instead.
+
 ### Minimal skeleton
 
 ```nix
