@@ -642,8 +642,12 @@ locked_nixpkgs_ref() {
 }
 
 require_build_firewall() {
-    local ipt
-    for ipt in iptables ip6tables; do
+    # A host with no IPv6 address anywhere (not even ::1) has no IPv6 traffic
+    # to filter, and nixbld-firewall.nix adds no IPv6 rules when
+    # networking.enableIPv6 is off.
+    local ipt ipts=(iptables)
+    if [[ -s /proc/net/if_inet6 ]]; then ipts+=(ip6tables); fi
+    for ipt in "${ipts[@]}"; do
         { "$ipt" -w -C OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld &&
             "$ipt" -w -C tekton-nixbld -o lo -j REJECT; } 2>/dev/null ||
             fatal "The tekton-nixbld firewall chain is missing (${ipt}), so a repo's preview-config.nix could reach local services from a Nix build. /etc/nixos/configuration.nix must import ./nixbld-firewall.nix (docs/deployment-guide.md, \"Upgrading an existing server\")."
@@ -655,11 +659,13 @@ require_build_firewall() {
         iptables -w -C tekton-nixbld $rule -j REJECT 2>/dev/null ||
             fatal "The tekton-nixbld firewall chain lacks its '${rule}' rule. Run nixos-rebuild switch."
     done
-    for rule in "-o lo" "-d fc00::/7" "-d fe80::/10" "-d 64:ff9b::/96" "-d 64:ff9b:1::/48"; do
-        # shellcheck disable=SC2086
-        ip6tables -w -C tekton-nixbld $rule -j REJECT 2>/dev/null ||
-            fatal "The tekton-nixbld firewall chain lacks its IPv6 '${rule}' rule. Run nixos-rebuild switch."
-    done
+    if [[ ${#ipts[@]} -eq 2 ]]; then
+        for rule in "-o lo" "-d fc00::/7" "-d fe80::/10" "-d 64:ff9b::/96" "-d 64:ff9b:1::/48"; do
+            # shellcheck disable=SC2086
+            ip6tables -w -C tekton-nixbld $rule -j REJECT 2>/dev/null ||
+                fatal "The tekton-nixbld firewall chain lacks its IPv6 '${rule}' rule. Run nixos-rebuild switch."
+        done
+    fi
     # The chain matches builds by the nixbld group, so builds must run as
     # nixbld users, sandboxed, with no unsandboxed fallback.
     [[ "$(nix config show build-users-group 2>/dev/null)" == nixbld ]] ||
@@ -671,21 +677,29 @@ require_build_firewall() {
 }
 
 # Runs `nix build` on an expression that imports <preview-config>.
+# Call it in the background (`&`): it sets traps, which must be that subshell's own.
 untrusted_nix_build() {
-    local config_store="$1" expr="$2" nix_bin home root rc=0
+    local config_store="$1" expr="$2" nix_bin unit root rc=0
     nix_bin=$(readlink -f "$(command -v nix)") || return 1
+    # Names the unit and its runtime directory. Unique, because both builds
+    # run at once.
+    unit="tekton-preview-eval-${BASHPID}-${RANDOM}"
     # Nix needs a HOME the user owns for its cache, or it falls back to the
     # read-only /. A per-run runtime directory is owned by the throwaway user,
     # and is deleted with the unit, so one config can't poison the next run's
-    # caches. Unique, because both builds run at once.
-    home="tekton-preview-eval-${BASHPID}-${RANDOM}"
+    # caches.
     # An empty root directory: inside it the evaluator sees only the paths
     # bound below, not even the host's /etc/nix, so the features it needs are
     # passed on the command line. (TemporaryFileSystem=/ is silently ignored,
     # so it can't do this.)
     root=$(mktemp -d /run/tekton-preview-root.XXXXXX) || return 1
     chmod 0755 "$root"
-    systemd-run --quiet --pipe --wait --collect \
+    # The build is a systemd unit of its own, so killing `preview` doesn't
+    # stop it: stop it here. Only empty mount points are left in the root
+    # directory, since the mounts lived in the unit's namespace.
+    trap 'systemctl stop "${unit}.service" 2>/dev/null; rm -rf --one-file-system "$root"' EXIT
+    trap 'exit 143' TERM INT HUP
+    systemd-run --quiet --pipe --wait --collect "--unit=${unit}" \
         --property=DynamicUser=yes \
         "--property=RootDirectory=${root}" \
         --property=MountAPIVFS=yes \
@@ -704,17 +718,17 @@ untrusted_nix_build() {
         --property=MemoryMax=6G \
         --property=TasksMax=512 \
         --property=RuntimeMaxSec=3600 \
-        "--property=RuntimeDirectory=${home}" \
-        "--setenv=HOME=/run/${home}" \
+        "--property=RuntimeDirectory=${unit}" \
+        "--setenv=HOME=/run/${unit}" \
         --setenv=NIX_REMOTE=daemon \
         "$nix_bin" build --impure --no-link --print-out-paths \
             --extra-experimental-features "nix-command flakes" \
             --option restrict-eval true \
             --option allowed-uris "" \
             -I "preview-config=${config_store}" \
-            --expr "$expr" < /dev/null || rc=$?
-    # Only empty mount points are left here: the mounts lived in the unit's namespace.
-    rm -rf --one-file-system "$root"
+            --expr "$expr" < /dev/null &
+    # In the background, so a signal runs the traps without waiting for it.
+    wait $! || rc=$?
     return "$rc"
 }
 
@@ -794,6 +808,9 @@ NIXEOF
         meta_pid=$!
     fi
 
+    # Pass a signal on to the builds, so they stop their units, and wait for that.
+    # shellcheck disable=SC2046 # one pid per word
+    trap 'kill $(jobs -p) 2>/dev/null; wait; exit 143' TERM INT HUP
     local toplevel_rc=0 meta_rc=0
     if [[ $toplevel_pid -ne -1 ]]; then
         wait "$toplevel_pid" || toplevel_rc=$?
@@ -801,6 +818,7 @@ NIXEOF
     if [[ $meta_pid -ne -1 ]]; then
         wait "$meta_pid" || meta_rc=$?
     fi
+    trap - TERM INT HUP
 
     if [[ $need_toplevel -eq 1 ]] && [[ $toplevel_rc -ne 0 || ! -s "$toplevel_tmp" ]]; then
         cat "$toplevel_err" >&2

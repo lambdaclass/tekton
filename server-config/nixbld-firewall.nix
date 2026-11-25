@@ -1,7 +1,12 @@
 # The tekton-nixbld firewall chain, imported by configuration.nix.
 # deploy.sh copies this file to /etc/nixos (it never copies configuration.nix),
 # so changes here reach existing servers on the next `./deploy.sh <server> nix`.
-{ ... }:
+{ config, lib, ... }:
+let
+  # Like the NixOS firewall itself, leave ip6tables alone when IPv6 is off:
+  # it can fail there, and that would fail the whole firewall start.
+  ipv6 = config.networking.enableIPv6;
+in
 {
   # The chain matches builds by the nixbld group: builds must run as nixbld
   # users, in the sandbox, never unsandboxed as a fallback. preview.sh checks.
@@ -31,17 +36,19 @@
     -A tekton-nixbld -d 169.254.0.0/16 -j REJECT
     COMMIT
     EOF
-    ip6tables-restore -w --noflush <<'EOF'
-    *filter
-    :tekton-nixbld - [0:0]
-    -A tekton-nixbld -o lo -j REJECT
-    -A tekton-nixbld -d fc00::/7 -j REJECT
-    -A tekton-nixbld -d fe80::/10 -j REJECT
-    -A tekton-nixbld -d 64:ff9b::/96 -j REJECT
-    -A tekton-nixbld -d 64:ff9b:1::/48 -j REJECT
-    COMMIT
-    EOF
-    for ipt in iptables ip6tables; do
+    ${lib.optionalString ipv6 ''
+      ip6tables-restore -w --noflush <<'EOF'
+      *filter
+      :tekton-nixbld - [0:0]
+      -A tekton-nixbld -o lo -j REJECT
+      -A tekton-nixbld -d fc00::/7 -j REJECT
+      -A tekton-nixbld -d fe80::/10 -j REJECT
+      -A tekton-nixbld -d 64:ff9b::/96 -j REJECT
+      -A tekton-nixbld -d 64:ff9b:1::/48 -j REJECT
+      COMMIT
+      EOF
+    ''}
+    for ipt in iptables ${lib.optionalString ipv6 "ip6tables"}; do
       $ipt -w -C OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld 2>/dev/null ||
         $ipt -w -I OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld
     done

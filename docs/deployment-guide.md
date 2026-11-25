@@ -465,7 +465,7 @@ For repo configs, this means a `preview-config.nix` can't read host files outsid
    ssh root@"$SERVER" 'cd /etc/nixos && nixos-rebuild switch'
    ```
 
-5. Check the chain. This should print `iptables OK` and `ip6tables OK`:
+5. Check the chain. This should print `iptables OK` and `ip6tables OK` (only `iptables OK` on a server with `networking.enableIPv6 = false`, where no IPv6 rules are added):
 
    ```bash
    ssh root@"$SERVER" 'for ipt in iptables ip6tables; do $ipt -w -C OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld && $ipt -w -C tekton-nixbld -o lo -j REJECT && echo "$ipt OK"; done'

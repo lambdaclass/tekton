@@ -222,7 +222,7 @@ deploy_nix() {
     success "NixOS configs deployed."
     # configuration.nix is never copied, so an upgraded server may not import
     # nixbld-firewall.nix yet; preview.sh refuses to build until the chain is up.
-    if ! $SSH "iptables -w -C OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld && ip6tables -w -C OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld" 2>/dev/null; then
+    if ! $SSH "iptables -w -C OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld && { [ ! -s /proc/net/if_inet6 ] || ip6tables -w -C OUTPUT -m owner --gid-owner nixbld -j tekton-nixbld; }" 2>/dev/null; then
         info "WARNING: the tekton-nixbld firewall chain is missing, so previews won't build. /etc/nixos/configuration.nix must import ./nixbld-firewall.nix: see \"Upgrading an existing server\" under \"Isolating preview builds\" in docs/deployment-guide.md."
     fi
     # Previews made by older versions kept a GitHub token inside the container.
