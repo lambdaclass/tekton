@@ -468,6 +468,8 @@ export interface IntakeSource {
   poll_interval_secs: number;
   max_concurrent_tasks: number;
   max_tasks_per_poll: number;
+  slack_channel_id: string | null;
+  has_slack_token: boolean;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -507,6 +509,7 @@ export const createIntakeSource = (data: {
   run_as_user: string; poll_interval_secs?: number; max_concurrent_tasks?: number;
   max_tasks_per_poll?: number;
   config?: Record<string, unknown>;
+  slack_channel_id?: string; slack_bot_token?: string;
 }) => apiFetch<IntakeSource>('/api/admin/intake/sources', { method: 'POST', body: JSON.stringify(data) });
 export const updateIntakeSource = (id: number, data: Record<string, unknown>) =>
   apiFetch<IntakeSource>(`/api/admin/intake/sources/${id}`, { method: 'PUT', body: JSON.stringify(data) });

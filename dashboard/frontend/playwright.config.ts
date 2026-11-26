@@ -51,6 +51,8 @@ export default defineConfig({
       SECRETS_ENCRYPTION_KEY: "test-encryption-key-32-chars-ok!",
       PREVIEW_DOMAIN: "preview.test.dev",
       TEST_MODE: "true",
+      // intake-slack.spec.ts serves a mock Slack API here
+      SLACK_API_URL: "http://localhost:3299",
     },
   },
 });

@@ -143,6 +143,17 @@ pub async fn start_intake_daemon(config: Arc<Config>, db: PgPool, task_channels:
         config.intake_max_global_concurrent
     );
 
+    // A loop of its own, so a slow Slack never holds up intake
+    let (slack_config, slack_db) = (config.clone(), db.clone());
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = crate::slack::notify_intake_updates(&slack_config, &slack_db).await {
+                tracing::error!("Intake Slack notification cycle failed: {e}");
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
+    });
+
     tokio::spawn(async move {
         loop {
             if let Err(e) = sync_intake_statuses(&db).await {
@@ -398,14 +409,10 @@ struct PendingIssueRow {
 // ── Polling: fetch external issues → backlog ──
 
 async fn poll_all_sources(config: &Arc<Config>, db: &PgPool) -> Result<(), AppError> {
-    let sources = sqlx::query_as::<_, IntakeSource>(
-        "SELECT id, name, provider, enabled, config, target_repo, target_base_branch, \
-         label_filter, prompt_template, run_as_user, poll_interval_secs, \
-         max_concurrent_tasks, max_tasks_per_poll, \
-         created_by, TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
-         TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at \
-         FROM intake_sources WHERE enabled = true",
-    )
+    let sources = sqlx::query_as::<_, IntakeSource>(&format!(
+        "SELECT {} FROM intake_sources WHERE enabled = true",
+        crate::intake_admin::SOURCE_COLUMNS
+    ))
     .fetch_all(db)
     .await?;
 

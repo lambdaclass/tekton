@@ -422,6 +422,20 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     .execute(pool)
     .await;
 
+    // Slack notifications: a source posts to one channel with its own bot token;
+    // each issue remembers its thread and what was last announced there
+    for col_sql in &[
+        "ALTER TABLE intake_sources ADD COLUMN IF NOT EXISTS slack_channel_id TEXT",
+        "ALTER TABLE intake_sources ADD COLUMN IF NOT EXISTS slack_bot_token_encrypted TEXT",
+        "ALTER TABLE intake_issues ADD COLUMN IF NOT EXISTS slack_channel TEXT",
+        "ALTER TABLE intake_issues ADD COLUMN IF NOT EXISTS slack_thread_ts TEXT",
+        "ALTER TABLE intake_issues ADD COLUMN IF NOT EXISTS slack_notified_task_id TEXT",
+        "ALTER TABLE intake_issues ADD COLUMN IF NOT EXISTS slack_notified_status TEXT",
+        "ALTER TABLE intake_issues ADD COLUMN IF NOT EXISTS slack_notified_pr_url TEXT",
+    ] {
+        sqlx::query(col_sql).execute(pool).await?;
+    }
+
     // Create intake_poll_log table
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS intake_poll_log (

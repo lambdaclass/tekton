@@ -8,9 +8,10 @@ use crate::models::{
     UpdateIntakeIssueStatusRequest, UpdateIntakeSourceRequest,
 };
 
-const SOURCE_COLUMNS: &str = "id, name, provider, enabled, config, target_repo, \
+pub(crate) const SOURCE_COLUMNS: &str = "id, name, provider, enabled, config, target_repo, \
      target_base_branch, label_filter, prompt_template, run_as_user, \
      poll_interval_secs, max_concurrent_tasks, max_tasks_per_poll, \
+     slack_channel_id, slack_bot_token_encrypted IS NOT NULL AS has_slack_token, \
      created_by, \
      TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, \
      TO_CHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at";
@@ -54,6 +55,22 @@ pub(crate) async fn run_as_user_token(
     .await
 }
 
+/// A trimmed, non-empty Slack value, or None
+fn slack_value(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|v| !v.is_empty())
+}
+
+/// Encrypts a Slack bot token after checking it is one. A user token
+/// (xoxp-) would also post, but as that person and with their access.
+fn encrypt_slack_token(state: &crate::AppState, token: &str) -> Result<String, AppError> {
+    if !token.starts_with("xoxb-") {
+        return Err(AppError::BadRequest(
+            "Use the app's bot token, which starts with xoxb-".into(),
+        ));
+    }
+    crate::secrets::encrypt_secret(&state.config.secrets_encryption_key, token)
+}
+
 /// POST /api/admin/intake/sources
 pub async fn create_source(
     admin: AdminUser,
@@ -70,12 +87,29 @@ pub async fn create_source(
     let max_concurrent_tasks = req.max_concurrent_tasks.unwrap_or(3);
     let max_tasks_per_poll = req.max_tasks_per_poll.unwrap_or(5);
 
+    let slack_channel = slack_value(req.slack_channel_id.as_deref());
+    let slack_token = match (slack_channel, slack_value(req.slack_bot_token.as_deref())) {
+        (Some(_), Some(token)) => Some(encrypt_slack_token(&state, token)?),
+        (Some(_), None) => {
+            return Err(AppError::BadRequest(
+                "A Slack bot token is required to post to a Slack channel".into(),
+            ))
+        }
+        (None, Some(_)) => {
+            return Err(AppError::BadRequest(
+                "Set the Slack channel the bot token posts to".into(),
+            ))
+        }
+        (None, None) => None,
+    };
+
     let source = sqlx::query_as::<_, IntakeSource>(&format!(
         "INSERT INTO intake_sources \
          (name, provider, config, target_repo, target_base_branch, \
           label_filter, prompt_template, run_as_user, poll_interval_secs, \
-          max_concurrent_tasks, max_tasks_per_poll, created_by) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+          max_concurrent_tasks, max_tasks_per_poll, created_by, \
+          slack_channel_id, slack_bot_token_encrypted) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
          RETURNING {SOURCE_COLUMNS}"
     ))
     .bind(&req.name)
@@ -90,6 +124,8 @@ pub async fn create_source(
     .bind(max_concurrent_tasks)
     .bind(max_tasks_per_poll)
     .bind(&admin.0.sub)
+    .bind(slack_channel)
+    .bind(&slack_token)
     .fetch_one(&state.db)
     .await?;
 
@@ -113,6 +149,49 @@ pub async fn update_source(
     Path(id): Path<i64>,
     Json(req): Json<UpdateIntakeSourceRequest>,
 ) -> Result<Json<IntakeSource>, AppError> {
+    let before: Option<(Option<String>, bool)> = sqlx::query_as(
+        "SELECT slack_channel_id, slack_bot_token_encrypted IS NOT NULL \
+         FROM intake_sources WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some((channel_before, had_token)) = before else {
+        return Err(AppError::NotFound("Intake source not found".into()));
+    };
+    let slack_was_on = slack_value(channel_before.as_deref()).is_some() && had_token;
+
+    // An empty channel turns Slack off; the token goes with it
+    let slack_off = req
+        .slack_channel_id
+        .as_deref()
+        .is_some_and(|c| c.trim().is_empty());
+    let slack_channel = slack_value(req.slack_channel_id.as_deref());
+    let slack_token = match slack_value(req.slack_bot_token.as_deref()) {
+        Some(token) if !slack_off => Some(encrypt_slack_token(&state, token)?),
+        _ => None,
+    };
+    let channel_after = if slack_off {
+        None
+    } else {
+        slack_channel.or(slack_value(channel_before.as_deref()))
+    };
+    let has_token_after = !slack_off && (slack_token.is_some() || had_token);
+    match (channel_after.is_some(), has_token_after) {
+        (true, false) => {
+            return Err(AppError::BadRequest(
+                "A Slack bot token is required to post to a Slack channel".into(),
+            ))
+        }
+        (false, true) if slack_token.is_some() => {
+            return Err(AppError::BadRequest(
+                "Set the Slack channel the bot token posts to".into(),
+            ))
+        }
+        _ => {}
+    }
+    let slack_turns_on = !slack_was_on && channel_after.is_some() && has_token_after;
+
     let mut sets = Vec::new();
     let mut param_idx = 2u32; // $1 is id
 
@@ -158,6 +237,17 @@ pub async fn update_source(
     }
     if req.max_tasks_per_poll.is_some() {
         sets.push(format!("max_tasks_per_poll = ${param_idx}"));
+        param_idx += 1;
+    }
+    if slack_off {
+        sets.push("slack_channel_id = NULL, slack_bot_token_encrypted = NULL".into());
+    }
+    if slack_channel.is_some() {
+        sets.push(format!("slack_channel_id = ${param_idx}"));
+        param_idx += 1;
+    }
+    if slack_token.is_some() {
+        sets.push(format!("slack_bot_token_encrypted = ${param_idx}"));
         param_idx += 1;
     }
     if sets.is_empty() {
@@ -206,6 +296,16 @@ pub async fn update_source(
     }
     if let Some(max_tasks_per_poll) = req.max_tasks_per_poll {
         query = query.bind(max_tasks_per_poll);
+    }
+    if let Some(channel) = slack_channel {
+        query = query.bind(channel);
+    }
+    if let Some(ref token) = slack_token {
+        query = query.bind(token);
+    }
+    // Before Slack goes on, so the daemon never sees it on without the baseline
+    if slack_turns_on {
+        crate::slack::skip_existing_work(&state.db, id).await?;
     }
     let source = query.fetch_optional(&state.db).await?;
 
@@ -437,14 +537,16 @@ pub async fn update_issue_status(
         )));
     }
 
-    // When retrying (failed → backlog/pending), clear task_id and error_message
+    // When retrying (failed → backlog/pending), clear task_id and error_message,
+    // and the status Slack last announced, so a second failure is announced too
     let clear_task =
         current_status == "failed" && (req.status == "backlog" || req.status == "pending");
 
     let issue = if clear_task {
         sqlx::query_as::<_, IntakeIssue>(&format!(
             "UPDATE intake_issues SET status = $1, task_id = NULL, error_message = NULL, \
-             updated_at = NOW() WHERE id = $2 RETURNING {ISSUE_COLUMNS}"
+             slack_notified_status = NULL, updated_at = NOW() \
+             WHERE id = $2 RETURNING {ISSUE_COLUMNS}"
         ))
         .bind(&req.status)
         .bind(id)
