@@ -97,7 +97,7 @@ An intake source with a Slack channel ID and bot token (`chat:write`, set in Adm
 | → `review` | Ready for review |
 | Linked task opens a PR | PR link |
 | → `done` | Done |
-| → `failed` | Failed, with a link to the task (errors stay in the dashboard) |
+| → `failed` | Failed, with a link to the task if it has one (errors stay in the dashboard) |
 | Retried issue gets a new task | Picked up again |
 
-Each issue records what its thread last announced, and every daemon cycle posts the difference, so a failed Slack call is retried on the next cycle. Turning Slack on for a source doesn't announce work it already has in progress. `SLACK_API_URL` overrides the Slack API base URL (tests use a mock).
+An issue that fails before it gets a task is announced too, as Failed. Each issue records what its thread last announced, and a loop separate from intake posts the difference every 30 seconds, so a slow Slack doesn't hold up intake and a failed Slack call is retried on the next cycle. A thread that is gone for good (deleted, channel archived, bot removed) is given up on. Turning Slack on for a source doesn't announce work it already has in progress. `SLACK_API_URL` overrides the Slack API base URL (tests use a mock).

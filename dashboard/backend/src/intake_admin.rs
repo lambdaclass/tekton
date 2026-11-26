@@ -537,14 +537,16 @@ pub async fn update_issue_status(
         )));
     }
 
-    // When retrying (failed → backlog/pending), clear task_id and error_message
+    // When retrying (failed → backlog/pending), clear task_id and error_message,
+    // and the status Slack last announced, so a second failure is announced too
     let clear_task =
         current_status == "failed" && (req.status == "backlog" || req.status == "pending");
 
     let issue = if clear_task {
         sqlx::query_as::<_, IntakeIssue>(&format!(
             "UPDATE intake_issues SET status = $1, task_id = NULL, error_message = NULL, \
-             updated_at = NOW() WHERE id = $2 RETURNING {ISSUE_COLUMNS}"
+             slack_notified_status = NULL, updated_at = NOW() \
+             WHERE id = $2 RETURNING {ISSUE_COLUMNS}"
         ))
         .bind(&req.status)
         .bind(id)

@@ -358,9 +358,9 @@ pub struct CreateIntakeSourceRequest {
     pub poll_interval_secs: Option<i32>,
     pub max_concurrent_tasks: Option<i32>,
     pub max_tasks_per_poll: Option<i32>,
-    /// Empty or missing turns Slack off for the source and drops its token
+    /// Empty or missing leaves Slack off for the source
     pub slack_channel_id: Option<String>,
-    /// Write-only; empty or missing keeps the stored token
+    /// Write-only; required with a channel, and rejected without one
     pub slack_bot_token: Option<String>,
 }
 
@@ -377,7 +377,8 @@ pub struct UpdateIntakeSourceRequest {
     pub poll_interval_secs: Option<i32>,
     pub max_concurrent_tasks: Option<i32>,
     pub max_tasks_per_poll: Option<i32>,
-    /// Empty or missing turns Slack off for the source and drops its token
+    /// Missing keeps the current channel; empty turns Slack off for the
+    /// source and drops its token
     pub slack_channel_id: Option<String>,
     /// Write-only; empty or missing keeps the stored token
     pub slack_bot_token: Option<String>,

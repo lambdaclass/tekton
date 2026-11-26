@@ -5,9 +5,10 @@
 //! that message's thread, and the parent is edited to show the current status.
 //!
 //! Nothing here reacts to events. Each issue stores what was last announced in
-//! its thread, and every daemon cycle posts the difference between that and
-//! the issue's current state. A Slack call that fails is retried on the next
-//! cycle, and Slack being down never holds up intake itself.
+//! its thread, and every cycle posts the difference between that and the
+//! issue's current state. A Slack call that fails is retried on the next
+//! cycle, unless the thread is gone for good. The notifier runs in its own
+//! loop, so Slack being slow or down never holds up intake itself.
 
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -29,6 +30,46 @@ static HTTP: LazyLock<reqwest::Client> = LazyLock::new(|| {
 
 // ── Slack Web API ──
 
+/// API errors no retry fixes: the thread or its channel is gone, or the bot
+/// was removed from it
+const PERMANENT_ERRORS: [&str; 4] = [
+    "thread_not_found",
+    "channel_not_found",
+    "is_archived",
+    "not_in_channel",
+];
+
+#[derive(Debug)]
+enum SlackError {
+    /// Slack answered with `ok: false` and this error code
+    Api {
+        method: String,
+        error: String,
+    },
+    Other(String),
+}
+
+impl SlackError {
+    fn is_permanent(&self) -> bool {
+        matches!(self, Self::Api { error, .. } if PERMANENT_ERRORS.contains(&error.as_str()))
+    }
+}
+
+impl std::fmt::Display for SlackError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Api { method, error } => write!(f, "Slack {method}: {error}"),
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+impl From<SlackError> for AppError {
+    fn from(e: SlackError) -> Self {
+        AppError::Internal(e.to_string())
+    }
+}
+
 struct SlackClient<'a> {
     api_url: &'a str,
     token: String,
@@ -39,23 +80,25 @@ impl SlackClient<'_> {
         &self,
         method: &str,
         body: serde_json::Value,
-    ) -> Result<serde_json::Value, AppError> {
+    ) -> Result<serde_json::Value, SlackError> {
         let resp = HTTP
             .post(format!("{}/{method}", self.api_url.trim_end_matches('/')))
             .bearer_auth(&self.token)
             .json(&body)
             .send()
             .await
-            .map_err(|e| AppError::Internal(format!("Slack {method}: {e}")))?;
+            .map_err(|e| SlackError::Other(format!("Slack {method}: {e}")))?;
         let status = resp.status();
         let json: serde_json::Value = resp
             .json()
             .await
-            .map_err(|e| AppError::Internal(format!("Slack {method}: HTTP {status}: {e}")))?;
+            .map_err(|e| SlackError::Other(format!("Slack {method}: HTTP {status}: {e}")))?;
         // Slack answers 200 with ok=false for API errors (bad token, unknown channel...)
         if json["ok"].as_bool() != Some(true) {
-            let error = json["error"].as_str().unwrap_or("unknown error");
-            return Err(AppError::Internal(format!("Slack {method}: {error}")));
+            return Err(SlackError::Api {
+                method: method.into(),
+                error: json["error"].as_str().unwrap_or("unknown error").into(),
+            });
         }
         Ok(json)
     }
@@ -66,7 +109,7 @@ impl SlackClient<'_> {
         channel: &str,
         text: &str,
         thread_ts: Option<&str>,
-    ) -> Result<String, AppError> {
+    ) -> Result<String, SlackError> {
         let mut body = serde_json::json!({
             "channel": channel,
             "text": text,
@@ -80,10 +123,10 @@ impl SlackClient<'_> {
         json["ts"]
             .as_str()
             .map(String::from)
-            .ok_or_else(|| AppError::Internal("Slack chat.postMessage: no ts in response".into()))
+            .ok_or_else(|| SlackError::Other("Slack chat.postMessage: no ts in response".into()))
     }
 
-    async fn update_message(&self, channel: &str, ts: &str, text: &str) -> Result<(), AppError> {
+    async fn update_message(&self, channel: &str, ts: &str, text: &str) -> Result<(), SlackError> {
         self.call(
             "chat.update",
             serde_json::json!({ "channel": channel, "ts": ts, "text": text }),
@@ -294,12 +337,13 @@ fn reply_text(reply: &Reply, row: &IssueRow, dashboard_url: &str) -> String {
 
 // ── Notifier ──
 
-/// Posts every pending Slack update for intake issues. Called each intake
-/// daemon cycle; a failure on one issue is logged and retried next cycle.
+/// Posts every pending Slack update for intake issues. Called every cycle of
+/// the notifier loop; a failure on one issue is logged and retried next cycle.
 pub async fn notify_intake_updates(config: &Config, db: &PgPool) -> Result<(), AppError> {
     // An issue without a thread gets one when it has a task the thread would
-    // be about. `slack_notified_task_id` starts out as the task an issue
-    // already had when Slack was set up, so existing work isn't announced.
+    // be about, or when it failed before getting one. `slack_notified_*` start
+    // out as what an issue already had when Slack was set up, so existing work
+    // isn't announced.
     let rows = sqlx::query_as::<_, IssueRow>(&format!(
         "SELECT i.id AS issue_id, i.external_title, i.external_url, i.status, \
          i.task_id, t.pr_url, t.pr_number, \
@@ -314,7 +358,9 @@ pub async fn notify_intake_updates(config: &Config, db: &PgPool) -> Result<(), A
          WHERE s.slack_channel_id <> '' AND s.slack_bot_token_encrypted IS NOT NULL \
          AND i.status IN {ANNOUNCED_STATUSES} \
          AND CASE WHEN i.slack_thread_ts IS NULL \
-             THEN i.task_id IS NOT NULL AND i.task_id IS DISTINCT FROM i.slack_notified_task_id \
+             THEN (i.task_id IS NOT NULL AND i.task_id IS DISTINCT FROM i.slack_notified_task_id) \
+               OR (i.task_id IS NULL AND i.status = 'failed' \
+                   AND i.slack_notified_status IS DISTINCT FROM 'failed') \
              ELSE i.status IS DISTINCT FROM i.slack_notified_status \
                OR i.task_id IS DISTINCT FROM i.slack_notified_task_id \
                OR (t.pr_url IS NOT NULL AND t.pr_url IS DISTINCT FROM i.slack_notified_pr_url) \
@@ -355,15 +401,21 @@ async fn notify_issue(
         let ts = client
             .post_message(&row.source_channel, &text, None)
             .await?;
+        // One write for the thread and what it announced: a thread saved
+        // without its state would read as a retry on the next cycle
         sqlx::query(
-            "UPDATE intake_issues SET slack_channel = $2, slack_thread_ts = $3 WHERE id = $1",
+            "UPDATE intake_issues SET slack_channel = $2, slack_thread_ts = $3, \
+             slack_notified_task_id = $4, slack_notified_status = $5, \
+             slack_notified_pr_url = $6 WHERE id = $1",
         )
         .bind(row.issue_id)
         .bind(&row.source_channel)
         .bind(&ts)
+        .bind(&current.task_id)
+        .bind(&current.status)
+        .bind(&current.pr_url)
         .execute(db)
         .await?;
-        save_announced(db, row.issue_id, &current).await?;
         tracing::info!("Slack: announced intake issue {}", row.issue_id);
         return Ok(());
     };
@@ -381,18 +433,29 @@ async fn notify_issue(
 
     let mut announced = row.announced();
     for reply in replies(&current, &announced) {
-        client
+        if let Err(e) = client
             .post_message(
                 channel,
                 &reply_text(&reply, row, dashboard_url),
                 Some(thread_ts),
             )
-            .await?;
+            .await
+        {
+            if !e.is_permanent() {
+                return Err(e.into());
+            }
+            // Counts as announced, so it isn't retried every cycle forever
+            tracing::warn!(
+                "Slack: giving up on the thread for intake issue {}: {e}",
+                row.issue_id
+            );
+            return save_announced(db, row.issue_id, &current).await;
+        }
         // Saved per reply, so a later failure doesn't repeat this one
         apply(&reply, &current, &mut announced);
         save_announced(db, row.issue_id, &announced).await?;
     }
-    // Changes with nothing to say (a retry whose task failed to start)
+    // Changes with nothing to say (a retry that is still waiting for its task)
     if announced != current {
         save_announced(db, row.issue_id, &current).await?;
     }
@@ -413,12 +476,16 @@ async fn save_announced(db: &PgPool, issue_id: i64, announced: &Announced) -> Re
     Ok(())
 }
 
-/// Marks a source's current tasks as already announced, so turning Slack on
-/// for a source only announces work picked up from then on.
+/// Marks a source's current tasks, and its issues that failed without one, as
+/// already announced, so turning Slack on for a source only announces work
+/// picked up from then on.
 pub async fn skip_existing_work(db: &PgPool, source_id: i64) -> Result<(), AppError> {
     sqlx::query(
-        "UPDATE intake_issues SET slack_notified_task_id = task_id \
-         WHERE source_id = $1 AND slack_thread_ts IS NULL AND task_id IS NOT NULL",
+        "UPDATE intake_issues SET slack_notified_task_id = task_id, \
+         slack_notified_status = CASE WHEN task_id IS NULL THEN status \
+             ELSE slack_notified_status END \
+         WHERE source_id = $1 AND slack_thread_ts IS NULL \
+         AND (task_id IS NOT NULL OR status = 'failed')",
     )
     .bind(source_id)
     .execute(db)
@@ -507,10 +574,30 @@ mod tests {
     }
 
     #[test]
-    fn retry_that_never_got_a_task_is_silent() {
-        let before = state(Some("t1"), "failed", None);
+    fn retry_that_fails_without_a_task_says_failed() {
+        // A retry clears the announced status
+        let before = Announced {
+            task_id: Some("t1".into()),
+            ..Default::default()
+        };
         let after = state(None, "failed", None);
-        assert!(replies(&after, &before).is_empty());
+        assert_eq!(replies(&after, &before), vec![Reply::Status]);
+        let mut r = row("failed");
+        r.task_id = None;
+        assert_eq!(reply_text(&Reply::Status, &r, "https://d"), ":x: Failed");
+    }
+
+    #[test]
+    fn only_a_lost_thread_is_given_up_on() {
+        let api = |error: &str| SlackError::Api {
+            method: "chat.postMessage".into(),
+            error: error.into(),
+        };
+        assert!(api("thread_not_found").is_permanent());
+        assert!(api("not_in_channel").is_permanent());
+        assert!(!api("invalid_auth").is_permanent());
+        assert!(!api("ratelimited").is_permanent());
+        assert!(!SlackError::Other("timed out".into()).is_permanent());
     }
 
     #[test]

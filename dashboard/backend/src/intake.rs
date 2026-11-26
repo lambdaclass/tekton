@@ -143,6 +143,17 @@ pub async fn start_intake_daemon(config: Arc<Config>, db: PgPool, task_channels:
         config.intake_max_global_concurrent
     );
 
+    // A loop of its own, so a slow Slack never holds up intake
+    let (slack_config, slack_db) = (config.clone(), db.clone());
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = crate::slack::notify_intake_updates(&slack_config, &slack_db).await {
+                tracing::error!("Intake Slack notification cycle failed: {e}");
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
+    });
+
     tokio::spawn(async move {
         loop {
             if let Err(e) = sync_intake_statuses(&db).await {
@@ -150,9 +161,6 @@ pub async fn start_intake_daemon(config: Arc<Config>, db: PgPool, task_channels:
             }
             if let Err(e) = process_pending_issues(&config, &db, &task_channels).await {
                 tracing::error!("Intake process-pending cycle failed: {e}");
-            }
-            if let Err(e) = crate::slack::notify_intake_updates(&config, &db).await {
-                tracing::error!("Intake Slack notification cycle failed: {e}");
             }
             if let Err(e) = poll_all_sources(&config, &db).await {
                 tracing::error!("Intake poll cycle failed: {e}");
