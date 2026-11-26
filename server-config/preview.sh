@@ -697,7 +697,10 @@ untrusted_nix_build() {
     # The build is a systemd unit of its own, so killing `preview` doesn't
     # stop it: stop it here. Only empty mount points are left in the root
     # directory, since the mounts lived in the unit's namespace.
-    trap 'systemctl stop "${unit}.service" 2>/dev/null; rm -rf --one-file-system "$root"' EXIT
+    # After a normal finish --collect has already removed the unit, so the
+    # stop fails (5, not loaded); under errexit that would end the trap early
+    # and become the exit status. Cleanup must never change the result.
+    trap '{ systemctl stop "${unit}.service" 2>/dev/null; rm -rf --one-file-system "$root"; } || true' EXIT
     trap 'exit 143' TERM INT HUP
     systemd-run --quiet --pipe --wait --collect "--unit=${unit}" \
         --property=DynamicUser=yes \
