@@ -343,6 +343,8 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
     for col_sql in &[
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS intake_issue_id BIGINT",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS source_type TEXT DEFAULT 'manual'",
+        // For intake tasks: who moved the issue to pending on the board, if anyone
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS requested_by TEXT",
     ] {
         let _ = sqlx::query(col_sql).execute(pool).await;
     }
@@ -432,6 +434,8 @@ async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
         "ALTER TABLE intake_issues ADD COLUMN IF NOT EXISTS slack_notified_task_id TEXT",
         "ALTER TABLE intake_issues ADD COLUMN IF NOT EXISTS slack_notified_status TEXT",
         "ALTER TABLE intake_issues ADD COLUMN IF NOT EXISTS slack_notified_pr_url TEXT",
+        // The admin who last moved the issue to pending on the board
+        "ALTER TABLE intake_issues ADD COLUMN IF NOT EXISTS promoted_by TEXT",
     ] {
         sqlx::query(col_sql).execute(pool).await?;
     }

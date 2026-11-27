@@ -115,57 +115,13 @@ async fn authorize_repo(state: &AppState, user: &MemberUser, repo: &str) -> Resu
     )
     .await?;
     let token = auth::github_token_for(state, &user.0.sub).await?;
-    require_github_read(&token, repo).await
-}
-
-/// Whether `repo` is a plain `owner/name`, safe to put in an API path.
-fn valid_repo_name(repo: &str) -> bool {
-    let part_ok = |s: &str| {
-        !s.is_empty()
-            && !s.starts_with('.')
-            && s.chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-    };
-    matches!(repo.split_once('/'), Some((owner, name)) if part_ok(owner) && part_ok(name))
-}
-
-/// Fails unless GitHub says `token`'s user can read `repo`.
-async fn require_github_read(token: &str, repo: &str) -> Result<(), AppError> {
-    if !valid_repo_name(repo) {
-        return Err(AppError::BadRequest(format!("Invalid repository '{repo}'")));
-    }
-    let resp = reqwest::Client::new()
-        .get(format!("https://api.github.com/repos/{repo}"))
-        .timeout(std::time::Duration::from_secs(8))
-        .header("User-Agent", "dashboard")
-        .header("Accept", "application/vnd.github+json")
-        .bearer_auth(token)
-        .send()
-        .await?;
-    let status = resp.status();
-    if status == reqwest::StatusCode::UNAUTHORIZED {
-        return Err(AppError::ReauthRequired(
-            "GitHub rejected your saved token (expired or revoked); sign in again".into(),
-        ));
-    }
-    if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::FORBIDDEN {
-        return Err(AppError::Forbidden(format!(
-            "Your GitHub account can't read '{repo}'"
-        )));
-    }
-    if !status.is_success() {
-        return Err(AppError::Internal(format!(
-            "Checking your GitHub access to '{repo}' failed: GitHub returned {status}"
-        )));
-    }
-    let body: serde_json::Value = resp.json().await?;
-    if body["permissions"]["pull"].as_bool() == Some(true) {
-        Ok(())
-    } else {
-        Err(AppError::Forbidden(format!(
-            "Your GitHub account can't read '{repo}'"
-        )))
-    }
+    auth::require_github_access(
+        &state.config.github_api_url,
+        &token,
+        repo,
+        auth::RepoAccess::Read,
+    )
+    .await
 }
 
 /// Inspect the raw shell error from `create_preview` and return a user-friendly
@@ -246,21 +202,4 @@ fn classify_create_error(err: AppError, repo: &str, slug: Option<&str>) -> AppEr
 
     // Unrecognised — keep original Internal error
     err
-}
-
-#[cfg(test)]
-mod repo_name_tests {
-    use super::valid_repo_name;
-
-    #[test]
-    fn repo_names() {
-        for ok in ["o/r", "my-org/my.repo", "a_b/c-d"] {
-            assert!(valid_repo_name(ok), "{ok}");
-        }
-        for bad in [
-            "", "o", "o/", "/r", "o/r/x", "../r", "o/..", "o/.git", "o/r?x", "o/r#x", "o r/x",
-        ] {
-            assert!(!valid_repo_name(bad), "{bad:?}");
-        }
-    }
 }

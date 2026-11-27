@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::auth::{self, AuthUser, MemberUser};
 use crate::config::Config;
 use crate::error::AppError;
+use crate::github_app::Access;
 use crate::mirror;
 use crate::models::{
     CreateTaskRequest, ListMessagesQuery, ListTasksQuery, PaginatedTasks, SendMessageRequest, Task,
@@ -52,30 +53,55 @@ struct PipelineCtx<'a> {
     git_id: &'a GitIdentity,
 }
 
+/// Who a pipeline run works for: the agent's git author, and the co-author of the commits
+/// Tekton pushes. GitHub access goes through the GitHub App, never this user's token.
 #[derive(Clone)]
 struct GitIdentity {
-    token: String,
+    login: String,
     name: String,
     email: String,
 }
 
-async fn get_git_identity(
-    db: &PgPool,
-    secrets_key: &str,
-    github_login: &str,
-) -> Result<GitIdentity, AppError> {
-    let (encrypted, name, email) = sqlx::query_as::<_, (Option<String>, String, Option<String>)>(
-        "SELECT github_token_encrypted, name, email FROM users WHERE github_login = $1",
+async fn get_git_identity(db: &PgPool, github_login: &str) -> Result<GitIdentity, AppError> {
+    let (name, email) = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT name, email FROM users WHERE github_login = $1",
     )
     .bind(github_login)
     .fetch_optional(db)
     .await?
     .ok_or_else(|| AppError::Auth(format!("User '{github_login}' not found in database")))?;
 
-    let token = auth::usable_github_token(secrets_key, github_login, encrypted)?;
+    let name = if name.trim().is_empty() {
+        github_login.to_string()
+    } else {
+        name
+    };
     let email = email.unwrap_or_else(|| format!("{github_login}@users.noreply.github.com"));
 
-    Ok(GitIdentity { token, name, email })
+    Ok(GitIdentity {
+        login: github_login.to_string(),
+        name,
+        email,
+    })
+}
+
+/// A GitHub App token for the pipeline's repo.
+async fn app_token(ctx: &PipelineCtx<'_>, access: Access) -> Result<String, AppError> {
+    ctx.config.github_app()?.token(ctx.repo, access).await
+}
+
+/// Fails unless `login`'s own GitHub account can push to `repo`. The App pushes for every
+/// task, so this is what keeps a member from changing a repo GitHub wouldn't let them. Run
+/// on create and reopen, and again before each push of a dashboard task, so losing write
+/// access on GitHub also stops follow-ups.
+async fn require_push_access(
+    config: &Config,
+    db: &PgPool,
+    login: &str,
+    repo: &str,
+) -> Result<(), AppError> {
+    let token = auth::load_github_token(db, &config.secrets_encryption_key, login).await?;
+    auth::require_github_access(&config.github_api_url, &token, repo, auth::RepoAccess::Push).await
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -347,6 +373,8 @@ pub(crate) struct SpawnTaskParams {
     pub repo: String,
     pub base_branch: String,
     pub created_by: String,
+    /// The person the work is for, when not `created_by` (who moved an intake issue to pending)
+    pub requested_by: Option<String>,
     pub source_type: Option<String>,
     pub intake_issue_id: Option<i64>,
 }
@@ -364,18 +392,19 @@ pub(crate) async fn spawn_task_internal(
         repo,
         base_branch,
         created_by,
+        requested_by,
         source_type,
         intake_issue_id,
     } = params;
-    // Before the insert, so a missing token doesn't leave the task stuck in pending.
-    let git_id = get_git_identity(&db, &config.secrets_encryption_key, &created_by).await?;
+    // Before the insert, so a missing user doesn't leave the task stuck in pending.
+    let git_id = get_git_identity(&db, &created_by).await?;
 
     let id = Uuid::new_v4().to_string();
     let short_id = id[..6].to_string();
 
     sqlx::query(
-        "INSERT INTO tasks (id, prompt, repo, base_branch, status, created_by, source_type, intake_issue_id) \
-         VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7)",
+        "INSERT INTO tasks (id, prompt, repo, base_branch, status, created_by, source_type, intake_issue_id, requested_by) \
+         VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, $8)",
     )
     .bind(&id)
     .bind(&prompt)
@@ -384,6 +413,7 @@ pub(crate) async fn spawn_task_internal(
     .bind(&created_by)
     .bind(&source_type)
     .bind(intake_issue_id)
+    .bind(&requested_by)
     .execute(&db)
     .await?;
 
@@ -490,6 +520,7 @@ pub async fn create_task(
         &state.config.github_org,
     )
     .await?;
+    require_push_access(&state.config, &state.db, &user.0.sub, &req.repo).await?;
 
     // Check budget limits before creating the task
     crate::cost::check_budget(&state.db, &user.0.sub, &state.config.github_org).await?;
@@ -514,9 +545,8 @@ pub async fn create_task(
     let base_branch = req.base_branch.as_deref().unwrap_or("main");
     let created_by = user.0.sub.clone();
 
-    // Before the insert, so a missing token doesn't leave the task stuck in pending.
-    let git_id =
-        get_git_identity(&state.db, &state.config.secrets_encryption_key, &created_by).await?;
+    // Before the insert, so a missing user doesn't leave the task stuck in pending.
+    let git_id = get_git_identity(&state.db, &created_by).await?;
 
     let image_url_json = req
         .image_urls
@@ -654,7 +684,7 @@ async fn run_task_pipeline(
         short_id,
         repo,
         base_branch,
-        git_id,
+        ..
     } = ctx;
     // Generate a short name for the task using Claude
     let task_name =
@@ -755,7 +785,13 @@ async fn run_task_pipeline(
 
     // Step 2a: Push the empty branch to GitHub, then start the preview on it.
     // The branch has the same commit as base_branch — no code changes yet.
-    create_github_branch(&git_id.token, repo, &branch_name, &base_sha).await?;
+    create_github_branch(
+        &app_token(ctx, Access::PUSH).await?,
+        repo,
+        &branch_name,
+        &base_sha,
+    )
+    .await?;
     log_and_send(
         db,
         task_id,
@@ -1852,6 +1888,7 @@ async fn github_create_commit(
     expected_head_oid: &str,
     file_changes: &FileChanges,
     message: &str,
+    trailers: &str,
 ) -> Result<String, AppError> {
     let client = reqwest::Client::new();
 
@@ -1888,7 +1925,7 @@ async fn github_create_commit(
                 "repositoryNameWithOwner": repo,
                 "branchName": branch_name,
             },
-            "message": { "headline": message },
+            "message": { "headline": message, "body": trailers },
             "fileChanges": {
                 "additions": additions,
                 "deletions": deletions,
@@ -1935,6 +1972,74 @@ async fn github_create_commit(
         .to_string();
 
     Ok(oid)
+}
+
+/// Trailers that tie a commit to its task, to the person it was made for when there is one,
+/// and to the intake issue it came from. The GitHub App authors the commit, so this is what
+/// keeps the requester on it.
+fn commit_trailers(
+    co_author: Option<&GitIdentity>,
+    source_url: Option<&str>,
+    task_id: &str,
+) -> String {
+    let clean = |s: &str| {
+        s.chars()
+            .filter(|c| !c.is_control() && !matches!(c, '<' | '>'))
+            .collect::<String>()
+            .trim()
+            .to_string()
+    };
+    let mut lines = Vec::new();
+    if let Some(id) = co_author {
+        lines.push(format!(
+            "Co-authored-by: {} <{}>",
+            clean(&id.name),
+            clean(&id.email)
+        ));
+    }
+    if let Some(url) = source_url.filter(|u| safe_url(u)) {
+        lines.push(format!("Tekton-Source: {url}"));
+    }
+    lines.push(format!("Tekton-Task: {task_id}"));
+    lines.join("\n")
+}
+
+/// An https URL that can sit in a commit trailer or bare in Markdown without changing either.
+fn safe_url(url: &str) -> bool {
+    url.starts_with("https://")
+        && !url
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || "<>()[]`".contains(c))
+}
+
+/// Where an intake task came from: the issue, and the person who moved it to pending on the
+/// intake board, if anyone did. Its `created_by` is the source's `run_as_user`, who didn't
+/// ask for the work, so it isn't credited.
+struct IntakeOrigin {
+    requested_by: Option<String>,
+    source_url: Option<String>,
+}
+
+/// `None` for tasks that didn't come from intake.
+async fn intake_origin(db: &PgPool, task_id: &str) -> Result<Option<IntakeOrigin>, AppError> {
+    let row = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>(
+        "SELECT t.source_type, t.requested_by, i.external_url FROM tasks t \
+         LEFT JOIN intake_issues i ON i.id = t.intake_issue_id WHERE t.id = $1",
+    )
+    .bind(task_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(match row {
+        Some((source_type, requested_by, source_url))
+            if is_intake_source_type(source_type.as_deref()) =>
+        {
+            Some(IntakeOrigin {
+                requested_by,
+                source_url,
+            })
+        }
+        _ => None,
+    })
 }
 
 /// Whether the task came from an intake source rather than a person. Nobody is around to
@@ -1988,7 +2093,8 @@ async fn seed_agent_repo(
         shq(&git_id.email)
     );
     shell::agent_exec(agent_name, &init_cmd, tx.clone()).await?;
-    mirror::sync_to_agent(config, repo, &git_id.token, agent_name, branches).await
+    let token = app_token(ctx, Access::READ).await?;
+    mirror::sync_to_agent(config, repo, &token, agent_name, branches).await
 }
 
 /// Sync the agent's local repo to match the remote branch after an API push.
@@ -1997,14 +2103,8 @@ async fn sync_agent_to_remote(
     agent_name: &str,
     branch_name: &str,
 ) -> Result<(), AppError> {
-    mirror::sync_to_agent(
-        ctx.config,
-        ctx.repo,
-        &ctx.git_id.token,
-        agent_name,
-        &[branch_name],
-    )
-    .await?;
+    let token = app_token(ctx, Access::READ).await?;
+    mirror::sync_to_agent(ctx.config, ctx.repo, &token, agent_name, &[branch_name]).await?;
     let cmd = format!(
         "cd /home/agent/repo && git reset -q --hard {}",
         shq(&format!("origin/{branch_name}"))
@@ -2020,15 +2120,10 @@ async fn fetch_remote_branch(
     agent_name: &str,
     branch_name: &str,
 ) -> Result<Option<String>, AppError> {
-    mirror::sync_branch_if_exists(
-        ctx.config,
-        ctx.repo,
-        &ctx.git_id.token,
-        agent_name,
-        branch_name,
-    )
-    .await
-    .inspect_err(|e| tracing::error!("Could not fetch {branch_name} for {agent_name}: {e}"))
+    let token = app_token(ctx, Access::READ).await?;
+    mirror::sync_branch_if_exists(ctx.config, ctx.repo, &token, agent_name, branch_name)
+        .await
+        .inspect_err(|e| tracing::error!("Could not fetch {branch_name} for {agent_name}: {e}"))
 }
 
 /// Rebase the agent's local branch onto `remote_head` unless it already contains it, and
@@ -2114,6 +2209,23 @@ async fn push_and_preview(
         return Ok(PushOutcome::NoChanges);
     }
 
+    // Intake tasks run for a source an admin set up, not a person, so they don't depend on
+    // anyone's GitHub access (#181 item 0.6 guards their run_as_user).
+    let origin = intake_origin(db, task_id).await?;
+    if origin.is_none() {
+        require_push_access(ctx.config, db, &git_id.login, repo).await?;
+    }
+    let trailers = match &origin {
+        None => commit_trailers(Some(git_id), None, task_id),
+        Some(o) => {
+            let co_author = match &o.requested_by {
+                Some(login) => get_git_identity(db, login).await.ok(),
+                None => None,
+            };
+            commit_trailers(co_author.as_ref(), o.source_url.as_deref(), task_id)
+        }
+    };
+
     save_system_message(db, task_id, "Deploying changes to preview...").await?;
 
     log_and_send(
@@ -2139,7 +2251,13 @@ async fn push_and_preview(
         .trim()
         .to_string();
 
-        create_github_branch(&git_id.token, repo, branch_name, &base_sha).await?;
+        create_github_branch(
+            &app_token(ctx, Access::PUSH).await?,
+            repo,
+            branch_name,
+            &base_sha,
+        )
+        .await?;
         log_and_send(
             db,
             task_id,
@@ -2170,12 +2288,13 @@ async fn push_and_preview(
 
     // Create verified commit via GitHub GraphQL API
     let oid = github_create_commit(
-        &git_id.token,
+        &app_token(ctx, Access::PUSH).await?,
         repo,
         branch_name,
         &expected_oid,
         &file_changes,
         &commit_msg,
+        &trailers,
     )
     .await?;
     log_and_send(
@@ -2341,8 +2460,7 @@ pub async fn list_branches(
         &state.config.github_org,
     )
     .await?;
-    let git_id =
-        get_git_identity(&state.db, &state.config.secrets_encryption_key, &user.0.sub).await?;
+    let user_token = auth::github_token_for(&state, &user.0.sub).await?;
 
     let client = reqwest::Client::new();
     let mut branches = Vec::new();
@@ -2353,7 +2471,7 @@ pub async fn list_branches(
             .get(format!(
                 "https://api.github.com/repos/{owner}/{repo}/branches?per_page=100&page={page}"
             ))
-            .header("Authorization", format!("token {}", git_id.token))
+            .header("Authorization", format!("token {user_token}"))
             .header("User-Agent", "tekton-dashboard")
             .header("Accept", "application/vnd.github+json")
             .send()
@@ -2701,9 +2819,9 @@ pub async fn reopen_task(
 
     let short_id = &id[..6];
 
+    require_push_access(&state.config, &state.db, &user.0.sub, &task.repo).await?;
     // Get the reopening user's git identity
-    let git_id =
-        get_git_identity(&state.db, &state.config.secrets_encryption_key, &user.0.sub).await?;
+    let git_id = get_git_identity(&state.db, &user.0.sub).await?;
 
     // Reset status and error
     update_task_status(&state.db, &id, "creating_agent", None).await?;
@@ -2817,15 +2935,14 @@ pub async fn get_task_diff(
         return Ok(Json(serde_json::json!({ "diff": "" })));
     };
 
-    let git_id =
-        get_git_identity(&state.db, &state.config.secrets_encryption_key, &user.0.sub).await?;
+    let user_token = auth::github_token_for(&state, &user.0.sub).await?;
     let client = reqwest::Client::new();
     let diff = match client
         .get(format!(
             "https://api.github.com/repos/{}/compare/{}...{}",
             task.repo, task.base_branch, branch_name
         ))
-        .header("Authorization", format!("token {}", git_id.token))
+        .header("Authorization", format!("token {user_token}"))
         .header("User-Agent", "tekton-dashboard")
         .header("Accept", "application/vnd.github.v3.diff")
         .send()
@@ -2914,7 +3031,7 @@ async fn run_reopen_pipeline(
         short_id,
         repo,
         base_branch,
-        git_id,
+        ..
     } = ctx;
     // Check if the previous agent container is still alive (e.g. server crashed mid-run).
     // Look up the last-known agent_name from the DB.
@@ -2972,9 +3089,11 @@ async fn run_reopen_pipeline(
 
         seed_agent_repo(ctx, &name, &[branch_name], &tx).await?;
         // The base branch is only context for Claude (e.g. `git diff origin/main`).
-        if let Err(e) =
-            mirror::sync_to_agent(config, repo, &git_id.token, &name, &[base_branch]).await
-        {
+        let synced = match app_token(ctx, Access::READ).await {
+            Ok(token) => mirror::sync_to_agent(config, repo, &token, &name, &[base_branch]).await,
+            Err(e) => Err(e),
+        };
+        if let Err(e) = synced {
             tracing::warn!("Could not fetch base branch {base_branch} for {name}: {e}");
         }
         let checkout_cmd = format!(
@@ -3210,20 +3329,19 @@ pub async fn recover_interrupted_tasks(
                     .await;
                     continue;
                 };
-                let git_id =
-                    match get_git_identity(&db, &config.secrets_encryption_key, created_by).await {
-                        Ok(g) => g,
-                        Err(e) => {
-                            let _ = update_task_status(
-                                &db,
-                                &task.id,
-                                "failed",
-                                Some(&format!("Interrupted by dashboard restart: {e}")),
-                            )
-                            .await;
-                            continue;
-                        }
-                    };
+                let git_id = match get_git_identity(&db, created_by).await {
+                    Ok(g) => g,
+                    Err(e) => {
+                        let _ = update_task_status(
+                            &db,
+                            &task.id,
+                            "failed",
+                            Some(&format!("Interrupted by dashboard restart: {e}")),
+                        )
+                        .await;
+                        continue;
+                    }
+                };
                 let short_id = task.id[..6].to_string();
                 let had_preview = task.preview_url.is_some();
                 let (tx, _) = broadcast::channel(1024);
@@ -3292,20 +3410,19 @@ pub async fn recover_interrupted_tasks(
                     .await;
                     continue;
                 };
-                let git_id =
-                    match get_git_identity(&db, &config.secrets_encryption_key, created_by).await {
-                        Ok(g) => g,
-                        Err(e) => {
-                            let _ = update_task_status(
-                                &db,
-                                &task.id,
-                                "failed",
-                                Some(&format!("Interrupted by dashboard restart: {e}")),
-                            )
-                            .await;
-                            continue;
-                        }
-                    };
+                let git_id = match get_git_identity(&db, created_by).await {
+                    Ok(g) => g,
+                    Err(e) => {
+                        let _ = update_task_status(
+                            &db,
+                            &task.id,
+                            "failed",
+                            Some(&format!("Interrupted by dashboard restart: {e}")),
+                        )
+                        .await;
+                        continue;
+                    }
+                };
 
                 // Insert system message explaining the interruption
                 let _ = save_system_message(
@@ -3568,16 +3685,10 @@ pub async fn create_pr(
         ));
     }
 
-    let git_id =
-        get_git_identity(&state.db, &state.config.secrets_encryption_key, &user.0.sub).await?;
-    open_pr_for_task(
-        &state.db,
-        &state.config.secrets_encryption_key,
-        &git_id,
-        &task,
-        &user.0.sub,
-    )
-    .await?;
+    // The person who clicks Create PR opens it with their own token, so GitHub won't let
+    // them approve it themselves.
+    let token = auth::github_token_for(&state, &user.0.sub).await?;
+    open_pr_for_task(&state.db, &state.config, &token, &task, &user.0.sub).await?;
 
     let updated_task = fetch_task(&state.db, &id)
         .await?
@@ -3655,12 +3766,13 @@ async fn find_open_pr_for_branch(
     Ok(prs.into_iter().next())
 }
 
-/// Open a PR for the task's branch as `acting_user` and record it on the task. If GitHub
-/// reports that the branch already has a PR (e.g. the agent opened one), that PR is recorded.
+/// Open a PR for the task's branch with `token` (the clicking user's, or the App's for
+/// intake tasks) and record it on the task, audited as `acting_user`. If GitHub reports that
+/// the branch already has a PR (e.g. the agent opened one), that PR is recorded.
 async fn open_pr_for_task(
     db: &PgPool,
-    encryption_key: &str,
-    git_id: &GitIdentity,
+    config: &Config,
+    token: &str,
     task: &Task,
     acting_user: &str,
 ) -> Result<(String, i32), AppError> {
@@ -3679,7 +3791,7 @@ async fn open_pr_for_task(
         .collect::<String>();
 
     // Build PR body: gather context and ask Claude to write the description
-    let mut body = generate_pr_body(db, encryption_key, &git_id.token, task, acting_user)
+    let mut body = generate_pr_body(db, &config.secrets_encryption_key, token, task, acting_user)
         .await
         .unwrap_or_else(|e| {
             tracing::warn!("Failed to generate PR body via Claude: {e}, using fallback");
@@ -3690,12 +3802,22 @@ async fn open_pr_for_task(
     if let Some(ref url) = task.preview_url {
         body.push_str(&format!("\n\n---\n\n🔗 **Preview:** {url}"));
     }
+    let (requester, source_url) = match intake_origin(db, &task.id).await? {
+        Some(o) => (o.requested_by, o.source_url),
+        None => (task.created_by.clone(), None),
+    };
+    body.push_str(&pr_footer(
+        &config.dashboard_url(),
+        &task.id,
+        requester.as_deref(),
+        source_url.as_deref(),
+    ));
 
     // Create PR via GitHub API
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("https://api.github.com/repos/{}/pulls", task.repo))
-        .header("Authorization", format!("token {}", git_id.token))
+        .header("Authorization", format!("token {token}"))
         .header("User-Agent", "tekton-dashboard")
         .header("Accept", "application/vnd.github+json")
         .json(&serde_json::json!({
@@ -3719,7 +3841,7 @@ async fn open_pr_for_task(
         let text = resp.text().await.unwrap_or_default();
         match classify_pr_create_error(status.as_u16(), &text) {
             PrCreateRejection::AlreadyExists => {
-                let pr = find_open_pr_for_branch(&git_id.token, &task.repo, branch_name)
+                let pr = find_open_pr_for_branch(token, &task.repo, branch_name)
                     .await?
                     .ok_or_else(|| {
                         AppError::Internal(format!("GitHub API returned {status}: {text}"))
@@ -3770,6 +3892,34 @@ async fn open_pr_for_task(
     Ok((pr_url, pr_number))
 }
 
+/// Names the requester and links the task, so a PR the App opened can be traced to them.
+fn pr_footer(
+    dashboard_url: &str,
+    task_id: &str,
+    requester: Option<&str>,
+    source_url: Option<&str>,
+) -> String {
+    // Only a real GitHub login, so nothing else can add mentions or Markdown to the PR.
+    let is_login = |l: &&str| {
+        !l.is_empty()
+            && l.len() <= 39
+            && !l.starts_with('-')
+            && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    };
+    let requester = requester
+        .filter(is_login)
+        .map(|login| format!("Requested by @{login} · "))
+        .unwrap_or_default();
+    let source = source_url
+        .filter(|u| safe_url(u))
+        .map(|url| format!("From {url} · "))
+        .unwrap_or_default();
+    format!(
+        "\n\n---\n\n{requester}{source}Tekton task [`{}`]({dashboard_url}/tasks/{task_id})",
+        &task_id[..task_id.len().min(6)],
+    )
+}
+
 /// For intake tasks, open the task's PR in the background once its
 /// branch has commits. Failures are reported on the task but never fail it.
 async fn maybe_auto_open_pr(
@@ -3781,7 +3931,6 @@ async fn maybe_auto_open_pr(
         config,
         db,
         task_id,
-        git_id,
         ..
     } = ctx;
     match is_intake_task(db, task_id).await {
@@ -3802,13 +3951,22 @@ async fn maybe_auto_open_pr(
     };
 
     let db = db.clone();
-    let encryption_key = config.secrets_encryption_key.clone();
-    let git_id = git_id.clone();
+    let config = config.clone();
     let acting_user = acting_user.to_string();
     let tx = tx.clone();
     tokio::spawn(async move {
         log_and_send(&db, &task.id, &tx, "[STEP] Opening pull request...");
-        match open_pr_for_task(&db, &encryption_key, &git_id, &task, &acting_user).await {
+        // Nobody asked for this PR in person, so the App opens it: intake keeps working
+        // whatever happens to the source's run_as_user token.
+        let opened = async {
+            let token = config
+                .github_app()?
+                .token(&task.repo, Access::OPEN_PR)
+                .await?;
+            open_pr_for_task(&db, &config, &token, &task, &acting_user).await
+        }
+        .await;
+        match opened {
             Ok((pr_url, _)) => {
                 log_and_send(
                     &db,
@@ -3932,6 +4090,77 @@ mod tests {
         assert!(!is_intake_source_type(Some("manual")));
         assert!(is_intake_source_type(Some("intake_github")));
         assert!(is_intake_source_type(Some("intake_linear")));
+    }
+
+    #[test]
+    fn commit_trailers_name_the_requester_and_task() {
+        let id = GitIdentity {
+            login: "ada".into(),
+            name: "Ada <Lovelace>\nX".into(),
+            email: "ada@example.com".into(),
+        };
+        assert_eq!(
+            commit_trailers(Some(&id), None, "abc123-full-id"),
+            "Co-authored-by: Ada LovelaceX <ada@example.com>\nTekton-Task: abc123-full-id"
+        );
+    }
+
+    #[test]
+    fn intake_commit_trailers_link_the_source() {
+        let id = GitIdentity {
+            login: "ada".into(),
+            name: "Ada".into(),
+            email: "ada@example.com".into(),
+        };
+        let issue = "https://github.com/o/r/issues/17";
+        assert_eq!(
+            commit_trailers(Some(&id), Some(issue), "t1"),
+            "Co-authored-by: Ada <ada@example.com>\nTekton-Source: https://github.com/o/r/issues/17\nTekton-Task: t1"
+        );
+        // Nobody moved it on the board: no co-author.
+        assert_eq!(
+            commit_trailers(None, Some(issue), "t1"),
+            "Tekton-Source: https://github.com/o/r/issues/17\nTekton-Task: t1"
+        );
+        // Anything that isn't a plain https URL is left out.
+        assert_eq!(
+            commit_trailers(None, Some("https://x\nCo-authored-by: Eve <e@x>"), "t1"),
+            "Tekton-Task: t1"
+        );
+    }
+
+    #[test]
+    fn pr_footer_links_requester_and_task() {
+        assert_eq!(
+            pr_footer("https://tekton.example.com", "abc123-full-id", Some("ada"), None),
+            "\n\n---\n\nRequested by @ada · Tekton task [`abc123`](https://tekton.example.com/tasks/abc123-full-id)"
+        );
+        assert_eq!(
+            pr_footer(
+                "https://t.example",
+                "abc",
+                Some("x) [y](https://evil"),
+                None
+            ),
+            "\n\n---\n\nTekton task [`abc`](https://t.example/tasks/abc)"
+        );
+        assert_eq!(
+            pr_footer("https://t.example", "abc", None, None),
+            "\n\n---\n\nTekton task [`abc`](https://t.example/tasks/abc)"
+        );
+        assert_eq!(
+            pr_footer("https://t.example", "abc", None, Some("https://github.com/o/r/issues/17")),
+            "\n\n---\n\nFrom https://github.com/o/r/issues/17 · Tekton task [`abc`](https://t.example/tasks/abc)"
+        );
+        assert_eq!(
+            pr_footer(
+                "https://t.example",
+                "abc",
+                None,
+                Some("https://x)[y](https://evil")
+            ),
+            "\n\n---\n\nTekton task [`abc`](https://t.example/tasks/abc)"
+        );
     }
 
     #[test]

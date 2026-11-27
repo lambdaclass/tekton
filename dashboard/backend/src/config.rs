@@ -1,4 +1,8 @@
 use std::env;
+use std::sync::Arc;
+
+use crate::error::AppError;
+use crate::github_app::GitHubApp;
 
 #[derive(Clone)]
 pub struct Config {
@@ -25,6 +29,12 @@ pub struct Config {
     pub github_webhook_secret: String,
     /// Base URL of the Slack Web API; tests point it at a mock server
     pub slack_api_url: String,
+    /// Base URL of the GitHub REST API for checking a user's repo access; tests point it at
+    /// a mock server. Not `GITHUB_API_URL`: GitHub Actions sets that and workflows can't
+    /// override it.
+    pub github_api_url: String,
+    /// Mints the tokens for task branches, commits and intake PRs. `None` when unconfigured.
+    pub github_app: Option<Arc<GitHubApp>>,
 }
 
 impl Config {
@@ -67,11 +77,26 @@ impl Config {
                 .unwrap_or_else(|_| String::new()),
             slack_api_url: env::var("SLACK_API_URL")
                 .unwrap_or_else(|_| "https://slack.com/api".into()),
+            github_api_url: env::var("GITHUB_API_BASE_URL")
+                .map(|u| u.trim_end_matches('/').to_string())
+                .unwrap_or_else(|_| "https://api.github.com".into()),
+            github_app: GitHubApp::from_env()?,
         })
     }
 }
 
 impl Config {
+    /// The GitHub App, or an error naming the missing settings.
+    pub fn github_app(&self) -> Result<&GitHubApp, AppError> {
+        self.github_app.as_deref().ok_or_else(|| {
+            AppError::Internal(
+                "The GitHub App isn't configured: set GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID \
+                 and GITHUB_APP_PRIVATE_KEY_PATH in dashboard.env"
+                    .into(),
+            )
+        })
+    }
+
     /// The dashboard's public origin, for links in outgoing messages. GitHub
     /// redirects back to the dashboard, so the OAuth callback URL carries it.
     pub fn dashboard_url(&self) -> String {

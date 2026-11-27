@@ -579,6 +579,76 @@ pub async fn set_user_repos(
     Ok(axum::Json(req.repos))
 }
 
+/// Whether `repo` is a plain `owner/name`, safe to put in an API path.
+fn valid_repo_name(repo: &str) -> bool {
+    let part_ok = |s: &str| {
+        !s.is_empty()
+            && !s.starts_with('.')
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    matches!(repo.split_once('/'), Some((owner, name)) if part_ok(owner) && part_ok(name))
+}
+
+/// What a user's own GitHub access to a repo must allow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RepoAccess {
+    Read,
+    Push,
+}
+
+/// Fails unless GitHub says `token`'s user has `access` to `repo`. Tekton reads and writes
+/// repos with GitHub App tokens, which reach every repo the App is installed on, so the
+/// user's own token is what proves they may. It's only used for this check.
+pub async fn require_github_access(
+    api_url: &str,
+    token: &str,
+    repo: &str,
+    access: RepoAccess,
+) -> Result<(), AppError> {
+    if !valid_repo_name(repo) {
+        return Err(AppError::BadRequest(format!("Invalid repository '{repo}'")));
+    }
+    let denied = || {
+        AppError::Forbidden(match access {
+            RepoAccess::Read => format!("Your GitHub account can't read '{repo}'"),
+            RepoAccess::Push => format!("Your GitHub account can't push to '{repo}'"),
+        })
+    };
+    let resp = reqwest::Client::new()
+        .get(format!("{api_url}/repos/{repo}"))
+        .timeout(std::time::Duration::from_secs(8))
+        .header("User-Agent", "dashboard")
+        .header("Accept", "application/vnd.github+json")
+        .bearer_auth(token)
+        .send()
+        .await?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(AppError::ReauthRequired(
+            "GitHub rejected your saved token (expired or revoked); sign in again".into(),
+        ));
+    }
+    if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::FORBIDDEN {
+        return Err(denied());
+    }
+    if !status.is_success() {
+        return Err(AppError::Internal(format!(
+            "Checking your GitHub access to '{repo}' failed: GitHub returned {status}"
+        )));
+    }
+    let body: serde_json::Value = resp.json().await?;
+    let key = match access {
+        RepoAccess::Read => "pull",
+        RepoAccess::Push => "push",
+    };
+    if body["permissions"][key].as_bool() == Some(true) {
+        Ok(())
+    } else {
+        Err(denied())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,5 +680,22 @@ mod tests {
             decrypt_github_token("key-a", "u", Some("not-base64!".into())),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod repo_name_tests {
+    use super::valid_repo_name;
+
+    #[test]
+    fn repo_names() {
+        for ok in ["o/r", "my-org/my.repo", "a_b/c-d"] {
+            assert!(valid_repo_name(ok), "{ok}");
+        }
+        for bad in [
+            "", "o", "o/", "/r", "o/r/x", "../r", "o/..", "o/.git", "o/r?x", "o/r#x", "o r/x",
+        ] {
+            assert!(!valid_repo_name(bad), "{bad:?}");
+        }
     }
 }

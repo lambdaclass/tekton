@@ -4,6 +4,7 @@ mod config;
 mod cost;
 mod db;
 mod error;
+mod github_app;
 mod intake;
 mod intake_admin;
 mod metrics;

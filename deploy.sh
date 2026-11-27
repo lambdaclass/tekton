@@ -79,16 +79,19 @@ preflight_github_app() {
     info "Checking GitHub App configuration on the server..."
     local problems rc=0
     problems=$($SSH 'bash -s' <<'REMOTE'
-env_file=/var/secrets/preview.env
 key_file=/var/secrets/github-app.pem
 fail=0
-if [ ! -f "$env_file" ]; then
-    echo "  - $env_file is missing"
+if [ -f /var/secrets/preview.env ] &&
+    grep -Eq '^[[:space:]]*(export[[:space:]]+)?GITHUB_TOKEN=' /var/secrets/preview.env; then
+    echo "  - /var/secrets/preview.env still sets GITHUB_TOKEN (the old PAT)"
     fail=1
-else
-    if grep -Eq '^[[:space:]]*(export[[:space:]]+)?GITHUB_TOKEN=' "$env_file"; then
-        echo "  - $env_file still sets GITHUB_TOKEN (the old PAT)"
+fi
+# The preview webhook and the dashboard both mint tokens from the App.
+for env_file in /var/secrets/preview.env /var/secrets/dashboard.env; do
+    if [ ! -f "$env_file" ]; then
+        echo "  - $env_file is missing"
         fail=1
+        continue
     fi
     for v in GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY_PATH; do
         if ! grep -Eq "^[[:space:]]*(export[[:space:]]+)?${v}=.+" "$env_file"; then
@@ -102,7 +105,7 @@ else
         echo "  - GITHUB_APP_PRIVATE_KEY_PATH in $env_file is not $key_file"
         fail=1
     fi
-fi
+done
 if [ ! -f "$key_file" ]; then
     echo "  - $key_file is missing"
     fail=1
@@ -128,16 +131,19 @@ REMOTE
     echo "$problems" >&2
     cat >&2 <<'EOF'
 
-The preview webhook now authenticates as a GitHub App; PAT support was removed.
-Migrate before deploying (details: docs/deployment-guide.md, "Migrating from a PAT"):
-  1. Register a private GitHub App on the org and install it on the preview repos.
+The preview webhook and the dashboard authenticate as a GitHub App; PAT support was removed.
+Migrate before deploying (details: docs/deployment-guide.md, "Migrating from a PAT" and
+"Moving task commits to the GitHub App"):
+  1. Register a private GitHub App on the org, with Contents and Pull requests set to
+     Read and write, and install it on the preview and task repos.
   2. Copy its private key to /var/secrets/github-app.pem, then:
        chown root:root /var/secrets/github-app.pem && chmod 0400 /var/secrets/github-app.pem
-  3. In /var/secrets/preview.env, delete the GITHUB_TOKEN line and add:
+  3. In /var/secrets/preview.env, delete any GITHUB_TOKEN line. In both
+     /var/secrets/preview.env and /var/secrets/dashboard.env, add:
        GITHUB_APP_ID=<app id>
        GITHUB_APP_INSTALLATION_ID=<installation id>
        GITHUB_APP_PRIVATE_KEY_PATH=/var/secrets/github-app.pem
-  4. Re-run this deploy, check a preview, then revoke the PAT on GitHub.
+  4. Re-run this deploy, check a preview and a task, then revoke any PAT on GitHub.
 EOF
     error "Nothing was deployed."
 }

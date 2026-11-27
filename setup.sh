@@ -384,9 +384,9 @@ gather_info() {
         fi
     fi
 
-    # GitHub App private key (required by the preview webhook)
+    # GitHub App private key (required by the preview webhook and the dashboard)
     echo ""
-    echo -e "The preview webhook authenticates to GitHub as a GitHub App."
+    echo -e "The preview webhook and the dashboard authenticate to GitHub as a GitHub App."
     echo -e "Its private key is uploaded to /var/secrets/github-app.pem (root, 0400)."
     if [[ -n "${GITHUB_APP_PRIVATE_KEY_PATH:-}" ]]; then
         if [[ ! -f "$GITHUB_APP_PRIVATE_KEY_PATH" ]]; then
