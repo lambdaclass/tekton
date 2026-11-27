@@ -14,7 +14,7 @@ Complete guide to deploying Tekton from scratch and maintaining it afterwards.
 
 **External services (set up before or during install):**
 - [Cloudflare](https://dash.cloudflare.com) account with your domain added
-- A private [GitHub App](#2-github-app) owned by your org, for the preview webhook
+- A private [GitHub App](#2-github-app) owned by your org, for the preview webhook and the dashboard's task commits and PRs
 - [GitHub OAuth App](https://github.com/settings/developers) for dashboard login
 - Claude Max/Teams subscription
 
@@ -229,7 +229,7 @@ After making changes to the codebase, use `deploy.sh` to update the server. It p
 
 1. Ensures a git clone exists at `/opt/src/` on the server (creates on first run)
 2. Pushes your current branch to origin and pulls it on the server
-3. Checks the GitHub App configuration (`preflight_github_app`): `preview.env` must not set `GITHUB_TOKEN` and must set the three `GITHUB_APP_*` variables, and `/var/secrets/github-app.pem` must exist, owned by root, mode `0400`. On failure it prints the migration steps and stops before anything is installed. It only checks names, paths and modes, never values.
+3. Checks the GitHub App configuration (`preflight_github_app`): `preview.env` must not set `GITHUB_TOKEN`, both `preview.env` and `dashboard.env` must set the three `GITHUB_APP_*` variables, and `/var/secrets/github-app.pem` must exist, owned by root, mode `0400`. On failure it prints the migration steps and stops before anything is installed. It only checks names, paths and modes, never values.
 4. Builds the requested components using `nix-shell` on the server
 5. Restarts affected services
 
