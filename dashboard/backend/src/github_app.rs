@@ -57,8 +57,12 @@ pub struct GitHubApp {
     client: reqwest::Client,
     /// The installation's account. Repos owned by anyone else are refused.
     account: Mutex<Option<String>>,
-    tokens: Mutex<HashMap<String, CachedToken>>,
+    /// One slot per repo and access, each with its own lock, so a slow mint for one repo
+    /// doesn't hold up the others.
+    tokens: std::sync::Mutex<HashMap<String, TokenSlot>>,
 }
+
+type TokenSlot = Arc<Mutex<Option<CachedToken>>>;
 
 impl GitHubApp {
     /// Reads `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID` and `GITHUB_APP_PRIVATE_KEY_PATH`.
@@ -112,7 +116,7 @@ impl GitHubApp {
             api_url: api_url.trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
             account: Mutex::new(None),
-            tokens: Mutex::new(HashMap::new()),
+            tokens: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -130,21 +134,27 @@ impl GitHubApp {
         }
 
         let key = access.cache_key(name);
-        // Held while minting, so concurrent callers share one new token.
-        let mut tokens = self.tokens.lock().await;
-        if let Some(cached) = tokens.get(&key) {
-            if cached.expires_at - Utc::now() >= chrono::Duration::from_std(MIN_TTL).unwrap() {
-                return Ok(cached.token.clone());
+        let slot = self
+            .tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key.clone())
+            .or_default()
+            .clone();
+        // Held while minting, so concurrent callers for this repo and access share one token.
+        let mut cached = slot.lock().await;
+        if let Some(c) = cached.as_ref() {
+            if c.expires_at - Utc::now() >= chrono::Duration::from_std(MIN_TTL).unwrap() {
+                return Ok(c.token.clone());
             }
         }
         let minted = self.mint(name, access).await?;
         tracing::info!(
-            "Minted GitHub App token for {repo} ({}; expires {})",
-            access.cache_key(name),
+            "Minted GitHub App token for {repo} ({key}; expires {})",
             minted.expires_at
         );
         let token = minted.token.clone();
-        tokens.insert(key, minted);
+        *cached = Some(minted);
         Ok(token)
     }
 

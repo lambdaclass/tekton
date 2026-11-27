@@ -57,6 +57,7 @@ struct PipelineCtx<'a> {
 /// Tekton pushes. GitHub access goes through the GitHub App, never this user's token.
 #[derive(Clone)]
 struct GitIdentity {
+    login: String,
     name: String,
     email: String,
 }
@@ -77,7 +78,11 @@ async fn get_git_identity(db: &PgPool, github_login: &str) -> Result<GitIdentity
     };
     let email = email.unwrap_or_else(|| format!("{github_login}@users.noreply.github.com"));
 
-    Ok(GitIdentity { name, email })
+    Ok(GitIdentity {
+        login: github_login.to_string(),
+        name,
+        email,
+    })
 }
 
 /// A GitHub App token for the pipeline's repo.
@@ -86,20 +91,17 @@ async fn app_token(ctx: &PipelineCtx<'_>, access: Access) -> Result<String, AppE
 }
 
 /// Fails unless `login`'s own GitHub account can push to `repo`. The App pushes for every
-/// task, so this is what keeps a member from changing a repo GitHub wouldn't let them.
+/// task, so this is what keeps a member from changing a repo GitHub wouldn't let them. Run
+/// on create and reopen, and again before each push of a dashboard task, so losing write
+/// access on GitHub also stops follow-ups.
 async fn require_push_access(
-    state: &crate::AppState,
+    config: &Config,
+    db: &PgPool,
     login: &str,
     repo: &str,
 ) -> Result<(), AppError> {
-    let token = auth::github_token_for(state, login).await?;
-    auth::require_github_access(
-        &state.config.github_api_url,
-        &token,
-        repo,
-        auth::RepoAccess::Push,
-    )
-    .await
+    let token = auth::load_github_token(db, &config.secrets_encryption_key, login).await?;
+    auth::require_github_access(&config.github_api_url, &token, repo, auth::RepoAccess::Push).await
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -514,7 +516,7 @@ pub async fn create_task(
         &state.config.github_org,
     )
     .await?;
-    require_push_access(&state, &user.0.sub, &req.repo).await?;
+    require_push_access(&state.config, &state.db, &user.0.sub, &req.repo).await?;
 
     // Check budget limits before creating the task
     crate::cost::check_budget(&state.db, &user.0.sub, &state.config.github_org).await?;
@@ -2152,6 +2154,12 @@ async fn push_and_preview(
         return Ok(PushOutcome::NoChanges);
     }
 
+    // Intake tasks run for a source an admin set up, not a person, so they don't depend on
+    // anyone's GitHub access (#181 item 0.6 guards their run_as_user).
+    if !is_intake_task(db, task_id).await? {
+        require_push_access(ctx.config, db, &git_id.login, repo).await?;
+    }
+
     save_system_message(db, task_id, "Deploying changes to preview...").await?;
 
     log_and_send(
@@ -2745,7 +2753,7 @@ pub async fn reopen_task(
 
     let short_id = &id[..6];
 
-    require_push_access(&state, &user.0.sub, &task.repo).await?;
+    require_push_access(&state.config, &state.db, &user.0.sub, &task.repo).await?;
     // Get the reopening user's git identity
     let git_id = get_git_identity(&state.db, &user.0.sub).await?;
 
@@ -3815,7 +3823,15 @@ async fn open_pr_for_task(
 
 /// Names the requester and links the task, so a PR the App opened can be traced to them.
 fn pr_footer(dashboard_url: &str, task_id: &str, requester: Option<&str>) -> String {
+    // Only a real GitHub login, so nothing else can add mentions or Markdown to the PR.
+    let is_login = |l: &&str| {
+        !l.is_empty()
+            && l.len() <= 39
+            && !l.starts_with('-')
+            && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    };
     let requester = requester
+        .filter(is_login)
         .map(|login| format!("Requested by @{login} · "))
         .unwrap_or_default();
     format!(
@@ -3999,6 +4015,7 @@ mod tests {
     #[test]
     fn commit_trailers_name_the_requester_and_task() {
         let id = GitIdentity {
+            login: "ada".into(),
             name: "Ada <Lovelace>\nX".into(),
             email: "ada@example.com".into(),
         };
@@ -4013,6 +4030,10 @@ mod tests {
         assert_eq!(
             pr_footer("https://tekton.example.com", "abc123-full-id", Some("ada")),
             "\n\n---\n\nRequested by @ada · Tekton task [`abc123`](https://tekton.example.com/tasks/abc123-full-id)"
+        );
+        assert_eq!(
+            pr_footer("https://t.example", "abc", Some("x) [y](https://evil")),
+            "\n\n---\n\nTekton task [`abc`](https://t.example/tasks/abc)"
         );
         assert_eq!(
             pr_footer("https://t.example", "abc", None),
