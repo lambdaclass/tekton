@@ -82,7 +82,7 @@ The preview webhook uses:
 The dashboard uses:
 
 - `contents: read` to fetch task repos into its host mirrors;
-- `contents: write` to create task branches and commits. GitHub signs these commits as the App (e.g. `tekton[bot]`), so they show as verified; each one carries `Co-authored-by` (the person the task ran for) and `Tekton-Task` trailers;
+- `contents: write` to create task branches and commits. GitHub signs these commits as the App (e.g. `tekton[bot]`), so they show as verified; each one carries a `Tekton-Task` trailer and a `Co-authored-by` trailer for the person the task ran for (see [Task pipeline](#task-pipeline) for intake tasks);
 - `pull_requests: write` to open the PRs of intake tasks, which nobody opens by hand.
 
 A PR opened with the dashboard's **Create PR** button still uses the clicking user's own OAuth token, so GitHub keeps them from approving it themselves.
@@ -344,7 +344,7 @@ When a user submits a task via the dashboard:
 Key points:
 - Agent and preview containers have different prefixes (`a-` for agents, `t-` for previews)
 - Push + preview happen after each Claude run, not just at the end
-- Pushes use the GitHub GraphQL `createCommitOnBranch` mutation with a GitHub App token, producing verified (signed) commits authored by the App, with `Co-authored-by: <requester>` and `Tekton-Task: <id>` trailers. Nothing in the task pipeline uses a user's OAuth token, so an intake source keeps working if its `run_as_user` token expires or is revoked
+- Pushes use the GitHub GraphQL `createCommitOnBranch` mutation with a GitHub App token, producing verified (signed) commits authored by the App, with `Co-authored-by: <requester>` and `Tekton-Task: <id>` trailers. For an intake task the requester is the admin who moved its issue to pending on the intake board (no `Co-authored-by` if nobody did, never the source's `run_as_user`), and a `Tekton-Source: <issue URL>` trailer links the issue. The PR footer names the same requester and issue. Nothing in the task pipeline uses a user's OAuth token, so an intake source keeps working if its `run_as_user` token expires or is revoked
 - When a task is created or reopened, and again before each push, the dashboard checks with the task user's own token that GitHub lets them push to the repo, since the App can push to every repo it's installed on. Losing write access on GitHub therefore also stops follow-ups. Intake tasks skip this: they run for a source an admin set up, not a person
 - No GitHub token enters the agent container. The agent has passwordless sudo, so nothing inside it can be kept from Claude. Instead the backend fetches from GitHub into a root-owned bare mirror (`MIRROR_DIR`, default `/var/lib/dashboard/mirrors`) and pushes the commits into the agent's repo over SSH as `refs/remotes/origin/*`. The agent's `origin` is the plain `https://github.com/<repo>.git` URL, so it can't push.
 - Claude's system prompt tells it it can't push or open PRs. Whatever it leaves in the working tree is delivered: pushed, previewed and, for intake tasks, opened as a PR. An intake task that changes no files delivers nothing, so a prompt template that tells the agent not to modify files gives a report with no PR.

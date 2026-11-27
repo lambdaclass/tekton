@@ -503,10 +503,15 @@ fn valid_transitions(from: &str) -> &'static [&'static str] {
     }
 }
 
+/// Records who moved an issue to pending (`$3`): its task's work is done for them, and they're
+/// credited as co-author. Moving it back to backlog forgets them.
+const PROMOTED_BY: &str = "promoted_by = CASE WHEN $1 = 'pending' THEN $3 \
+     WHEN $1 = 'backlog' THEN NULL ELSE promoted_by END";
+
 /// PATCH /api/admin/intake/issues/{id}/status
 /// Update the status of an intake issue with transition validation.
 pub async fn update_issue_status(
-    _admin: AdminUser,
+    admin: AdminUser,
     State(state): State<crate::AppState>,
     Path(id): Path<i64>,
     Json(req): Json<UpdateIntakeIssueStatusRequest>,
@@ -545,20 +550,22 @@ pub async fn update_issue_status(
     let issue = if clear_task {
         sqlx::query_as::<_, IntakeIssue>(&format!(
             "UPDATE intake_issues SET status = $1, task_id = NULL, error_message = NULL, \
-             slack_notified_status = NULL, updated_at = NOW() \
+             slack_notified_status = NULL, {PROMOTED_BY}, updated_at = NOW() \
              WHERE id = $2 RETURNING {ISSUE_COLUMNS}"
         ))
         .bind(&req.status)
         .bind(id)
+        .bind(&admin.0.sub)
         .fetch_optional(&state.db)
         .await?
     } else {
         sqlx::query_as::<_, IntakeIssue>(&format!(
-            "UPDATE intake_issues SET status = $1, updated_at = NOW() \
+            "UPDATE intake_issues SET status = $1, {PROMOTED_BY}, updated_at = NOW() \
              WHERE id = $2 RETURNING {ISSUE_COLUMNS}"
         ))
         .bind(&req.status)
         .bind(id)
+        .bind(&admin.0.sub)
         .fetch_optional(&state.db)
         .await?
     };

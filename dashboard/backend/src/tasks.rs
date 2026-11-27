@@ -373,6 +373,8 @@ pub(crate) struct SpawnTaskParams {
     pub repo: String,
     pub base_branch: String,
     pub created_by: String,
+    /// The person the work is for, when not `created_by` (who moved an intake issue to pending)
+    pub requested_by: Option<String>,
     pub source_type: Option<String>,
     pub intake_issue_id: Option<i64>,
 }
@@ -390,6 +392,7 @@ pub(crate) async fn spawn_task_internal(
         repo,
         base_branch,
         created_by,
+        requested_by,
         source_type,
         intake_issue_id,
     } = params;
@@ -400,8 +403,8 @@ pub(crate) async fn spawn_task_internal(
     let short_id = id[..6].to_string();
 
     sqlx::query(
-        "INSERT INTO tasks (id, prompt, repo, base_branch, status, created_by, source_type, intake_issue_id) \
-         VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7)",
+        "INSERT INTO tasks (id, prompt, repo, base_branch, status, created_by, source_type, intake_issue_id, requested_by) \
+         VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, $8)",
     )
     .bind(&id)
     .bind(&prompt)
@@ -410,6 +413,7 @@ pub(crate) async fn spawn_task_internal(
     .bind(&created_by)
     .bind(&source_type)
     .bind(intake_issue_id)
+    .bind(&requested_by)
     .execute(&db)
     .await?;
 
@@ -1970,9 +1974,14 @@ async fn github_create_commit(
     Ok(oid)
 }
 
-/// Trailers that tie a commit to its task and to the person it was made for. The GitHub App
-/// authors the commit, so this is what keeps the requester on it.
-fn commit_trailers(git_id: &GitIdentity, task_id: &str) -> String {
+/// Trailers that tie a commit to its task, to the person it was made for when there is one,
+/// and to the intake issue it came from. The GitHub App authors the commit, so this is what
+/// keeps the requester on it.
+fn commit_trailers(
+    co_author: Option<&GitIdentity>,
+    source_url: Option<&str>,
+    task_id: &str,
+) -> String {
     let clean = |s: &str| {
         s.chars()
             .filter(|c| !c.is_control() && !matches!(c, '<' | '>'))
@@ -1980,11 +1989,57 @@ fn commit_trailers(git_id: &GitIdentity, task_id: &str) -> String {
             .trim()
             .to_string()
     };
-    format!(
-        "Co-authored-by: {} <{}>\nTekton-Task: {task_id}",
-        clean(&git_id.name),
-        clean(&git_id.email)
+    let mut lines = Vec::new();
+    if let Some(id) = co_author {
+        lines.push(format!(
+            "Co-authored-by: {} <{}>",
+            clean(&id.name),
+            clean(&id.email)
+        ));
+    }
+    if let Some(url) = source_url.filter(|u| safe_url(u)) {
+        lines.push(format!("Tekton-Source: {url}"));
+    }
+    lines.push(format!("Tekton-Task: {task_id}"));
+    lines.join("\n")
+}
+
+/// An https URL that can sit in a commit trailer or bare in Markdown without changing either.
+fn safe_url(url: &str) -> bool {
+    url.starts_with("https://")
+        && !url
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || "<>()[]`".contains(c))
+}
+
+/// Where an intake task came from: the issue, and the person who moved it to pending on the
+/// intake board, if anyone did. Its `created_by` is the source's `run_as_user`, who didn't
+/// ask for the work, so it isn't credited.
+struct IntakeOrigin {
+    requested_by: Option<String>,
+    source_url: Option<String>,
+}
+
+/// `None` for tasks that didn't come from intake.
+async fn intake_origin(db: &PgPool, task_id: &str) -> Result<Option<IntakeOrigin>, AppError> {
+    let row = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>(
+        "SELECT t.source_type, t.requested_by, i.external_url FROM tasks t \
+         LEFT JOIN intake_issues i ON i.id = t.intake_issue_id WHERE t.id = $1",
     )
+    .bind(task_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(match row {
+        Some((source_type, requested_by, source_url))
+            if is_intake_source_type(source_type.as_deref()) =>
+        {
+            Some(IntakeOrigin {
+                requested_by,
+                source_url,
+            })
+        }
+        _ => None,
+    })
 }
 
 /// Whether the task came from an intake source rather than a person. Nobody is around to
@@ -2156,9 +2211,20 @@ async fn push_and_preview(
 
     // Intake tasks run for a source an admin set up, not a person, so they don't depend on
     // anyone's GitHub access (#181 item 0.6 guards their run_as_user).
-    if !is_intake_task(db, task_id).await? {
+    let origin = intake_origin(db, task_id).await?;
+    if origin.is_none() {
         require_push_access(ctx.config, db, &git_id.login, repo).await?;
     }
+    let trailers = match &origin {
+        None => commit_trailers(Some(git_id), None, task_id),
+        Some(o) => {
+            let co_author = match &o.requested_by {
+                Some(login) => get_git_identity(db, login).await.ok(),
+                None => None,
+            };
+            commit_trailers(co_author.as_ref(), o.source_url.as_deref(), task_id)
+        }
+    };
 
     save_system_message(db, task_id, "Deploying changes to preview...").await?;
 
@@ -2228,7 +2294,7 @@ async fn push_and_preview(
         &expected_oid,
         &file_changes,
         &commit_msg,
-        &commit_trailers(git_id, task_id),
+        &trailers,
     )
     .await?;
     log_and_send(
@@ -3736,10 +3802,15 @@ async fn open_pr_for_task(
     if let Some(ref url) = task.preview_url {
         body.push_str(&format!("\n\n---\n\n🔗 **Preview:** {url}"));
     }
+    let (requester, source_url) = match intake_origin(db, &task.id).await? {
+        Some(o) => (o.requested_by, o.source_url),
+        None => (task.created_by.clone(), None),
+    };
     body.push_str(&pr_footer(
         &config.dashboard_url(),
         &task.id,
-        task.created_by.as_deref(),
+        requester.as_deref(),
+        source_url.as_deref(),
     ));
 
     // Create PR via GitHub API
@@ -3822,7 +3893,12 @@ async fn open_pr_for_task(
 }
 
 /// Names the requester and links the task, so a PR the App opened can be traced to them.
-fn pr_footer(dashboard_url: &str, task_id: &str, requester: Option<&str>) -> String {
+fn pr_footer(
+    dashboard_url: &str,
+    task_id: &str,
+    requester: Option<&str>,
+    source_url: Option<&str>,
+) -> String {
     // Only a real GitHub login, so nothing else can add mentions or Markdown to the PR.
     let is_login = |l: &&str| {
         !l.is_empty()
@@ -3834,8 +3910,12 @@ fn pr_footer(dashboard_url: &str, task_id: &str, requester: Option<&str>) -> Str
         .filter(is_login)
         .map(|login| format!("Requested by @{login} · "))
         .unwrap_or_default();
+    let source = source_url
+        .filter(|u| safe_url(u))
+        .map(|url| format!("From {url} · "))
+        .unwrap_or_default();
     format!(
-        "\n\n---\n\n{requester}Tekton task [`{}`]({dashboard_url}/tasks/{task_id})",
+        "\n\n---\n\n{requester}{source}Tekton task [`{}`]({dashboard_url}/tasks/{task_id})",
         &task_id[..task_id.len().min(6)],
     )
 }
@@ -4020,23 +4100,65 @@ mod tests {
             email: "ada@example.com".into(),
         };
         assert_eq!(
-            commit_trailers(&id, "abc123-full-id"),
+            commit_trailers(Some(&id), None, "abc123-full-id"),
             "Co-authored-by: Ada LovelaceX <ada@example.com>\nTekton-Task: abc123-full-id"
+        );
+    }
+
+    #[test]
+    fn intake_commit_trailers_link_the_source() {
+        let id = GitIdentity {
+            login: "ada".into(),
+            name: "Ada".into(),
+            email: "ada@example.com".into(),
+        };
+        let issue = "https://github.com/o/r/issues/17";
+        assert_eq!(
+            commit_trailers(Some(&id), Some(issue), "t1"),
+            "Co-authored-by: Ada <ada@example.com>\nTekton-Source: https://github.com/o/r/issues/17\nTekton-Task: t1"
+        );
+        // Nobody moved it on the board: no co-author.
+        assert_eq!(
+            commit_trailers(None, Some(issue), "t1"),
+            "Tekton-Source: https://github.com/o/r/issues/17\nTekton-Task: t1"
+        );
+        // Anything that isn't a plain https URL is left out.
+        assert_eq!(
+            commit_trailers(None, Some("https://x\nCo-authored-by: Eve <e@x>"), "t1"),
+            "Tekton-Task: t1"
         );
     }
 
     #[test]
     fn pr_footer_links_requester_and_task() {
         assert_eq!(
-            pr_footer("https://tekton.example.com", "abc123-full-id", Some("ada")),
+            pr_footer("https://tekton.example.com", "abc123-full-id", Some("ada"), None),
             "\n\n---\n\nRequested by @ada · Tekton task [`abc123`](https://tekton.example.com/tasks/abc123-full-id)"
         );
         assert_eq!(
-            pr_footer("https://t.example", "abc", Some("x) [y](https://evil")),
+            pr_footer(
+                "https://t.example",
+                "abc",
+                Some("x) [y](https://evil"),
+                None
+            ),
             "\n\n---\n\nTekton task [`abc`](https://t.example/tasks/abc)"
         );
         assert_eq!(
-            pr_footer("https://t.example", "abc", None),
+            pr_footer("https://t.example", "abc", None, None),
+            "\n\n---\n\nTekton task [`abc`](https://t.example/tasks/abc)"
+        );
+        assert_eq!(
+            pr_footer("https://t.example", "abc", None, Some("https://github.com/o/r/issues/17")),
+            "\n\n---\n\nFrom https://github.com/o/r/issues/17 · Tekton task [`abc`](https://t.example/tasks/abc)"
+        );
+        assert_eq!(
+            pr_footer(
+                "https://t.example",
+                "abc",
+                None,
+                Some("https://x)[y](https://evil")
+            ),
             "\n\n---\n\nTekton task [`abc`](https://t.example/tasks/abc)"
         );
     }

@@ -275,7 +275,7 @@ async fn process_pending_issues(
 
     // Fetch pending issues FIFO, joined with source config
     let pending_issues: Vec<PendingIssueRow> = sqlx::query_as(
-        "SELECT i.id, i.source_id, i.prompt, \
+        "SELECT i.id, i.source_id, i.prompt, i.promoted_by, \
          s.provider, s.target_repo, s.target_base_branch, s.run_as_user, \
          s.max_concurrent_tasks, s.name as source_name \
          FROM intake_issues i \
@@ -349,6 +349,7 @@ async fn process_pending_issues(
                 repo: issue.target_repo.clone(),
                 base_branch: issue.target_base_branch.clone(),
                 created_by: issue.run_as_user.clone(),
+                requested_by: issue.promoted_by.clone(),
                 source_type: Some(source_type),
                 intake_issue_id: Some(issue.id),
             },
@@ -398,6 +399,7 @@ struct PendingIssueRow {
     id: i64,
     source_id: i64,
     prompt: Option<String>,
+    promoted_by: Option<String>,
     provider: String,
     target_repo: String,
     target_base_branch: String,
