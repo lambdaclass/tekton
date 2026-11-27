@@ -93,7 +93,13 @@ async fn require_push_access(
     repo: &str,
 ) -> Result<(), AppError> {
     let token = auth::github_token_for(state, login).await?;
-    auth::require_github_access(&token, repo, auth::RepoAccess::Push).await
+    auth::require_github_access(
+        &state.config.github_api_url,
+        &token,
+        repo,
+        auth::RepoAccess::Push,
+    )
+    .await
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

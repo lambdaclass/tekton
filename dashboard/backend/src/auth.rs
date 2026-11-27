@@ -601,6 +601,7 @@ pub enum RepoAccess {
 /// repos with GitHub App tokens, which reach every repo the App is installed on, so the
 /// user's own token is what proves they may. It's only used for this check.
 pub async fn require_github_access(
+    api_url: &str,
     token: &str,
     repo: &str,
     access: RepoAccess,
@@ -615,7 +616,7 @@ pub async fn require_github_access(
         })
     };
     let resp = reqwest::Client::new()
-        .get(format!("https://api.github.com/repos/{repo}"))
+        .get(format!("{api_url}/repos/{repo}"))
         .timeout(std::time::Duration::from_secs(8))
         .header("User-Agent", "dashboard")
         .header("Accept", "application/vnd.github+json")

@@ -115,7 +115,13 @@ async fn authorize_repo(state: &AppState, user: &MemberUser, repo: &str) -> Resu
     )
     .await?;
     let token = auth::github_token_for(state, &user.0.sub).await?;
-    auth::require_github_access(&token, repo, auth::RepoAccess::Read).await
+    auth::require_github_access(
+        &state.config.github_api_url,
+        &token,
+        repo,
+        auth::RepoAccess::Read,
+    )
+    .await
 }
 
 /// Inspect the raw shell error from `create_preview` and return a user-friendly

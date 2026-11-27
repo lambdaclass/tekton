@@ -1,4 +1,27 @@
+import * as http from 'http';
 import { test, expect } from './fixtures';
+
+// playwright.config.ts points the backend's GITHUB_API_URL here
+const GITHUB_PORT = 3298;
+
+/** A stand-in for GitHub's repo endpoint, which the backend asks whether the user may push */
+function startMockGitHub(): Promise<http.Server> {
+  const permissions: Record<string, { pull: boolean; push: boolean }> = {
+    '/repos/testorg/testrepo': { pull: true, push: true },
+    '/repos/testorg/readonly': { pull: true, push: false },
+  };
+  const server = http.createServer((req, res) => {
+    const perms = permissions[req.url ?? ''];
+    res.setHeader('Content-Type', 'application/json');
+    if (!req.headers.authorization || !perms) {
+      res.statusCode = 404;
+      res.end(JSON.stringify({ message: 'Not Found' }));
+      return;
+    }
+    res.end(JSON.stringify({ permissions: perms }));
+  });
+  return new Promise((resolve) => server.listen(GITHUB_PORT, () => resolve(server)));
+}
 
 test.describe('Task Create', () => {
   test('New Task button toggles creation form', async ({ adminPage }) => {
@@ -149,6 +172,14 @@ test.describe('Task Create', () => {
 });
 
 test.describe.serial('Task Create - E2E', () => {
+  let github: http.Server;
+  test.beforeAll(async () => {
+    github = await startMockGitHub();
+  });
+  test.afterAll(async () => {
+    await new Promise((resolve) => github.close(resolve));
+  });
+
   test('create task and verify it appears in task list', async ({ adminPage }) => {
     await adminPage.goto('/tasks');
     await adminPage.getByRole('button', { name: 'New Task' }).click();
@@ -168,5 +199,17 @@ test.describe.serial('Task Create - E2E', () => {
     await adminPage.goto('/tasks');
 
     await expect(adminPage.getByText('E2E test task — automated creation test')).toBeVisible();
+  });
+
+  test('refuses a repo the user cannot push to on GitHub', async ({ adminPage }) => {
+    await adminPage.goto('/tasks');
+    await adminPage.getByRole('button', { name: 'New Task' }).click();
+
+    await adminPage.getByLabel('Prompt').fill('E2E task on a read-only repo');
+    await adminPage.getByLabel('Repository').fill('testorg/readonly');
+    await adminPage.getByRole('button', { name: 'Submit Task' }).click();
+
+    await expect(adminPage.getByText(/can't push to 'testorg\/readonly'/)).toBeVisible({ timeout: 10000 });
+    await expect(adminPage.getByLabel('Prompt')).toBeVisible();
   });
 });

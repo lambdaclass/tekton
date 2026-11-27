@@ -29,6 +29,9 @@ pub struct Config {
     pub github_webhook_secret: String,
     /// Base URL of the Slack Web API; tests point it at a mock server
     pub slack_api_url: String,
+    /// Base URL of the GitHub REST API for checking a user's repo access; tests point it at
+    /// a mock server
+    pub github_api_url: String,
     /// Mints the tokens for task branches, commits and intake PRs. `None` when unconfigured.
     pub github_app: Option<Arc<GitHubApp>>,
 }
@@ -73,6 +76,9 @@ impl Config {
                 .unwrap_or_else(|_| String::new()),
             slack_api_url: env::var("SLACK_API_URL")
                 .unwrap_or_else(|_| "https://slack.com/api".into()),
+            github_api_url: env::var("GITHUB_API_URL")
+                .map(|u| u.trim_end_matches('/').to_string())
+                .unwrap_or_else(|_| "https://api.github.com".into()),
             github_app: GitHubApp::from_env()?,
         })
     }
