@@ -1,7 +1,7 @@
 import * as http from 'http';
 import { test, expect } from './fixtures';
 
-// playwright.config.ts points the backend's GITHUB_API_URL here
+// playwright.config.ts points the backend's GITHUB_API_BASE_URL here
 const GITHUB_PORT = 3298;
 
 /** A stand-in for GitHub's repo endpoint, which the backend asks whether the user may push */

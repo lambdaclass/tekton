@@ -54,7 +54,7 @@ export default defineConfig({
       // intake-slack.spec.ts serves a mock Slack API here
       SLACK_API_URL: "http://localhost:3299",
       // task-create.spec.ts serves a mock GitHub API here
-      GITHUB_API_URL: "http://localhost:3298",
+      GITHUB_API_BASE_URL: "http://localhost:3298",
     },
   },
 });
